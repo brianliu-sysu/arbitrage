@@ -1,12 +1,14 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"math/big"
 	"sync"
 	"time"
 
 	"github.com/brianliu-sysu/arbitrage/internal/logx"
+	"github.com/brianliu-sysu/arbitrage/internal/pool"
 	"github.com/brianliu-sysu/arbitrage/internal/store"
 	"github.com/brianliu-sysu/arbitrage/internal/subgraph"
 	"github.com/brianliu-sysu/arbitrage/internal/subscriber"
@@ -31,16 +33,18 @@ func AcquireFullSyncSlot() func() {
 // 每个池子拥有独立的 WebSocket 连接和事件订阅，互不影响。
 // 池子的 token0 / token1 / fee 会在添加时自动通过 RPC 查询，无需手动配置。
 type MultiPoolService struct {
+	chainName              string
 	wsEndpoint             string
 	rpcEndpoint            string
+	multicallAddr          common.Address
+	quoterAddr             common.Address
 	services               map[common.Address]*PoolQuoteService
 	pathFinder             *PathFinder
 	maxHops                int
-	bridgeAddrs            []common.Address
+	baseTokens             []common.Address // 基础代币列表（跨池报价中间代币 + 自动发现基础代币）
 	store                  store.Storer
 	maxBlockGapForFullSync uint64
 	factoryAddr            common.Address
-	baseTokenAddrs         []common.Address
 	logger                 logx.Logger
 
 	mu            sync.RWMutex
@@ -51,32 +55,96 @@ type MultiPoolService struct {
 //
 // wsEndpoint 为 WebSocket 端点地址，将被所有池子的事件订阅共享。
 // rpcEndpoint 为 HTTP RPC 端点，用于 eth_call / eth_getLogs 等只读调用。
-// maxHops 为跨池报价最大跳数，bridgeTokens 为中间代币白名单。
-func NewMultiPoolService(wsEndpoint, rpcEndpoint string, maxHops int, bridgeTokens []common.Address, maxBlockGapForFullSync uint64, factoryAddr common.Address, baseTokenAddrs []common.Address, logger logx.Logger, st store.Storer) *MultiPoolService {
+// maxHops 为跨池报价最大跳数，baseTokens 为基础代币白名单。
+func NewMultiPoolService(chainName, wsEndpoint, rpcEndpoint string, maxHops int, baseTokens []common.Address, maxBlockGapForFullSync uint64, factoryAddr common.Address, multicallAddr common.Address, quoterAddr common.Address, logger logx.Logger, st store.Storer) *MultiPoolService {
 	return &MultiPoolService{
+		chainName:              chainName,
 		wsEndpoint:             wsEndpoint,
 		rpcEndpoint:            rpcEndpoint,
+		multicallAddr:          multicallAddr,
+		quoterAddr:             quoterAddr,
 		services:               make(map[common.Address]*PoolQuoteService),
 		maxHops:                maxHops,
-		bridgeAddrs:            bridgeTokens,
+		baseTokens:             baseTokens,
 		maxBlockGapForFullSync: maxBlockGapForFullSync,
 		factoryAddr:            factoryAddr,
-		baseTokenAddrs:         baseTokenAddrs,
 		store:                  st,
 		logger:                 logger,
 	}
 }
 
-// AddPool 向多池子服务中添加一个池子并立即启动。
+// AddPool 向多池子服务中添加一个池子并立即启动，最后重建路径搜索器。
 //
-// poolAddress 为池子合约地址（token0 / token1 / fee 会自动通过 RPC 查询）。
-// syncFromBlock 为该池子的历史同步起始区块号，0 表示跳过历史同步。
+// 批量添加多个池子时请使用 AddPoolsBatch 以避免逐条查询 DB 和逐次重建路径。
 func (m *MultiPoolService) AddPool(poolAddress common.Address, healthCheckIntervalSec int, syncFromBlock uint64) error {
+	if err := m.addPool(poolAddress, healthCheckIntervalSec, syncFromBlock, nil, false); err != nil {
+		return err
+	}
+	m.rebuildPathFinder()
+	return nil
+}
+
+// PoolEntry 批量添加池子时的单个条目。
+type PoolEntry struct {
+	PoolAddress            common.Address
+	HealthCheckIntervalSec int
+	SyncFromBlock          uint64
+}
+
+// AddPoolsBatch 批量添加池子。
+//
+// 内部一次性加载该链所有已持久化状态，避免逐个查询 DB；
+// 所有池子添加完成后只重建一次路径搜索器，避免 O(n) 次 PathFinder 重建。
+func (m *MultiPoolService) AddPoolsBatch(entries []PoolEntry) error {
+	// 一次性批量加载该链下所有已持久化的池子状态
+	var preloaded map[string]*store.PoolSnapshot
+	if m.store != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		var err error
+		preloaded, err = m.store.LoadAll(ctx, m.chainName)
+		if err != nil {
+			m.logger.Warn("failed to batch-load pool states from DB",
+				"chain", m.chainName, "error", err)
+		}
+	}
+
+	added := 0
+	for _, pc := range entries {
+		syncFrom := pc.SyncFromBlock
+		var snap *store.PoolSnapshot
+		if preloaded != nil {
+			if s, ok := preloaded[pc.PoolAddress.Hex()]; ok && s.BlockNumber > syncFrom {
+				syncFrom = s.BlockNumber
+				snap = s
+			}
+		}
+		// 批量模式下已统一执行过 LoadAll，不再回退逐池 LoadFromStore。
+		if err := m.addPool(pc.PoolAddress, pc.HealthCheckIntervalSec, syncFrom, snap, true); err != nil {
+			return fmt.Errorf("add pool %s: %w", pc.PoolAddress.Hex(), err)
+		}
+		added++
+	}
+
+	if added > 0 {
+		m.rebuildPathFinder()
+		m.logger.Info("batch pools added and path finder rebuilt",
+			"chain", m.chainName, "added", added)
+	}
+	return nil
+}
+
+// addPool 核心逻辑：创建/恢复/启动一个池子，不重建路径搜索器（由调用方负责）。
+// preloaded 可为 nil；skipStoreLoad=true 时不会回退逐个查询数据库。
+func (m *MultiPoolService) addPool(poolAddress common.Address, healthCheckIntervalSec int, syncFromBlock uint64, preloaded *store.PoolSnapshot, skipStoreLoad bool) error {
 	addr := poolAddress
 	cfg := Config{
+		ChainName:              m.chainName,
 		PoolAddress:            addr,
 		HealthCheckIntervalSec: healthCheckIntervalSec,
 		MaxBlockGapForFullSync: m.maxBlockGapForFullSync,
+		MulticallAddress:       m.multicallAddr,
+		QuoterAddress:          m.quoterAddr,
 	}
 
 	m.mu.Lock()
@@ -84,23 +152,50 @@ func (m *MultiPoolService) AddPool(poolAddress common.Address, healthCheckInterv
 		m.mu.Unlock()
 		return fmt.Errorf("pool %s already added", addr.Hex())
 	}
+	m.mu.Unlock()
 
 	svc, err := NewPoolQuoteService(m.wsEndpoint, m.rpcEndpoint, cfg, m.logger, m.store)
 	if err != nil {
-		m.mu.Unlock()
 		return fmt.Errorf("create pool service for %s: %w", addr.Hex(), err)
 	}
 
-	m.services[addr] = svc
-	m.mu.Unlock()
-
-	// 尝试从数据库恢复状态
-	storedBlock, loadErr := svc.LoadFromStore()
-	if loadErr == nil && storedBlock > 0 {
-		if storedBlock > syncFromBlock {
-			syncFromBlock = storedBlock
+	// 恢复持久化状态
+	if preloaded != nil {
+		// 批量模式：直接用预加载的快照恢复，跳过 DB 查询
+		svc.pool.UpdateFromSwap(preloaded.SqrtPriceX96, preloaded.Tick, preloaded.Liquidity, preloaded.BlockNumber)
+		if preloaded.Token0Symbol != "" {
+			svc.pool.Token0Symbol = preloaded.Token0Symbol
 		}
-		m.logger.Info("restored state from database", "pool", addr.Hex(), "block", storedBlock)
+		if preloaded.Token1Symbol != "" {
+			svc.pool.Token1Symbol = preloaded.Token1Symbol
+		}
+		if preloaded.Fee != 0 {
+			svc.pool.Fee = preloaded.Fee
+		}
+		if len(preloaded.TickData) > 0 {
+			newTicks := make(map[int32]*pool.TickLiquidity, len(preloaded.TickData))
+			for tickStr, liqStr := range preloaded.TickData {
+				var tickVal int64
+				fmt.Sscanf(tickStr, "%d", &tickVal)
+				liqNet, ok := new(big.Int).SetString(liqStr, 10)
+				if ok && liqNet.Sign() != 0 {
+					newTicks[int32(tickVal)] = &pool.TickLiquidity{LiquidityNet: liqNet}
+				}
+			}
+			svc.pool.ReplaceTicks(newTicks)
+		}
+		if preloaded.BlockNumber > syncFromBlock {
+			syncFromBlock = preloaded.BlockNumber
+		}
+	} else {
+		if !skipStoreLoad {
+			storedBlock, loadErr := svc.LoadFromStore(m.chainName)
+			if loadErr == nil && storedBlock > 0 {
+				if storedBlock > syncFromBlock {
+					syncFromBlock = storedBlock
+				}
+			}
+		}
 	}
 
 	// 通过 RPC 获取 token0 / token1 / fee（Start 前必须）
@@ -121,10 +216,15 @@ func (m *MultiPoolService) AddPool(poolAddress common.Address, healthCheckInterv
 		return fmt.Errorf("start pool %s: %w", addr.Hex(), err)
 	}
 
-	m.logger.Info("pool added and started", "pool", addr.Hex())
-
-	// 重建路径搜索器，使其包含新添加的池子
-	m.rebuildPathFinder()
+	// 初始化成功后再注册，避免 map 中出现半初始化实例。
+	m.mu.Lock()
+	if _, exists := m.services[addr]; exists {
+		m.mu.Unlock()
+		svc.Stop()
+		return fmt.Errorf("pool %s already added", addr.Hex())
+	}
+	m.services[addr] = svc
+	m.mu.Unlock()
 
 	return nil
 }
@@ -271,24 +371,18 @@ func (m *MultiPoolService) CrossQuote(amountIn *big.Int, tokenIn, tokenOut commo
 
 // rebuildPathFinder 根据当前已注册的池子重建路径搜索器。
 func (m *MultiPoolService) rebuildPathFinder() {
-	m.pathFinder = NewPathFinder(m.services, m.maxHops, m.bridgeAddrs)
-	m.logger.Info("path finder rebuilt", "pools", len(m.services), "maxHops", m.maxHops)
+	m.pathFinder = NewPathFinder(m.services, m.maxHops, m.baseTokens)
 }
 
 // AutoDiscoverPools 通过 Subgraph 查询 Top N 池子并自动添加到监控。
-// 会自动跳过已存在的池子。返回新增的池子数量。
+// 已存在的池子自动跳过。新增池子后单次重建路径搜索器。
 func (m *MultiPoolService) AutoDiscoverPools(subgraphURL string, orderBy string, minTVLUSD, minVolumeUSD, maxPools int) int {
-	m.logger.Info("auto-discover: querying subgraph for top pools",
-		"subgraph", subgraphURL, "orderBy", orderBy, "minTVLUSD", minTVLUSD, "minVolumeUSD", minVolumeUSD, "maxPools", maxPools)
-
 	client := subgraph.NewClient(subgraphURL)
 	pools, err := client.FetchTopPools(orderBy, minTVLUSD, minVolumeUSD, maxPools)
 	if err != nil {
 		m.logger.Error("auto-discover: subgraph query failed", "error", err)
 		return 0
 	}
-
-	m.logger.Info("auto-discover: subgraph returned pools", "count", len(pools))
 
 	added := 0
 	for _, sp := range pools {
@@ -301,23 +395,17 @@ func (m *MultiPoolService) AutoDiscoverPools(subgraphURL string, orderBy string,
 			continue
 		}
 
-		// 解析 fee（subgraph 返回的是字符串如 "3000"）
-		_ = sp.FeeTier
-
-		if err := m.AddPool(poolAddr, 30, 0); err != nil {
+		if err := m.addPool(poolAddr, 30, 0, nil, false); err != nil {
 			m.logger.Warn("auto-discover: failed to add pool",
 				"pool", sp.Address, "token0", sp.Token0.Symbol, "token1", sp.Token1.Symbol, "error", err)
 			continue
 		}
-
 		added++
-		m.logger.Info("auto-discover: added pool",
-			"pool", sp.Address,
-			"token0", sp.Token0.Symbol+"("+sp.Token0.ID+")",
-			"token1", sp.Token1.Symbol+"("+sp.Token1.ID+")",
-			"tvlUSD", sp.TVLUSD, "volumeUSD", sp.VolumeUSD)
 	}
 
+	if added > 0 {
+		m.rebuildPathFinder()
+	}
 	m.logger.Info("auto-discover complete", "total", len(pools), "added", added)
 	return added
 }
@@ -352,7 +440,7 @@ func (m *MultiPoolService) discoverAndAddPools(tokenAddr common.Address) {
 
 	if sub == nil {
 		var err error
-		sub, err = subscriber.NewSubscriber(m.wsEndpoint, m.rpcEndpoint, common.Address{}, nil, m.logger)
+		sub, err = subscriber.NewSubscriber(m.wsEndpoint, m.rpcEndpoint, common.Address{}, nil, common.Address{}, m.quoterAddr, m.logger)
 		if err != nil {
 			m.logger.Warn("cannot create temporary subscriber for pool discovery", "error", err)
 			return
@@ -360,7 +448,7 @@ func (m *MultiPoolService) discoverAndAddPools(tokenAddr common.Address) {
 	}
 
 	added := 0
-	for _, base := range m.baseTokenAddrs {
+	for _, base := range m.baseTokens {
 		if base == tokenAddr {
 			continue
 		}
@@ -370,8 +458,8 @@ func (m *MultiPoolService) discoverAndAddPools(tokenAddr common.Address) {
 				continue
 			}
 
-			// AddPool 内部会检查是否已存在，安全幂等
-			if err := m.AddPool(poolAddr, 30, 0); err != nil {
+			// addPool 内部会检查是否已存在，安全幂等
+			if err := m.addPool(poolAddr, 30, 0, nil, false); err != nil {
 				// "already added" 不是错误，其他错误打日志
 				m.logger.Warn("failed to add discovered pool", "pool", poolAddr.Hex(), "error", err)
 				continue
@@ -384,6 +472,9 @@ func (m *MultiPoolService) discoverAndAddPools(tokenAddr common.Address) {
 		}
 	}
 
+	if added > 0 {
+		m.rebuildPathFinder()
+	}
 	if added == 0 {
 		m.logger.Info("no new pools discovered for token", "token", tokenAddr.Hex())
 	} else {

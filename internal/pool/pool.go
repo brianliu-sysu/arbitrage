@@ -2,6 +2,7 @@
 package pool
 
 import (
+	"fmt"
 	"math"
 	"math/big"
 	"sync"
@@ -48,6 +49,14 @@ type PoolState struct {
 	BlockNumber uint64 // 最后一次更新的区块号
 }
 
+// TokenInfo 代币元信息。
+type TokenInfo struct {
+	Symbol   string
+	Decimals int
+}
+
+var q96 = new(big.Int).Lsh(big.NewInt(1), 96)
+
 // NewPoolState 创建一个尚未初始化的池子状态。
 func NewPoolState(address, token0, token1 common.Address, fee uint32) *PoolState {
 	return &PoolState{
@@ -63,15 +72,38 @@ func NewPoolState(address, token0, token1 common.Address, fee uint32) *PoolState
 
 // SetTokens 设置池子的代币地址、手续费率并推断小数位数。
 func (p *PoolState) SetTokens(token0, token1 common.Address, fee uint32) {
+	p.SetTokensWithInfo(token0, token1, fee, nil, nil)
+}
+
+// SetTokensWithInfo 设置池子的代币地址、手续费率和代币元信息。
+// 当 token info 为空时，回退到本地 guess 逻辑。
+func (p *PoolState) SetTokensWithInfo(token0, token1 common.Address, fee uint32, token0Info, token1Info *TokenInfo) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.Token0 = token0
 	p.Token1 = token1
 	p.Fee = fee
-	p.Token0Decimals = guessDecimals(token0)
-	p.Token1Decimals = guessDecimals(token1)
-	p.Token0Symbol = guessSymbol(token0)
-	p.Token1Symbol = guessSymbol(token1)
+
+	if token0Info != nil {
+		p.Token0Decimals = token0Info.Decimals
+		p.Token0Symbol = token0Info.Symbol
+	} else {
+		p.Token0Decimals = guessDecimals(token0)
+		p.Token0Symbol = guessSymbol(token0)
+	}
+	if token1Info != nil {
+		p.Token1Decimals = token1Info.Decimals
+		p.Token1Symbol = token1Info.Symbol
+	} else {
+		p.Token1Decimals = guessDecimals(token1)
+		p.Token1Symbol = guessSymbol(token1)
+	}
+	if p.Token0Symbol == "" {
+		p.Token0Symbol = guessSymbol(token0)
+	}
+	if p.Token1Symbol == "" {
+		p.Token1Symbol = guessSymbol(token1)
+	}
 }
 
 // guessDecimals 根据已知地址推断代币小数位数，未知代币默认 18。
@@ -269,6 +301,14 @@ func (p *PoolState) ClearTicks() {
 	p.Ticks = make(map[int32]*TickLiquidity)
 }
 
+// ReplaceTicks 原子替换所有 tick 流动性地图。
+// 先构建好 newTicks，一次性替换，避免 ClearTicks + 逐个 SetTickLiquidity 之间的竞态窗口。
+func (p *PoolState) ReplaceTicks(newTicks map[int32]*TickLiquidity) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Ticks = newTicks
+}
+
 const (
 	// TickMin / TickMax — Uniswap V3 tick 的合法范围。
 	TickMin = int32(-887272)
@@ -384,4 +424,93 @@ func (p *PoolState) GetStateCopy() *PoolState {
 		Ticks:          p.GetTicksCopy(),
 	}
 	return cp
+}
+
+// QuoteExactInput 使用当前内存状态本地模拟 exact-input 报价。
+//
+// 该实现按当前活跃流动性区间计算，不访问 RPC。对于不会跨 initialized tick
+// 的常见小额报价，它与 Uniswap V3 的核心公式一致；大额跨 tick 报价后续可在
+// 此基础上扩展为逐 tick 模拟。
+func (p *PoolState) QuoteExactInput(amountIn *big.Int, tokenIn common.Address) (*big.Int, error) {
+	if amountIn == nil || amountIn.Sign() <= 0 {
+		return nil, fmt.Errorf("amountIn must be positive")
+	}
+
+	p.mu.RLock()
+	token0 := p.Token0
+	token1 := p.Token1
+	fee := p.Fee
+	sqrtP := new(big.Int).Set(p.SqrtPriceX96)
+	liquidity := new(big.Int).Set(p.Liquidity)
+	p.mu.RUnlock()
+
+	if tokenIn != token0 && tokenIn != token1 {
+		return nil, fmt.Errorf("tokenIn %s is not token0 or token1", tokenIn.Hex())
+	}
+	if sqrtP.Sign() <= 0 {
+		return nil, fmt.Errorf("pool sqrtPriceX96 is not initialized")
+	}
+	if liquidity.Sign() <= 0 {
+		return nil, fmt.Errorf("pool liquidity is not initialized")
+	}
+	if fee >= 1_000_000 {
+		return nil, fmt.Errorf("invalid pool fee %d", fee)
+	}
+
+	amountLessFee := new(big.Int).Mul(amountIn, big.NewInt(int64(1_000_000-fee)))
+	amountLessFee.Div(amountLessFee, big.NewInt(1_000_000))
+	if amountLessFee.Sign() == 0 {
+		return big.NewInt(0), nil
+	}
+
+	if tokenIn == token0 {
+		return quoteToken0ForToken1(amountLessFee, sqrtP, liquidity), nil
+	}
+	return quoteToken1ForToken0(amountLessFee, sqrtP, liquidity), nil
+}
+
+// token0 -> token1 exact input within current liquidity range.
+func quoteToken0ForToken1(amount0In, sqrtP, liquidity *big.Int) *big.Int {
+	// sqrtQ = L * sqrtP * Q96 / (L * Q96 + amount0In * sqrtP)
+	numerator := new(big.Int).Mul(liquidity, sqrtP)
+	numerator.Mul(numerator, q96)
+
+	denominator := new(big.Int).Mul(liquidity, q96)
+	denominator.Add(denominator, new(big.Int).Mul(amount0In, sqrtP))
+	if denominator.Sign() == 0 {
+		return big.NewInt(0)
+	}
+	sqrtQ := new(big.Int).Div(numerator, denominator)
+	if sqrtQ.Cmp(sqrtP) >= 0 {
+		return big.NewInt(0)
+	}
+
+	// amount1Out = L * (sqrtP - sqrtQ) / Q96
+	delta := new(big.Int).Sub(sqrtP, sqrtQ)
+	out := new(big.Int).Mul(liquidity, delta)
+	out.Div(out, q96)
+	return out
+}
+
+// token1 -> token0 exact input within current liquidity range.
+func quoteToken1ForToken0(amount1In, sqrtP, liquidity *big.Int) *big.Int {
+	// sqrtQ = sqrtP + amount1In * Q96 / L
+	delta := new(big.Int).Mul(amount1In, q96)
+	delta.Div(delta, liquidity)
+	sqrtQ := new(big.Int).Add(sqrtP, delta)
+	if sqrtQ.Cmp(sqrtP) <= 0 {
+		return big.NewInt(0)
+	}
+
+	// amount0Out = L * (sqrtQ - sqrtP) * Q96 / (sqrtQ * sqrtP)
+	numerator := new(big.Int).Sub(sqrtQ, sqrtP)
+	numerator.Mul(numerator, liquidity)
+	numerator.Mul(numerator, q96)
+
+	denominator := new(big.Int).Mul(sqrtQ, sqrtP)
+	if denominator.Sign() == 0 {
+		return big.NewInt(0)
+	}
+	out := new(big.Int).Div(numerator, denominator)
+	return out
 }

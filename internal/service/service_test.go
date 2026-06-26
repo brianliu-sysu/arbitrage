@@ -271,9 +271,12 @@ func TestQuoteExactInputNilSubscriber(t *testing.T) {
 	ps := pool.NewPoolState(addrPool1, tkUSDC, tkWETH, 3000)
 	ps.UpdateFromSwap(testSQ96, 0, testLiq, 100)
 	svc := &PoolQuoteService{pool: ps, logger: logx.Nop()}
-	_, err := svc.QuoteExactInput(big.NewInt(1000), tkUSDC)
-	if err == nil {
-		t.Error("expected error with nil subscriber")
+	out, err := svc.QuoteExactInput(big.NewInt(1000), tkUSDC)
+	if err != nil {
+		t.Fatalf("QuoteExactInput should not require subscriber: %v", err)
+	}
+	if out.Sign() <= 0 {
+		t.Fatalf("amountOut = %s, want positive", out)
 	}
 }
 
@@ -283,6 +286,58 @@ func TestResolvePoolMetadataNilSubscriber(t *testing.T) {
 	err := svc.ResolvePoolMetadata()
 	if err == nil {
 		t.Error("expected error with nil subscriber")
+	}
+}
+
+func TestTryBufferEventRespectsBufferingMode(t *testing.T) {
+	ps := pool.NewPoolState(addrPool1, tkUSDC, tkWETH, 3000)
+	svc := &PoolQuoteService{pool: ps, logger: logx.Nop()}
+
+	ev := bufferedEvent{swap: &pool.SwapEvent{Raw: types.Log{BlockNumber: 10}}}
+	if svc.tryBufferEvent(ev) {
+		t.Fatal("should not buffer when buffering mode is disabled")
+	}
+	if svc.bufferLen() != 0 {
+		t.Fatalf("bufferLen = %d, want 0", svc.bufferLen())
+	}
+
+	svc.bufferingMode.Store(true)
+	if !svc.tryBufferEvent(ev) {
+		t.Fatal("should buffer when buffering mode is enabled")
+	}
+	if svc.bufferLen() != 1 {
+		t.Fatalf("bufferLen = %d, want 1", svc.bufferLen())
+	}
+}
+
+func TestDrainAndReplayDisablesBufferingAndAppliesEvents(t *testing.T) {
+	ps := pool.NewPoolState(addrPool1, tkUSDC, tkWETH, 3000)
+	svc := &PoolQuoteService{
+		pool:               ps,
+		logger:             logx.Nop(),
+		snapshotStartBlock: 100,
+	}
+
+	svc.bufferingMode.Store(true)
+	swap := &pool.SwapEvent{
+		SqrtPriceX96: testSQ96,
+		Tick:         88,
+		Liquidity:    testLiq,
+		Raw:          types.Log{BlockNumber: 100},
+	}
+	svc.eventBuffer = []bufferedEvent{{swap: swap}}
+
+	svc.drainAndReplay()
+
+	if svc.bufferingMode.Load() {
+		t.Fatal("buffering mode should be disabled after draining")
+	}
+	_, _, tick := svc.GetPrice()
+	if tick != 88 {
+		t.Fatalf("tick = %d, want 88", tick)
+	}
+	if svc.bufferLen() != 0 {
+		t.Fatalf("bufferLen = %d, want 0", svc.bufferLen())
 	}
 }
 

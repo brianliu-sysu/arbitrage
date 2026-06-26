@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/brianliu-sysu/arbitrage/internal/logx"
+	"github.com/brianliu-sysu/arbitrage/internal/utils"
 	"github.com/brianliu-sysu/arbitrage/internal/metrics"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -123,8 +124,12 @@ func (s *Server) rateLimitMiddleware() gin.HandlerFunc {
 		return func(c *gin.Context) { c.Next() }
 	}
 	tokens := make(chan struct{}, s.rateLimit)
+	// 冷启动先填满令牌，避免启动后首秒全部 429。
+	for i := 0; i < s.rateLimit; i++ {
+		tokens <- struct{}{}
+	}
 	// 每秒补充令牌
-	go func() {
+	utils.SafeGo(s.logger, func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
@@ -135,7 +140,7 @@ func (s *Server) rateLimitMiddleware() gin.HandlerFunc {
 				}
 			}
 		}
-	}()
+	})
 	return func(c *gin.Context) {
 		select {
 		case <-tokens:

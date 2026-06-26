@@ -15,22 +15,40 @@ import (
 
 // PoolSnapshot 池子状态快照，用于持久化和恢复。
 type PoolSnapshot struct {
+	ChainName    string
 	PoolAddress  string
 	BlockNumber  uint64
 	Tick         int32
 	SqrtPriceX96 *big.Int
 	Liquidity    *big.Int
 	Price0In1    float64
-	TickData     map[string]string // tick → liquidityNet（字符串以避免 big.Int JSON 问题）
+	Token0Symbol string
+	Token1Symbol string
+	Fee          uint32
+	TickData     map[string]string
+}
+
+// TokenMetadata 代币元信息缓存（按链 + 代币地址唯一）。
+type TokenMetadata struct {
+	ChainName    string
+	TokenAddress string
+	Symbol       string
+	Decimals     int
 }
 
 // Storer 持久化接口。
 type Storer interface {
-	// Save 保存池子状态快照（upsert）。
 	Save(ctx context.Context, s *PoolSnapshot) error
-	// Load 加载上次保存的池子状态快照。
-	Load(ctx context.Context, poolAddress string) (*PoolSnapshot, error)
-	// Close 关闭连接池。
+	// SaveHistory 将池子状态追加写入历史记录表（仅追加，不更新）。
+	SaveHistory(ctx context.Context, s *PoolSnapshot) error
+	// Load 加载上次保存的池子状态快照（chain + poolAddress 联合主键）。
+	Load(ctx context.Context, chainName, poolAddress string) (*PoolSnapshot, error)
+	// LoadAll 加载指定链下所有已保存的池子状态（按 pool_address 索引）。
+	LoadAll(ctx context.Context, chainName string) (map[string]*PoolSnapshot, error)
+	// LoadTokenMetadata 加载指定链上某个代币的元信息缓存。
+	LoadTokenMetadata(ctx context.Context, chainName, tokenAddress string) (*TokenMetadata, error)
+	// SaveTokenMetadata 保存代币元信息缓存（upsert）。
+	SaveTokenMetadata(ctx context.Context, meta *TokenMetadata) error
 	Close()
 }
 

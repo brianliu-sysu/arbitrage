@@ -18,18 +18,37 @@ type PoolConfig struct {
 
 // ChainConfig 单条链的完整配置。
 type ChainConfig struct {
-	Name           string            `yaml:"name"`            // 链名称标识
-	RPCFailover    []string          `yaml:"rpc_failover"`     // RPC 故障转移列表
-	WSEndpoint     string            `yaml:"ws_endpoint"`     // WebSocket 事件订阅地址
-	RPCEndpoint    string            `yaml:"rpc_endpoint"`    // HTTP RPC 地址，空则从 ws_endpoint 推导
-	FactoryAddress string            `yaml:"factory_address"` // Uniswap V3 Factory 合约地址
-	WETH           string            `yaml:"weth"`            // Wrapped Native Token 地址
-	USDC           string            `yaml:"usdc"`            // USDC 地址
-	USDT           string            `yaml:"usdt"`            // USDT 地址
-	BridgeTokens   []string          `yaml:"bridge_tokens"`   // 跨池报价中间代币白名单
-	MaxHops        int               `yaml:"max_hops"`        // 跨池报价最大跳数，0 使用全局默认值
-	Pools          []PoolConfig      `yaml:"pools"`           // 该链的池子列表（手动指定）
-	AutoDiscover   AutoDiscoverConfig `yaml:"auto_discover"`   // Subgraph 自动发现配置
+	Name            string            `yaml:"name"`             // 链名称标识
+	RPCFailover     []string          `yaml:"rpc_failover"`     // RPC 故障转移列表
+	WSEndpoint      string            `yaml:"ws_endpoint"`      // WebSocket 事件订阅地址
+	RPCEndpoint     string            `yaml:"rpc_endpoint"`     // HTTP RPC 地址，空则从 ws_endpoint 推导
+	FactoryAddress  string            `yaml:"factory_address"`  // Uniswap V3 Factory 合约地址
+	BaseTokens      []string          `yaml:"base_tokens"`      // 基础代币白名单（跨池报价中间代币 + 自动发现基础代币）
+	MaxHops         int               `yaml:"max_hops"`         // 跨池报价最大跳数，0 使用全局默认值
+	Pools           []PoolConfig      `yaml:"pools"`            // 该链的池子列表（手动指定）
+	AutoDiscover    AutoDiscoverConfig `yaml:"auto_discover"`    // Subgraph 自动发现配置
+	MulticallAddress string           `yaml:"multicall_address"` // Multicall3 合约地址，空使用标准部署地址
+	QuoterAddress    string           `yaml:"quoter_address"`    // Uniswap V3 QuoterV2 合约地址，空使用默认地址
+}
+
+// DefaultMulticall3Address Multicall3 在所有主流 EVM 链上的标准部署地址。
+const DefaultMulticall3Address = "0xcA11bde05977b3631167028862bE2a173976CA11"
+const DefaultQuoterV2Address = "0x61fFE014bA17989E743c5F6cB21bF9697530B21e"
+
+// GetMulticallAddress 返回 Multicall3 合约地址，未配置时返回标准部署地址。
+func (c *ChainConfig) GetMulticallAddress() string {
+	if c.MulticallAddress != "" {
+		return c.MulticallAddress
+	}
+	return DefaultMulticall3Address
+}
+
+// GetQuoterAddress 返回 QuoterV2 合约地址，未配置时返回默认地址。
+func (c *ChainConfig) GetQuoterAddress() string {
+	if c.QuoterAddress != "" {
+		return c.QuoterAddress
+	}
+	return DefaultQuoterV2Address
 }
 
 // AutoDiscoverConfig Uniswap V3 Subgraph 自动池子发现配置。
@@ -110,8 +129,16 @@ func (c *AppConfig) Validate() error {
 		if !isValidAddress(ch.FactoryAddress) {
 			return fmt.Errorf("chains[%d] (%q): factory_address is not a valid 0x address", i, ch.Name)
 		}
-		if !isValidAddress(ch.WETH) {
-			return fmt.Errorf("chains[%d] (%q): weth is not a valid 0x address", i, ch.Name)
+		if ch.QuoterAddress != "" && !isValidAddress(ch.QuoterAddress) {
+			return fmt.Errorf("chains[%d] (%q): quoter_address is not a valid 0x address", i, ch.Name)
+		}
+		if len(ch.BaseTokens) == 0 {
+			return fmt.Errorf("chains[%d] (%q): at least one base_token is required", i, ch.Name)
+		}
+		for j, bt := range ch.BaseTokens {
+			if !isValidAddress(bt) {
+				return fmt.Errorf("chains[%d] (%q).base_tokens[%d]: not a valid 0x address", i, ch.Name, j)
+			}
 		}
 		if ch.MaxHops < 1 || ch.MaxHops > 10 {
 			if ch.MaxHops != 0 {

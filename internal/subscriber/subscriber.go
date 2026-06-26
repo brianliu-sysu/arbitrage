@@ -2,6 +2,7 @@
 package subscriber
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math/big"
@@ -154,9 +155,6 @@ func maskError(err error) error {
 const (
 	initialReconnectBackoff = 1 * time.Second
 	maxReconnectBackoff     = 60 * time.Second
-	rpcMaxRetries           = 3
-	rpcBaseBackoff          = 100 * time.Millisecond
-	rpcMaxBackoff           = 1 * time.Second
 )
 
 // EventHandler 定义事件处理的回调接口。
@@ -170,43 +168,57 @@ type EventHandler interface {
 
 // Subscriber 负责订阅 Uniswap V3 Pool 合约的事件日志，内置 WebSocket 断线重连。
 type Subscriber struct {
-	logger    logx.Logger
-	wsURL     string // WebSocket 端点（已脱敏，用于日志；实际连接用 wsDial）
-	rpcURL    string // HTTP RPC 端点（已脱敏，用于日志；实际连接用 rpcDial）
-	wsDial    string // 真实 WebSocket URL（含 API key）
-	rpcDial   string // 真实 HTTP RPC URL（含 API key）
-	poolAddr  common.Address
-	handler   EventHandler
+	logger   logx.Logger
+	wsURL    string // WebSocket 端点（已脱敏，用于日志；实际连接用 wsDial）
+	rpcURL   string // HTTP RPC 端点（已脱敏，用于日志；实际连接用 rpcDial）
+	wsDial   string // 真实 WebSocket URL（含 API key）
+	rpcDial  string // 真实 HTTP RPC URL（含 API key）
+	poolAddr common.Address
+	handler  EventHandler
 
 	rpcClient     *ethclient.Client // 持久 HTTP 客户端（复用连接池）
 	rpcClientMu   sync.Mutex
 	rpcClientInit bool
 
 	connectedOnce bool
-	seenTxHashes  map[common.Hash]struct{} // WS 事件去重
+	seenLogKeys   map[logDedupKey]struct{} // WS 事件去重
+
+	multicallAddr common.Address // Multicall3 合约地址
+	quoterAddr    common.Address // Uniswap V3 Quoter 合约地址
 
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
 
+// logDedupKey 用于标识一条唯一日志。
+// 同一交易可能包含多条日志，必须包含 logIndex 才不会误去重。
+type logDedupKey struct {
+	BlockHash common.Hash
+	TxHash    common.Hash
+	LogIndex  uint
+}
+
 // NewSubscriber 创建事件订阅器。
 //
 // wsURL / rpcURL 中的 API key 会在存储时自动脱敏（日志中只显示 ***）。
 // 真实 URL 保存在 wsDial / rpcDial，仅在拨号时使用。
-func NewSubscriber(wsURL, rpcURL string, poolAddr common.Address, handler EventHandler, logger logx.Logger) (*Subscriber, error) {
+// multicallAddr 为 Multicall3 合约地址，zero address 表示不使用批量查询。
+func NewSubscriber(wsURL, rpcURL string, poolAddr common.Address, handler EventHandler, multicallAddr common.Address, quoterAddr common.Address, logger logx.Logger) (*Subscriber, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Subscriber{
-		seenTxHashes: make(map[common.Hash]struct{}),
-		logger:   logger,
-		wsURL:    maskAPIKey(wsURL),
-		rpcURL:   maskAPIKey(rpcURL),
-		wsDial:   wsURL,
-		rpcDial:  rpcURL,
-		poolAddr: poolAddr,
-		handler:  handler,
-		ctx:      ctx,
-		cancel:   cancel,
+		seenLogKeys:   make(map[logDedupKey]struct{}),
+		logger:        logger,
+		wsURL:         maskAPIKey(wsURL),
+		rpcURL:        maskAPIKey(rpcURL),
+		wsDial:        wsURL,
+		rpcDial:       rpcURL,
+		poolAddr:      poolAddr,
+		handler:       handler,
+		multicallAddr: multicallAddr,
+		quoterAddr:    quoterAddr,
+		ctx:           ctx,
+		cancel:        cancel,
 	}, nil
 }
 
@@ -252,15 +264,14 @@ func (s *Subscriber) runReconnectLoop(query ethereum.FilterQuery) {
 			continue
 		}
 
-		s.logger.Info("connected", "pool", s.poolAddr.Hex())
 		backoff = initialReconnectBackoff
 
-		if s.connectedOnce {
-			metrics.WSReconnectsTotal.WithLabelValues(s.poolAddr.Hex()).Inc()
-		}
-		s.connectedOnce = true
+		shouldNotifyReconnect := s.markConnected()
 
-		s.handler.OnReconnected()
+		// 首次连接仅表示 cold start，不应触发“重连恢复”逻辑。
+		if shouldNotifyReconnect && s.handler != nil {
+			s.handler.OnReconnected()
+		}
 
 		ctx, span := tracing.Tracer().Start(s.ctx, "subscriber.event_loop",
 			trace.WithAttributes(attribute.String("pool", s.poolAddr.Hex())))
@@ -427,7 +438,9 @@ func (s *Subscriber) FetchStateViaRPC() (*PoolStateRPC, error) {
 
 	slot0Data, _ := parsed.Pack("slot0")
 	slot0Result, err := client.CallContract(s.ctx, ethereum.CallMsg{To: &s.poolAddr, Data: slot0Data}, nil)
-	if isConnectionError(err) { s.resetRPCClient() }
+	if isConnectionError(err) {
+		s.resetRPCClient()
+	}
 	if err != nil {
 		return nil, maskError(fmt.Errorf("call slot0: %w", err))
 	}
@@ -437,7 +450,9 @@ func (s *Subscriber) FetchStateViaRPC() (*PoolStateRPC, error) {
 
 	liqData, _ := parsed.Pack("liquidity")
 	liqResult, err := client.CallContract(s.ctx, ethereum.CallMsg{To: &s.poolAddr, Data: liqData}, nil)
-	if isConnectionError(err) { s.resetRPCClient() }
+	if isConnectionError(err) {
+		s.resetRPCClient()
+	}
 	if err != nil {
 		return nil, maskError(fmt.Errorf("call liquidity: %w", err))
 	}
@@ -457,7 +472,22 @@ func (s *Subscriber) FetchStateViaRPC() (*PoolStateRPC, error) {
 	}, nil
 }
 
-func (s *Subscriber) SimulateSwap(amountIn *big.Int, zeroForOne bool, sqrtPriceLimitX96 *big.Int) (*big.Int, error) {
+// FetchBlockNumber 返回当前链上最新区块高度。
+func (s *Subscriber) FetchBlockNumber() (uint64, error) {
+	client, done, err := s.rpcDialWithRetry()
+	if err != nil {
+		return 0, fmt.Errorf("dial: %w", err)
+	}
+	defer done()
+
+	header, err := client.HeaderByNumber(s.ctx, nil)
+	if err != nil {
+		return 0, maskError(fmt.Errorf("get header: %w", err))
+	}
+	return header.Number.Uint64(), nil
+}
+
+func (s *Subscriber) SimulateSwap(token0, token1 common.Address, fee uint32, amountIn *big.Int, zeroForOne bool, sqrtPriceLimitX96 *big.Int) (*big.Int, error) {
 	_, span := tracing.Tracer().Start(s.ctx, "subscriber.simulate_swap",
 		trace.WithAttributes(
 			attribute.String("pool", s.poolAddr.Hex()),
@@ -466,41 +496,68 @@ func (s *Subscriber) SimulateSwap(amountIn *big.Int, zeroForOne bool, sqrtPriceL
 		))
 	defer span.End()
 
+	if s.quoterAddr == (common.Address{}) {
+		return nil, fmt.Errorf("quoter address is not configured")
+	}
+
 	client, done, err := s.rpcDialWithRetry()
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
 	}
 	defer done()
 
-	const swapABI = `[{"inputs":[{"internalType":"address","name":"recipient","type":"address"},{"internalType":"bool","name":"zeroForOne","type":"bool"},{"internalType":"int256","name":"amountSpecified","type":"int256"},{"internalType":"uint160","name":"sqrtPriceLimitX96","type":"uint160"},{"internalType":"bytes","name":"data","type":"bytes"}],"name":"swap","outputs":[{"internalType":"int256","name":"amount0","type":"int256"},{"internalType":"int256","name":"amount1","type":"int256"}],"stateMutability":"nonpayable","type":"function"}]`
-
-	parsed, _ := abi.JSON(strings.NewReader(swapABI))
-
 	if sqrtPriceLimitX96 == nil {
-		if zeroForOne {
-			sqrtPriceLimitX96 = pool.MinSqrtRatio
-		} else {
-			sqrtPriceLimitX96 = pool.MaxSqrtRatio
-		}
+		// QuoterV2 uses 0 as "no price limit". The pool.swap min/max bounds
+		// used for direct swap simulation can make quoteExactInputSingle revert.
+		sqrtPriceLimitX96 = big.NewInt(0)
 	}
 
-	recipient := common.HexToAddress("0x0000000000000000000000000000000000000001")
-	data, _ := parsed.Pack("swap", recipient, zeroForOne, amountIn, sqrtPriceLimitX96, []byte{})
-	result, err := client.CallContract(s.ctx, ethereum.CallMsg{To: &s.poolAddr, Data: data}, nil)
+	tokenIn := token0
+	tokenOut := token1
+	if !zeroForOne {
+		tokenIn = token1
+		tokenOut = token0
+	}
+
+	const quoterV2ABI = `[{"inputs":[{"components":[{"internalType":"address","name":"tokenIn","type":"address"},{"internalType":"address","name":"tokenOut","type":"address"},{"internalType":"uint256","name":"amountIn","type":"uint256"},{"internalType":"uint24","name":"fee","type":"uint24"},{"internalType":"uint160","name":"sqrtPriceLimitX96","type":"uint160"}],"internalType":"struct IQuoterV2.QuoteExactInputSingleParams","name":"params","type":"tuple"}],"name":"quoteExactInputSingle","outputs":[{"internalType":"uint256","name":"amountOut","type":"uint256"},{"internalType":"uint160","name":"sqrtPriceX96After","type":"uint160"},{"internalType":"uint32","name":"initializedTicksCrossed","type":"uint32"},{"internalType":"uint256","name":"gasEstimate","type":"uint256"}],"stateMutability":"nonpayable","type":"function"}]`
+	v2Parsed, err := abi.JSON(strings.NewReader(quoterV2ABI))
+	if err != nil {
+		return nil, fmt.Errorf("parse quoter abi: %w", err)
+	}
+	type quoteExactInputSingleParams struct {
+		TokenIn           common.Address `abi:"tokenIn"`
+		TokenOut          common.Address `abi:"tokenOut"`
+		AmountIn          *big.Int       `abi:"amountIn"`
+		Fee               *big.Int       `abi:"fee"`
+		SqrtPriceLimitX96 *big.Int       `abi:"sqrtPriceLimitX96"`
+	}
+	v2Data, err := v2Parsed.Pack("quoteExactInputSingle", quoteExactInputSingleParams{
+		TokenIn:           tokenIn,
+		TokenOut:          tokenOut,
+		AmountIn:          amountIn,
+		Fee:               new(big.Int).SetUint64(uint64(fee)),
+		SqrtPriceLimitX96: sqrtPriceLimitX96,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("pack quoter quoteExactInputSingle: %w", err)
+	}
+	result, err := client.CallContract(s.ctx, ethereum.CallMsg{To: &s.quoterAddr, Data: v2Data}, nil)
 	if err != nil {
 		if isConnectionError(err) {
 			s.resetRPCClient()
 		}
-		return nil, maskError(fmt.Errorf("call swap: %w", err))
+		return nil, maskError(fmt.Errorf("call quoter quoteExactInputSingle: %w", err))
 	}
-	unpacked, _ := parsed.Unpack("swap", result)
-	amount0 := unpacked[0].(*big.Int)
-	amount1 := unpacked[1].(*big.Int)
 
-	if zeroForOne {
-		return new(big.Int).Abs(amount1), nil
+	unpacked, err := v2Parsed.Unpack("quoteExactInputSingle", result)
+	if err != nil || len(unpacked) == 0 {
+		return nil, fmt.Errorf("unpack quoter result: %w", err)
 	}
-	return new(big.Int).Abs(amount0), nil
+	amountOut, ok := unpacked[0].(*big.Int)
+	if !ok {
+		return nil, fmt.Errorf("unexpected amountOut type %T", unpacked[0])
+	}
+	return new(big.Int).Set(amountOut), nil
 }
 
 // PoolMetadata 池子的静态元数据。
@@ -508,6 +565,12 @@ type PoolMetadata struct {
 	Token0 common.Address
 	Token1 common.Address
 	Fee    uint32
+}
+
+// TokenMetadata 代币元信息（symbol + decimals）。
+type TokenMetadata struct {
+	Symbol   string
+	Decimals int
 }
 
 func (s *Subscriber) FetchPoolMetadata() (*PoolMetadata, error) {
@@ -546,6 +609,65 @@ func (s *Subscriber) FetchPoolMetadata() (*PoolMetadata, error) {
 		Token0: t0[0].(common.Address),
 		Token1: t1[0].(common.Address),
 		Fee:    uint32(fee[0].(*big.Int).Uint64()),
+	}, nil
+}
+
+// FetchTokenMetadata 通过 ERC20 标准接口获取 symbol 和 decimals。
+// symbol 优先按 string 解码，若失败则回退 bytes32 兼容解码。
+func (s *Subscriber) FetchTokenMetadata(tokenAddr common.Address) (*TokenMetadata, error) {
+	client, done, err := s.rpcDialWithRetry()
+	if err != nil {
+		return nil, fmt.Errorf("dial: %w", err)
+	}
+	defer done()
+
+	const erc20MetaABI = `[{"inputs":[],"name":"symbol","outputs":[{"internalType":"string","name":"","type":"string"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"decimals","outputs":[{"internalType":"uint8","name":"","type":"uint8"}],"stateMutability":"view","type":"function"}]`
+	parsed, err := abi.JSON(strings.NewReader(erc20MetaABI))
+	if err != nil {
+		return nil, fmt.Errorf("parse erc20 metadata abi: %w", err)
+	}
+
+	symbolData, _ := parsed.Pack("symbol")
+	symbolRaw, err := client.CallContract(s.ctx, ethereum.CallMsg{To: &tokenAddr, Data: symbolData}, nil)
+	if err != nil {
+		if isConnectionError(err) {
+			s.resetRPCClient()
+		}
+		return nil, maskError(fmt.Errorf("call symbol for %s: %w", tokenAddr.Hex(), err))
+	}
+
+	symbol := ""
+	if unpacked, err := parsed.Unpack("symbol", symbolRaw); err == nil && len(unpacked) > 0 {
+		if v, ok := unpacked[0].(string); ok {
+			symbol = strings.TrimSpace(v)
+		}
+	}
+	// 兼容部分老代币将 symbol() 实现为 bytes32。
+	if symbol == "" && len(symbolRaw) >= 32 {
+		symbol = strings.TrimSpace(string(bytes.TrimRight(symbolRaw[:32], "\x00")))
+	}
+
+	decimalsData, _ := parsed.Pack("decimals")
+	decimalsRaw, err := client.CallContract(s.ctx, ethereum.CallMsg{To: &tokenAddr, Data: decimalsData}, nil)
+	if err != nil {
+		if isConnectionError(err) {
+			s.resetRPCClient()
+		}
+		return nil, maskError(fmt.Errorf("call decimals for %s: %w", tokenAddr.Hex(), err))
+	}
+
+	decimalsUnpacked, err := parsed.Unpack("decimals", decimalsRaw)
+	if err != nil || len(decimalsUnpacked) == 0 {
+		return nil, fmt.Errorf("unpack decimals for %s: %w", tokenAddr.Hex(), err)
+	}
+	decimals, ok := decimalsUnpacked[0].(uint8)
+	if !ok {
+		return nil, fmt.Errorf("unexpected decimals type %T for %s", decimalsUnpacked[0], tokenAddr.Hex())
+	}
+
+	return &TokenMetadata{
+		Symbol:   symbol,
+		Decimals: int(decimals),
 	}, nil
 }
 
@@ -611,6 +733,216 @@ func (s *Subscriber) FetchTickBitmap(wordPos int16) (*big.Int, error) {
 	return unpacked[0].(*big.Int), nil
 }
 
+// maxMulticallBatchSize 是单次 Multicall3 aggregate3 调用的最大子调用数。
+// 每次子调用约 132 字节，800 次 ≈ 105KB，远低于多数 RPC 代理的 1MB 限制。
+const maxMulticallBatchSize = 800
+
+// FetchTickBitmapBatch 通过 Multicall3 批量获取多个 word 的 tick bitmap。
+// 内部自动分块，避免单次 RPC 调用的 calldata 超过代理限制（413 Payload Too Large）。
+func (s *Subscriber) FetchTickBitmapBatch(wordPositions []int16) (map[int16]*big.Int, error) {
+	if len(wordPositions) == 0 {
+		return nil, nil
+	}
+
+	client, done, err := s.rpcDialWithRetry()
+	if err != nil {
+		return nil, fmt.Errorf("dial: %w", err)
+	}
+	defer done()
+
+	int16Type := mustNewABIType("int16")
+	inputArgs := abi.Arguments{{Type: int16Type}}
+
+	type call3 struct {
+		Target       common.Address
+		AllowFailure bool   `json:"allowFailure"`
+		CallData     []byte `json:"callData"`
+	}
+
+	multicallABI := `[{"inputs":[{"components":[{"internalType":"address","name":"target","type":"address"},{"internalType":"bool","name":"allowFailure","type":"bool"},{"internalType":"bytes","name":"callData","type":"bytes"}],"internalType":"struct Multicall3.Call3[]","name":"calls","type":"tuple[]"}],"name":"aggregate3","outputs":[{"components":[{"internalType":"bool","name":"success","type":"bool"},{"internalType":"bytes","name":"returnData","type":"bytes"}],"internalType":"struct Multicall3.Result[]","name":"returnData","type":"tuple[]"}],"stateMutability":"payable","type":"function"}]`
+
+	parsed, err := abi.JSON(strings.NewReader(multicallABI))
+	if err != nil {
+		return nil, fmt.Errorf("parse multicall abi: %w", err)
+	}
+
+	uint256Type := mustNewABIType("uint256")
+	bitmapArgs := abi.Arguments{{Type: uint256Type}}
+
+	bitmaps := make(map[int16]*big.Int, len(wordPositions))
+
+	// 分块执行，每块最多 maxMulticallBatchSize 次调用
+	for start := 0; start < len(wordPositions); start += maxMulticallBatchSize {
+		end := start + maxMulticallBatchSize
+		if end > len(wordPositions) {
+			end = len(wordPositions)
+		}
+		chunk := wordPositions[start:end]
+
+		calls := make([]call3, len(chunk))
+		for i, wp := range chunk {
+			data, _ := inputArgs.Pack(wp)
+			calls[i] = call3{
+				Target:       s.poolAddr,
+				AllowFailure: true,
+				CallData:     append(tickBitmapSelector, data...),
+			}
+		}
+
+		data, err := parsed.Pack("aggregate3", calls)
+		if err != nil {
+			return nil, fmt.Errorf("pack multicall: %w", err)
+		}
+
+		result, err := client.CallContract(s.ctx, ethereum.CallMsg{
+			To:   &s.multicallAddr,
+			Data: data,
+		}, nil)
+		if err != nil {
+			if isConnectionError(err) {
+				s.resetRPCClient()
+			}
+			return nil, maskError(fmt.Errorf("multicall aggregate3: %w", err))
+		}
+
+		unpacked, err := parsed.Unpack("aggregate3", result)
+		if err != nil {
+			return nil, fmt.Errorf("unpack multicall results: %w", err)
+		}
+
+		results, ok := unpacked[0].([]struct {
+			Success    bool   `json:"success"`
+			ReturnData []byte `json:"returnData"`
+		})
+		if !ok {
+			return nil, fmt.Errorf("unpack multicall: unexpected result type %T", unpacked[0])
+		}
+
+		for i, r := range results {
+			if !r.Success || len(r.ReturnData) == 0 {
+				continue
+			}
+			bmUnpacked, err := bitmapArgs.Unpack(r.ReturnData)
+			if err != nil {
+				s.logger.Warn("multicall: unpack tickBitmap result failed",
+					"wordPos", chunk[i], "error", err)
+				continue
+			}
+			bm := bmUnpacked[0].(*big.Int)
+			if bm.Sign() != 0 {
+				bitmaps[chunk[i]] = bm
+			}
+		}
+	}
+
+	return bitmaps, nil
+}
+
+// FetchTickInfoBatch 通过 Multicall3 批量获取多个 tick 的链上数据。
+// 一次 RPC 调用（自动分块）即可获取所有 tick 的 liquidityGross / liquidityNet / initialized。
+func (s *Subscriber) FetchTickInfoBatch(ticks []int32) (map[int32]*TickData, error) {
+	if len(ticks) == 0 {
+		return nil, nil
+	}
+
+	client, done, err := s.rpcDialWithRetry()
+	if err != nil {
+		return nil, fmt.Errorf("dial: %w", err)
+	}
+	defer done()
+
+	// ticks(int24) 的 ABI 编码
+	const tickABI = `[{"inputs":[{"internalType":"int24","name":"tick","type":"int24"}],"name":"ticks","outputs":[{"internalType":"uint128","name":"liquidityGross","type":"uint128"},{"internalType":"int128","name":"liquidityNet","type":"int128"},{"internalType":"uint256","name":"feeGrowthOutside0X128","type":"uint256"},{"internalType":"uint256","name":"feeGrowthOutside1X128","type":"uint256"},{"internalType":"int56","name":"tickCumulativeOutside","type":"int56"},{"internalType":"uint160","name":"secondsPerLiquidityOutsideX128","type":"uint160"},{"internalType":"uint32","name":"secondsOutside","type":"uint32"},{"internalType":"bool","name":"initialized","type":"bool"}],"stateMutability":"view","type":"function"}]`
+
+	tickParsed, err := abi.JSON(strings.NewReader(tickABI))
+	if err != nil {
+		return nil, fmt.Errorf("parse ticks abi: %w", err)
+	}
+
+	// Multicall3 aggregate3 ABI
+	const multicallABI = `[{"inputs":[{"components":[{"internalType":"address","name":"target","type":"address"},{"internalType":"bool","name":"allowFailure","type":"bool"},{"internalType":"bytes","name":"callData","type":"bytes"}],"internalType":"struct Multicall3.Call3[]","name":"calls","type":"tuple[]"}],"name":"aggregate3","outputs":[{"components":[{"internalType":"bool","name":"success","type":"bool"},{"internalType":"bytes","name":"returnData","type":"bytes"}],"internalType":"struct Multicall3.Result[]","name":"returnData","type":"tuple[]"}],"stateMutability":"payable","type":"function"}]`
+
+	multicallParsed, err := abi.JSON(strings.NewReader(multicallABI))
+	if err != nil {
+		return nil, fmt.Errorf("parse multicall abi: %w", err)
+	}
+
+	type call3 struct {
+		Target       common.Address `json:"target"`
+		AllowFailure bool           `json:"allowFailure"`
+		CallData     []byte         `json:"callData"`
+	}
+
+	result := make(map[int32]*TickData, len(ticks))
+
+	// 分块执行
+	for start := 0; start < len(ticks); start += maxMulticallBatchSize {
+		end := start + maxMulticallBatchSize
+		if end > len(ticks) {
+			end = len(ticks)
+		}
+		chunk := ticks[start:end]
+
+		calls := make([]call3, len(chunk))
+		for i, t := range chunk {
+			data, _ := tickParsed.Pack("ticks", big.NewInt(int64(t)))
+			calls[i] = call3{
+				Target:       s.poolAddr,
+				AllowFailure: true,
+				CallData:     data,
+			}
+		}
+
+		data, err := multicallParsed.Pack("aggregate3", calls)
+		if err != nil {
+			return nil, fmt.Errorf("pack multicall: %w", err)
+		}
+
+		rawResult, err := client.CallContract(s.ctx, ethereum.CallMsg{
+			To:   &s.multicallAddr,
+			Data: data,
+		}, nil)
+		if err != nil {
+			if isConnectionError(err) {
+				s.resetRPCClient()
+			}
+			return nil, maskError(fmt.Errorf("multicall aggregate3: %w", err))
+		}
+
+		unpacked, err := multicallParsed.Unpack("aggregate3", rawResult)
+		if err != nil {
+			return nil, fmt.Errorf("unpack multicall results: %w", err)
+		}
+
+		results, ok := unpacked[0].([]struct {
+			Success    bool   `json:"success"`
+			ReturnData []byte `json:"returnData"`
+		})
+		if !ok {
+			return nil, fmt.Errorf("unpack multicall: unexpected result type %T", unpacked[0])
+		}
+
+		for i, r := range results {
+			if !r.Success || len(r.ReturnData) == 0 {
+				continue
+			}
+			tickUnpacked, err := tickParsed.Unpack("ticks", r.ReturnData)
+			if err != nil {
+				s.logger.Warn("multicall: unpack ticks result failed",
+					"tick", chunk[i], "error", err)
+				continue
+			}
+			result[chunk[i]] = &TickData{
+				LiquidityGross: tickUnpacked[0].(*big.Int),
+				LiquidityNet:   tickUnpacked[1].(*big.Int),
+				Initialized:    tickUnpacked[7].(bool),
+			}
+		}
+	}
+
+	return result, nil
+}
+
 func (s *Subscriber) FetchTickSpacing() (int32, error) {
 	client, done, err := s.rpcDialWithRetry()
 	if err != nil {
@@ -636,16 +968,9 @@ func (s *Subscriber) processLog(vLog types.Log) {
 	if len(vLog.Topics) == 0 {
 		return
 	}
-	// P3-15: 按 txHash 去重（防止重复事件推送）
-	if vLog.TxHash != (common.Hash{}) {
-		if _, seen := s.seenTxHashes[vLog.TxHash]; seen {
-			return
-		}
-		s.seenTxHashes[vLog.TxHash] = struct{}{}
-		// 限制 map 大小，超过 10000 条时清空
-		if len(s.seenTxHashes) > 10000 {
-			s.seenTxHashes = make(map[common.Hash]struct{})
-		}
+
+	if s.isDuplicateLog(vLog) {
+		return
 	}
 	poolAddr := s.poolAddr.Hex()
 	switch vLog.Topics[0] {
@@ -676,9 +1001,42 @@ func (s *Subscriber) processLog(vLog types.Log) {
 	}
 }
 
+// markConnected 标记一次成功连接。
+// 返回 true 表示这是“重连成功”（而不是首次连接）。
+func (s *Subscriber) markConnected() bool {
+	reconnected := s.connectedOnce
+	if reconnected {
+		metrics.WSReconnectsTotal.WithLabelValues(s.poolAddr.Hex()).Inc()
+	}
+	s.connectedOnce = true
+	return reconnected
+}
+
+// isDuplicateLog 判断日志是否重复（按 blockHash + txHash + logIndex 去重）。
+func (s *Subscriber) isDuplicateLog(vLog types.Log) bool {
+	// 对于没有链上定位信息的日志，无法安全去重，直接放行。
+	if vLog.TxHash == (common.Hash{}) && vLog.BlockHash == (common.Hash{}) {
+		return false
+	}
+
+	key := logDedupKey{
+		BlockHash: vLog.BlockHash,
+		TxHash:    vLog.TxHash,
+		LogIndex:  vLog.Index,
+	}
+	if _, seen := s.seenLogKeys[key]; seen {
+		return true
+	}
+	s.seenLogKeys[key] = struct{}{}
+
+	// 限制 map 大小，超过 10000 条时清空。
+	if len(s.seenLogKeys) > 10000 {
+		s.seenLogKeys = make(map[logDedupKey]struct{})
+	}
+	return false
+}
+
 // ---- Uniswap V3 Factory ----
-
-
 
 // FetchPoolFromFactory 通过 Uniswap V3 Factory 查询给定代币对+手续费的池子地址。
 // factoryAddr 来自配置（chain.factory_address），支持多链。

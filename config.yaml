@@ -52,11 +52,15 @@ chains:
     ws_endpoint: "wss://eth-mainnet.g.alchemy.com/v2/{{ALCHEMY_API_KEY}}"
     rpc_endpoint: "https://eth-mainnet.g.alchemy.com/v2/{{ALCHEMY_API_KEY}}"
     factory_address: "0x1F98431c8aD98523631AE4a59f267346ea31F984"
-    weth: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
-    usdc: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
-    usdt: "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+    # Multicall3 合约地址（所有主流 EVM 链统一标准部署地址）。
+    # 不配或为空时使用默认标准地址 0xcA11bde05977b3631167028862bE2a173976CA11
+    multicall_address: "0xcA11bde05977b3631167028862bE2a173976CA11"
     max_hops: 2
-    bridge_tokens: ["0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", "0xdAC17F958D2ee523a2206206994597C13D831ec7"]
+    # 基础代币白名单：用于跨池报价中间代币 + 自动发现基础代币
+    base_tokens:
+      - "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+      - "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+      - "0xdAC17F958D2ee523a2206206994597C13D831ec7"
 
     # 手动指定的池子列表（始终包含）
     pools:
@@ -67,10 +71,11 @@ chains:
     auto_discover:
       enabled: true
       subgraph_url: "https://gateway.thegraph.com/api/{{UNISWAP_API_KEY}}/subgraphs/id/5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV"
-      min_tvl_usd: 500000           # 最低 TVL K
-      min_volume_usd: 10000000     # 最低 24h 交易量 M
-      max_pools: 100                # 最多添加 100 个池子
-      order_by: "totalValueLockedUSD"  # 排序字段
+      min_tvl_usd: 500000 # 最低 TVL $500K
+      min_volume_usd: 10000000 # 最低 24h 交易量 $10M
+      max_pools: 20 # 最多添加 20 个池子
+      order_by: "totalValueLockedUSD" # 排序字段
+
 
   # - name: "arbitrum"
   #   ws_endpoint: "wss://arb-mainnet.g.alchemy.com/v2/{{ALCHEMY_API_KEY}}"

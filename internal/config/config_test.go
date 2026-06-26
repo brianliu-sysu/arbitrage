@@ -20,8 +20,10 @@ chains:
     usdc: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
     usdt: "0xdAC17F958D2ee523a2206206994597C13D831ec7"
     max_hops: 3
-    bridge_tokens:
+    base_tokens:
+      - "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
       - "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+      - "0xdAC17F958D2ee523a2206206994597C13D831ec7"
     pools:
       - pool_address: "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"
         sync_from_block: 100
@@ -52,8 +54,8 @@ chains:
 	if cfg.MaxHops != 3 {
 		t.Errorf("MaxHops = %d, want 3", cfg.MaxHops)
 	}
-	if len(cfg.GetChains()[0].BridgeTokens) != 1 {
-		t.Errorf("BridgeTokens len = %d, want 1", len(cfg.GetChains()[0].BridgeTokens))
+	if len(cfg.GetChains()[0].BaseTokens) != 3 {
+		t.Errorf("BaseTokens len = %d, want 3", len(cfg.GetChains()[0].BaseTokens))
 	}
 	if len(cfg.GetChains()[0].Pools) != 2 {
 		t.Errorf("Pools len = %d, want 2", len(cfg.GetChains()[0].Pools))
