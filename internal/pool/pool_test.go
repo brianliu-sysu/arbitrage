@@ -64,6 +64,30 @@ func TestSetTokens(t *testing.T) {
 	}
 }
 
+func TestSetTokensWithInfo(t *testing.T) {
+	ps := NewPoolState(addrPool, common.Address{}, common.Address{}, 0)
+	ps.SetTokensWithInfo(addrUSDC, addrWETH, 500, &TokenInfo{
+		Symbol:   "USDCx",
+		Decimals: 6,
+	}, &TokenInfo{
+		Symbol:   "WETHx",
+		Decimals: 18,
+	})
+
+	if ps.Token0Symbol != "USDCx" {
+		t.Errorf("Token0Symbol = %s, want USDCx", ps.Token0Symbol)
+	}
+	if ps.Token1Symbol != "WETHx" {
+		t.Errorf("Token1Symbol = %s, want WETHx", ps.Token1Symbol)
+	}
+	if ps.Token0Decimals != 6 {
+		t.Errorf("Token0Decimals = %d, want 6", ps.Token0Decimals)
+	}
+	if ps.Token1Decimals != 18 {
+		t.Errorf("Token1Decimals = %d, want 18", ps.Token1Decimals)
+	}
+}
+
 func TestUpdateFromSwap(t *testing.T) {
 	ps := NewPoolState(addrPool, addrUSDC, addrWETH, 3000)
 	sqrtPrice := new(big.Int).Set(testSqrtPriceX96)
@@ -410,6 +434,61 @@ func TestHumanPriceZeroTick(t *testing.T) {
 
 	if hp := ps.HumanPrice(); hp != 0 {
 		t.Errorf("HumanPrice = %f at tick=0, want 0", hp)
+	}
+}
+
+func TestQuoteExactInputLocalToken0ForToken1(t *testing.T) {
+	ps := NewPoolState(addrPool, addrUSDC, addrWETH, 3000)
+	ps.SetTokens(addrUSDC, addrWETH, 3000)
+	ps.UpdateFromSwap(testSqrtPriceX96, 0, big.NewInt(1_000_000_000), 100)
+
+	out, err := ps.QuoteExactInput(big.NewInt(1_000), addrUSDC)
+	if err != nil {
+		t.Fatalf("QuoteExactInput: %v", err)
+	}
+	if out.Sign() <= 0 {
+		t.Fatalf("amountOut = %s, want positive", out)
+	}
+	if out.Cmp(big.NewInt(997)) > 0 {
+		t.Fatalf("amountOut = %s, want <= amount after fee", out)
+	}
+}
+
+func TestQuoteExactInputLocalToken1ForToken0(t *testing.T) {
+	ps := NewPoolState(addrPool, addrUSDC, addrWETH, 3000)
+	ps.SetTokens(addrUSDC, addrWETH, 3000)
+	ps.UpdateFromSwap(testSqrtPriceX96, 0, big.NewInt(1_000_000_000), 100)
+
+	out, err := ps.QuoteExactInput(big.NewInt(1_000), addrWETH)
+	if err != nil {
+		t.Fatalf("QuoteExactInput: %v", err)
+	}
+	if out.Sign() <= 0 {
+		t.Fatalf("amountOut = %s, want positive", out)
+	}
+	if out.Cmp(big.NewInt(997)) > 0 {
+		t.Fatalf("amountOut = %s, want <= amount after fee", out)
+	}
+}
+
+func TestQuoteExactInputLocalInvalidToken(t *testing.T) {
+	ps := NewPoolState(addrPool, addrUSDC, addrWETH, 3000)
+	ps.SetTokens(addrUSDC, addrWETH, 3000)
+	ps.UpdateFromSwap(testSqrtPriceX96, 0, big.NewInt(1_000_000_000), 100)
+
+	_, err := ps.QuoteExactInput(big.NewInt(1_000), common.HexToAddress("0x0000000000000000000000000000000000000001"))
+	if err == nil {
+		t.Fatal("expected invalid token error")
+	}
+}
+
+func TestQuoteExactInputLocalUninitialized(t *testing.T) {
+	ps := NewPoolState(addrPool, addrUSDC, addrWETH, 3000)
+	ps.SetTokens(addrUSDC, addrWETH, 3000)
+
+	_, err := ps.QuoteExactInput(big.NewInt(1_000), addrUSDC)
+	if err == nil {
+		t.Fatal("expected uninitialized state error")
 	}
 }
 

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"math/big"
 	"net/http"
+	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
@@ -40,13 +41,13 @@ type quoteHop struct {
 }
 
 type poolInfo struct {
-	Chain         string  `json:"chain,omitempty"`
-	Address       string  `json:"address"`
-	Token0        string  `json:"token0"`
-	Token1        string  `json:"token1"`
-	Token0Symbol  string  `json:"token0Symbol,omitempty"`
-	Token1Symbol  string  `json:"token1Symbol,omitempty"`
-	Fee           uint32  `json:"fee"`
+	Chain        string  `json:"chain,omitempty"`
+	Address      string  `json:"address"`
+	Token0       string  `json:"token0"`
+	Token1       string  `json:"token1"`
+	Token0Symbol string  `json:"token0Symbol,omitempty"`
+	Token1Symbol string  `json:"token1Symbol,omitempty"`
+	Fee          uint32  `json:"fee"`
 	Tick         int32   `json:"tick"`
 	Price0In1    float64 `json:"price0In1"`
 	Price1In0    float64 `json:"price1In0"`
@@ -99,11 +100,15 @@ func (s *Server) handleHealth(c *gin.Context) {
 }
 
 func (s *Server) handleListPools(c *gin.Context) {
+	chain := c.Param("chain")
 	raw := s.svc.GetAllPoolInfo()
-	pools := make([]poolInfo, 0, len(raw))
+	pools := make([]poolInfo, 0, 0)
 	for _, m := range raw {
-		pi := mapToPoolInfo(m)
-		pools = append(pools, pi)
+		chainMatch, _ := m["chain"].(string)
+		if chainMatch != chain {
+			continue
+		}
+		pools = append(pools, mapToPoolInfo(m))
 	}
 	c.JSON(http.StatusOK, gin.H{"pools": pools})
 }
@@ -239,12 +244,17 @@ func (s *Server) handleCrossQuote(c *gin.Context) {
 // ---------------------------------------------------------------------------
 
 func (s *Server) findPool(chain string, poolAddr common.Address) *poolInfo {
+	addrLower := strings.ToLower(poolAddr.Hex())
 	for _, m := range s.svc.GetAllPoolInfo() {
+
 		chainMatch, _ := m["chain"].(string)
 		addr, _ := m["address"].(string)
-		if chainMatch == chain && addr == poolAddr.Hex() {
-			info := mapToPoolInfo(m)
-			return &info
+		if chainMatch == chain {
+			// 大小写不敏感比较（EIP-55 checksum vs lowercase）
+			if strings.EqualFold(addr, addrLower) || strings.ToLower(addr) == addrLower {
+				info := mapToPoolInfo(m)
+				return &info
+			}
 		}
 	}
 	return nil
