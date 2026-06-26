@@ -1,0 +1,86 @@
+# Uniswap V3 Multi-Chain Quote Service Configuration
+# ==================================================
+#
+# 敏感信息建议通过 {{ENV_VAR}} 模板语法注入，如 ws_endpoint: "wss://xxx/v2/{{ALCHEMY_API_KEY}}"
+# 引用了不存在的环境变量时会保留原文本并输出警告。
+
+# HTTP 报价 API 监听端口。0 表示禁用。默认: 8080
+http_port: 8080
+
+# 健康检查间隔（秒）。0 表示禁用。推荐值: 30-60
+health_check_interval_sec: 30
+
+# 日志文件路径。空字符串表示仅输出到 stderr。
+log_file: "arbitrage.log"
+
+# 日志级别: debug / info / warn / error。默认: info
+log_level: "info"
+
+# HTTP API 每秒最大请求数。0 表示不限制。默认: 100
+http_rate_limit: 100
+
+# HTTP API 鉴权 key（X-API-Key 头）。空字符串表示不鉴权。
+api_key: ""
+
+# 全量同步最大区块间隔。启动时如果 DB 存块与链上差距在此值以内，跳过 tick 重建。默认: 1000
+max_block_gap_for_full_sync: 1000
+
+# 跨池报价最大跳数（全局默认，链级可覆盖）。
+max_hops: 2
+
+# 持久化存储（PostgreSQL）。空字符串表示禁用。
+# 状态在每次 Swap 事件时自动保存，启动时自动加载。
+db_url: "postgres://{{ARBITRAGE_DB_USER}}:{{ARBITRAGE_DB_PASSWORD}}@localhost:5432/arbitrage?sslmode=disable"
+
+# 链路追踪（OpenTelemetry / OTLP）。空字符串表示禁用。
+tracing_endpoint: ""
+
+# ============================================================
+# 多链配置
+# ============================================================
+#
+# 每条链独立配置 RPC 端点、Factory 地址、基础代币、池子列表。
+# 支持通过 Subgraph 自动发现热门池子（auto_discover）。
+#
+# 常见链的 Uniswap V3 Factory 和基础代币:
+#   Ethereum: factory=0x1F984..., WETH=0xC02aaA..., USDC=0xA0b869..., USDT=0xdAC17F...
+#   Arbitrum: factory=0x1F984..., WETH=0x82aF49..., USDC=0xaf88d0..., USDT=0xFd086b...
+#   Base:     factory=0x33128a..., WETH=0x420000..., USDC=0x833589...
+#   Optimism: factory=0x1F984..., WETH=0x420000..., USDC=0x0b2C63..., USDT=0x94b008...
+chains:
+  - name: "ethereum"
+    ws_endpoint: "wss://eth-mainnet.g.alchemy.com/v2/{{ALCHEMY_API_KEY}}"
+    rpc_endpoint: "https://eth-mainnet.g.alchemy.com/v2/{{ALCHEMY_API_KEY}}"
+    factory_address: "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+    weth: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+    usdc: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+    usdt: "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+    max_hops: 2
+    bridge_tokens: ["0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", "0xdAC17F958D2ee523a2206206994597C13D831ec7"]
+
+    # 手动指定的池子列表（始终包含）
+    pools:
+      - pool_address: "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"
+        sync_from_block: 25393441
+
+    # Subgraph 自动发现（与手动 pools 合并，已存在的会跳过）
+    auto_discover:
+      enabled: true
+      subgraph_url: "https://gateway.thegraph.com/api/{{UNISWAP_API_KEY}}/subgraphs/id/5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV"
+      min_tvl_usd: 500000           # 最低 TVL K
+      min_volume_usd: 10000000     # 最低 24h 交易量 M
+      max_pools: 100                # 最多添加 100 个池子
+      order_by: "totalValueLockedUSD"  # 排序字段
+
+  # - name: "arbitrum"
+  #   ws_endpoint: "wss://arb-mainnet.g.alchemy.com/v2/{{ALCHEMY_API_KEY}}"
+  #   factory_address: "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+  #   weth: "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"
+  #   usdc: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"
+  #   usdt: "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9"
+  #   auto_discover:
+  #     enabled: true
+  #     min_tvl_usd: 500000
+  #     max_pools: 10
+  #   pools:
+  #     - pool_address: "0xC6962004f452bE9203591991D15f6b388e09E8D0"

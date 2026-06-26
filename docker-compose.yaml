@@ -1,0 +1,41 @@
+version: "3.9"
+services:
+  arbitrage:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.yaml:/etc/arbitrage/config.yaml:ro
+      - ./arbitrage.log:/var/log/arbitrage.log
+    environment:
+      - ALCHEMY_API_KEY=${ALCHEMY_API_KEY}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: arbitrage
+      POSTGRES_USER: arbitrage
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-arbitrage}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U arbitrage"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686"  # Jaeger UI
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+
+volumes:
+  pgdata:
