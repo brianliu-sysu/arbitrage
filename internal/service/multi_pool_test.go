@@ -11,7 +11,7 @@ import (
 )
 
 func TestNewMultiPoolService(t *testing.T) {
-	ms := NewMultiPoolService("ethereum", "wss://test.com", "https://test.com", 2, nil, 100, common.HexToAddress("0x1F98431c8aD98523631AE4a59f267346ea31F984"), common.Address{}, common.Address{}, logx.Nop(), nil)
+	ms := NewMultiPoolService("ethereum", "wss://test.com", "https://test.com", 2, nil, 100, common.HexToAddress("0x1F98431c8aD98523631AE4a59f267346ea31F984"), common.Address{}, logx.Nop(), nil, nil)
 	if ms == nil {
 		t.Fatal("NewMultiPoolService returned nil")
 	}
@@ -30,7 +30,7 @@ func TestNewMultiPoolService(t *testing.T) {
 }
 
 func TestMultiPoolBasic(t *testing.T) {
-	ms := NewMultiPoolService("", "", "", 2, nil, 100, common.HexToAddress("0x1F98431c8aD98523631AE4a59f267346ea31F984"), common.Address{}, common.Address{}, logx.Nop(), nil)
+	ms := NewMultiPoolService("", "", "", 2, nil, 100, common.HexToAddress("0x1F98431c8aD98523631AE4a59f267346ea31F984"), common.Address{}, logx.Nop(), nil, nil)
 
 	if info := ms.GetAllPoolInfo(); len(info) != 0 {
 		t.Errorf("expected 0 pools, got %d", len(info))
@@ -43,7 +43,7 @@ func TestMultiPoolBasic(t *testing.T) {
 }
 
 func TestMultiPoolSetOnPriceUpdate(t *testing.T) {
-	ms := NewMultiPoolService("", "", "", 2, nil, 100, common.HexToAddress("0x1F98431c8aD98523631AE4a59f267346ea31F984"), common.Address{}, common.Address{}, logx.Nop(), nil)
+	ms := NewMultiPoolService("", "", "", 2, nil, 100, common.HexToAddress("0x1F98431c8aD98523631AE4a59f267346ea31F984"), common.Address{}, logx.Nop(), nil, nil)
 	ms.SetOnPriceUpdate(func(addr common.Address, p0, p1 float64, tick int32) {
 		// callback set
 	})
@@ -55,7 +55,7 @@ func TestMultiPoolSetOnPriceUpdate(t *testing.T) {
 }
 
 func TestMultiPoolQuoteExactInputNotFound(t *testing.T) {
-	ms := NewMultiPoolService("", "", "", 2, nil, 100, common.HexToAddress("0x1F98431c8aD98523631AE4a59f267346ea31F984"), common.Address{}, common.Address{}, logx.Nop(), nil)
+	ms := NewMultiPoolService("", "", "", 2, nil, 100, common.HexToAddress("0x1F98431c8aD98523631AE4a59f267346ea31F984"), common.Address{}, logx.Nop(), nil, nil)
 
 	_, err := ms.QuoteExactInput(common.Address{}, big.NewInt(1), common.Address{})
 	if err == nil {
@@ -64,7 +64,7 @@ func TestMultiPoolQuoteExactInputNotFound(t *testing.T) {
 }
 
 func TestMultiPoolCrossQuoteNoPathFinder(t *testing.T) {
-	ms := NewMultiPoolService("", "", "", 2, nil, 100, common.HexToAddress("0x1F98431c8aD98523631AE4a59f267346ea31F984"), common.Address{}, common.Address{}, logx.Nop(), nil)
+	ms := NewMultiPoolService("", "", "", 2, nil, 100, common.HexToAddress("0x1F98431c8aD98523631AE4a59f267346ea31F984"), common.Address{}, logx.Nop(), nil, nil)
 
 	_, err := ms.CrossQuote(big.NewInt(1), common.Address{}, common.Address{})
 	if err == nil {
@@ -73,7 +73,7 @@ func TestMultiPoolCrossQuoteNoPathFinder(t *testing.T) {
 }
 
 func TestMultiPoolGetPrice(t *testing.T) {
-	ms := NewMultiPoolService("", "", "", 2, nil, 100, common.HexToAddress("0x1F98431c8aD98523631AE4a59f267346ea31F984"), common.Address{}, common.Address{}, logx.Nop(), nil)
+	ms := NewMultiPoolService("", "", "", 2, nil, 100, common.HexToAddress("0x1F98431c8aD98523631AE4a59f267346ea31F984"), common.Address{}, logx.Nop(), nil, nil)
 
 	addr := common.HexToAddress("0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8")
 	ps := pool.NewPoolState(addr, tkUSDC, tkWETH, 3000)
@@ -103,7 +103,7 @@ func TestMultiPoolGetPrice(t *testing.T) {
 }
 
 func TestMultiPoolGetAllPoolInfo(t *testing.T) {
-	ms := NewMultiPoolService("", "", "", 2, nil, 100, common.HexToAddress("0x1F98431c8aD98523631AE4a59f267346ea31F984"), common.Address{}, common.Address{}, logx.Nop(), nil)
+	ms := NewMultiPoolService("", "", "", 2, nil, 100, common.HexToAddress("0x1F98431c8aD98523631AE4a59f267346ea31F984"), common.Address{}, logx.Nop(), nil, nil)
 
 	addr := common.HexToAddress("0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8")
 	ps := pool.NewPoolState(addr, tkUSDC, tkWETH, 3000)
@@ -132,7 +132,7 @@ func TestMultiPoolGetAllPoolInfo(t *testing.T) {
 }
 
 func TestRebuildPathFinder(t *testing.T) {
-	ms := NewMultiPoolService("", "", "", 2, nil, 100, common.HexToAddress("0x1F98431c8aD98523631AE4a59f267346ea31F984"), common.Address{}, common.Address{}, logx.Nop(), nil)
+	ms := NewMultiPoolService("", "", "", 2, nil, 100, common.HexToAddress("0x1F98431c8aD98523631AE4a59f267346ea31F984"), common.Address{}, logx.Nop(), nil, nil)
 
 	addr1 := common.HexToAddress("0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8")
 	addr2 := common.HexToAddress("0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640")
@@ -164,7 +164,7 @@ func TestRebuildPathFinder(t *testing.T) {
 }
 
 func TestMultiPoolCrossQuoteTwoHopLocal(t *testing.T) {
-	ms := NewMultiPoolService("", "", "", 2, []common.Address{tkWETH}, 100, common.HexToAddress("0x1F98431c8aD98523631AE4a59f267346ea31F984"), common.Address{}, common.Address{}, logx.Nop(), nil)
+	ms := NewMultiPoolService("", "", "", 2, []common.Address{tkWETH}, 100, common.HexToAddress("0x1F98431c8aD98523631AE4a59f267346ea31F984"), common.Address{}, logx.Nop(), nil, nil)
 
 	addr1 := common.HexToAddress("0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8")
 	addr2 := common.HexToAddress("0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640")
@@ -206,7 +206,7 @@ func TestMultiPoolCrossQuoteTwoHopLocal(t *testing.T) {
 }
 
 func TestStopAll(t *testing.T) {
-	ms := NewMultiPoolService("", "", "", 2, nil, 100, common.HexToAddress("0x1F98431c8aD98523631AE4a59f267346ea31F984"), common.Address{}, common.Address{}, logx.Nop(), nil)
+	ms := NewMultiPoolService("", "", "", 2, nil, 100, common.HexToAddress("0x1F98431c8aD98523631AE4a59f267346ea31F984"), common.Address{}, logx.Nop(), nil, nil)
 
 	addr := common.HexToAddress("0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8")
 	ps := pool.NewPoolState(addr, tkUSDC, tkWETH, 3000)
@@ -246,7 +246,7 @@ func TestPoolQuoteServiceNilSubscriber(t *testing.T) {
 		PoolAddress:            common.HexToAddress("0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"),
 		HealthCheckIntervalSec: 0,
 	}
-	ps, err := NewPoolQuoteService("", "", cfg, logx.Nop(), nil)
+	ps, err := NewPoolQuoteService("", "", cfg, logx.Nop(), nil, nil)
 	// Empty wsURL will fail to dial
 	if err == nil {
 		t.Log("NewPoolQuoteService succeeded with empty URL")

@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/brianliu-sysu/arbitrage/internal/cache"
 	"github.com/brianliu-sysu/arbitrage/internal/logx"
 	"github.com/brianliu-sysu/arbitrage/internal/metrics"
 	"github.com/brianliu-sysu/arbitrage/internal/pool"
@@ -31,6 +32,7 @@ type PoolQuoteService struct {
 	subscriber *subscriber.Subscriber
 	logger     logx.Logger
 	store      store.Storer
+	tokenCache cache.TokenCache
 	chainName  string
 
 	mu            sync.RWMutex
@@ -74,7 +76,7 @@ type Config struct {
 //
 // wsURL 为 WebSocket 端点（订阅链上事件），rpcURL 为 HTTP RPC 端点（eth_call 等）。
 // token0 / token1 / fee 会在调用 ResolvePoolMetadata 时通过 RPC 获取。
-func NewPoolQuoteService(wsURL, rpcURL string, cfg Config, logger logx.Logger, st store.Storer) (*PoolQuoteService, error) {
+func NewPoolQuoteService(wsURL, rpcURL string, cfg Config, logger logx.Logger, st store.Storer, tokenCache cache.TokenCache) (*PoolQuoteService, error) {
 	poolState := pool.NewPoolState(cfg.PoolAddress, common.Address{}, common.Address{}, 0)
 
 	maxGap := cfg.MaxBlockGapForFullSync
@@ -86,6 +88,7 @@ func NewPoolQuoteService(wsURL, rpcURL string, cfg Config, logger logx.Logger, s
 		pool:                   poolState,
 		logger:                 logger,
 		store:                  st,
+		tokenCache:             tokenCache,
 		chainName:              cfg.ChainName,
 		healthCheckInterval:    time.Duration(cfg.HealthCheckIntervalSec) * time.Second,
 		fullSyncMinGap:         5 * time.Minute,
@@ -513,11 +516,9 @@ func (s *PoolQuoteService) DoFullSync(syncFromBlock uint64) error {
 	needsRebuild := tickCount == 0
 
 	if needsRebuild {
-		release := AcquireFullSyncSlot()
 		if err := s.RebuildTickMapFromChain(); err != nil {
 			s.logger.Warn("tick map rebuild failed, price/liquidity sync will proceed", "error", err)
 		}
-		release()
 	}
 
 	// 2. 在 tick 重建完成后重新获取 RPC 快照，确保不覆盖重建期间到达的 Swap 事件更新

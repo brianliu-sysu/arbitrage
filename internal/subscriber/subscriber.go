@@ -472,6 +472,55 @@ func (s *Subscriber) FetchStateViaRPC() (*PoolStateRPC, error) {
 	}, nil
 }
 
+// FetchStateViaRPCAtBlock 通过 RPC 获取指定区块高度的池子状态快照。
+// 与 FetchStateViaRPC 不同，它查询的是历史状态而非最新状态。
+func (s *Subscriber) FetchStateViaRPCAtBlock(blockNumber uint64) (*PoolStateRPC, error) {
+	client, done, err := s.rpcDialWithRetry()
+	if err != nil {
+		return nil, fmt.Errorf("dial: %w", err)
+	}
+	defer done()
+
+	const poolABI = `[{"inputs":[],"name":"slot0","outputs":[{"internalType":"uint160","name":"sqrtPriceX96","type":"uint160"},{"internalType":"int24","name":"tick","type":"int24"},{"internalType":"uint16","name":"observationIndex","type":"uint16"},{"internalType":"uint16","name":"observationCardinality","type":"uint16"},{"internalType":"uint16","name":"observationCardinalityNext","type":"uint16"},{"internalType":"uint8","name":"feeProtocol","type":"uint8"},{"internalType":"bool","name":"unlocked","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"liquidity","outputs":[{"internalType":"uint128","name":"","type":"uint128"}],"stateMutability":"view","type":"function"}]`
+
+	parsed, err := abi.JSON(strings.NewReader(poolABI))
+	if err != nil {
+		return nil, fmt.Errorf("parse pool abi: %w", err)
+	}
+
+	blockNum := new(big.Int).SetUint64(blockNumber)
+
+	slot0Data, _ := parsed.Pack("slot0")
+	slot0Result, err := client.CallContract(s.ctx, ethereum.CallMsg{To: &s.poolAddr, Data: slot0Data}, blockNum)
+	if isConnectionError(err) {
+		s.resetRPCClient()
+	}
+	if err != nil {
+		return nil, maskError(fmt.Errorf("call slot0 at block %d: %w", blockNumber, err))
+	}
+	slot0Unpacked, _ := parsed.Unpack("slot0", slot0Result)
+	sqrtPriceX96 := slot0Unpacked[0].(*big.Int)
+	tick := int32(slot0Unpacked[1].(*big.Int).Int64())
+
+	liqData, _ := parsed.Pack("liquidity")
+	liqResult, err := client.CallContract(s.ctx, ethereum.CallMsg{To: &s.poolAddr, Data: liqData}, blockNum)
+	if isConnectionError(err) {
+		s.resetRPCClient()
+	}
+	if err != nil {
+		return nil, maskError(fmt.Errorf("call liquidity at block %d: %w", blockNumber, err))
+	}
+	liqUnpacked, _ := parsed.Unpack("liquidity", liqResult)
+	liquidity := liqUnpacked[0].(*big.Int)
+
+	return &PoolStateRPC{
+		SqrtPriceX96: sqrtPriceX96,
+		Tick:         tick,
+		Liquidity:    liquidity,
+		BlockNumber:  blockNumber,
+	}, nil
+}
+
 // FetchBlockNumber 返回当前链上最新区块高度。
 func (s *Subscriber) FetchBlockNumber() (uint64, error) {
 	client, done, err := s.rpcDialWithRetry()
@@ -907,6 +956,237 @@ func (s *Subscriber) FetchTickInfoBatch(ticks []int32) (map[int32]*TickData, err
 				s.resetRPCClient()
 			}
 			return nil, maskError(fmt.Errorf("multicall aggregate3: %w", err))
+		}
+
+		unpacked, err := multicallParsed.Unpack("aggregate3", rawResult)
+		if err != nil {
+			return nil, fmt.Errorf("unpack multicall results: %w", err)
+		}
+
+		results, ok := unpacked[0].([]struct {
+			Success    bool   `json:"success"`
+			ReturnData []byte `json:"returnData"`
+		})
+		if !ok {
+			return nil, fmt.Errorf("unpack multicall: unexpected result type %T", unpacked[0])
+		}
+
+		for i, r := range results {
+			if !r.Success || len(r.ReturnData) == 0 {
+				continue
+			}
+			tickUnpacked, err := tickParsed.Unpack("ticks", r.ReturnData)
+			if err != nil {
+				s.logger.Warn("multicall: unpack ticks result failed",
+					"tick", chunk[i], "error", err)
+				continue
+			}
+			result[chunk[i]] = &TickData{
+				LiquidityGross: tickUnpacked[0].(*big.Int),
+				LiquidityNet:   tickUnpacked[1].(*big.Int),
+				Initialized:    tickUnpacked[7].(bool),
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// FetchTickBitmapAtBlock 在指定区块高度查询单个 tick bitmap word。
+func (s *Subscriber) FetchTickBitmapAtBlock(wordPos int16, blockNumber uint64) (*big.Int, error) {
+	client, done, err := s.rpcDialWithRetry()
+	if err != nil {
+		return nil, fmt.Errorf("dial: %w", err)
+	}
+	defer done()
+
+	int16Type := mustNewABIType("int16")
+	uint256Type := mustNewABIType("uint256")
+
+	inputArgs := abi.Arguments{{Type: int16Type}}
+	data, _ := inputArgs.Pack(wordPos)
+	blockNum := new(big.Int).SetUint64(blockNumber)
+	result, err := client.CallContract(s.ctx, ethereum.CallMsg{
+		To:   &s.poolAddr,
+		Data: append(tickBitmapSelector, data...),
+	}, blockNum)
+	if err != nil {
+		if isConnectionError(err) {
+			s.resetRPCClient()
+		}
+		return nil, maskError(fmt.Errorf("call tickBitmap(%d) at block %d: %w", wordPos, blockNumber, err))
+	}
+	outputArgs := abi.Arguments{{Type: uint256Type}}
+	unpacked, _ := outputArgs.Unpack(result)
+	return unpacked[0].(*big.Int), nil
+}
+
+// FetchTickBitmapBatchAtBlock 通过 Multicall3 在指定区块高度批量获取 tick bitmap。
+func (s *Subscriber) FetchTickBitmapBatchAtBlock(wordPositions []int16, blockNumber uint64) (map[int16]*big.Int, error) {
+	if len(wordPositions) == 0 {
+		return nil, nil
+	}
+
+	client, done, err := s.rpcDialWithRetry()
+	if err != nil {
+		return nil, fmt.Errorf("dial: %w", err)
+	}
+	defer done()
+
+	int16Type := mustNewABIType("int16")
+	inputArgs := abi.Arguments{{Type: int16Type}}
+
+	type call3 struct {
+		Target       common.Address
+		AllowFailure bool   `json:"allowFailure"`
+		CallData     []byte `json:"callData"`
+	}
+
+	multicallABI := `[{"inputs":[{"components":[{"internalType":"address","name":"target","type":"address"},{"internalType":"bool","name":"allowFailure","type":"bool"},{"internalType":"bytes","name":"callData","type":"bytes"}],"internalType":"struct Multicall3.Call3[]","name":"calls","type":"tuple[]"}],"name":"aggregate3","outputs":[{"components":[{"internalType":"bool","name":"success","type":"bool"},{"internalType":"bytes","name":"returnData","type":"bytes"}],"internalType":"struct Multicall3.Result[]","name":"returnData","type":"tuple[]"}],"stateMutability":"payable","type":"function"}]`
+
+	parsed, err := abi.JSON(strings.NewReader(multicallABI))
+	if err != nil {
+		return nil, fmt.Errorf("parse multicall abi: %w", err)
+	}
+
+	uint256Type := mustNewABIType("uint256")
+	bitmapArgs := abi.Arguments{{Type: uint256Type}}
+	blockNum := new(big.Int).SetUint64(blockNumber)
+
+	bitmaps := make(map[int16]*big.Int, len(wordPositions))
+
+	for start := 0; start < len(wordPositions); start += maxMulticallBatchSize {
+		end := start + maxMulticallBatchSize
+		if end > len(wordPositions) {
+			end = len(wordPositions)
+		}
+		chunk := wordPositions[start:end]
+
+		calls := make([]call3, len(chunk))
+		for i, wp := range chunk {
+			data, _ := inputArgs.Pack(wp)
+			calls[i] = call3{
+				Target:       s.poolAddr,
+				AllowFailure: true,
+				CallData:     append(tickBitmapSelector, data...),
+			}
+		}
+
+		data, err := parsed.Pack("aggregate3", calls)
+		if err != nil {
+			return nil, fmt.Errorf("pack multicall: %w", err)
+		}
+
+		result, err := client.CallContract(s.ctx, ethereum.CallMsg{
+			To:   &s.multicallAddr,
+			Data: data,
+		}, blockNum)
+		if err != nil {
+			if isConnectionError(err) {
+				s.resetRPCClient()
+			}
+			return nil, maskError(fmt.Errorf("multicall aggregate3 at block %d: %w", blockNumber, err))
+		}
+
+		unpacked, err := parsed.Unpack("aggregate3", result)
+		if err != nil {
+			return nil, fmt.Errorf("unpack multicall results: %w", err)
+		}
+
+		results, ok := unpacked[0].([]struct {
+			Success    bool   `json:"success"`
+			ReturnData []byte `json:"returnData"`
+		})
+		if !ok {
+			return nil, fmt.Errorf("unpack multicall: unexpected result type %T", unpacked[0])
+		}
+
+		for i, r := range results {
+			if !r.Success || len(r.ReturnData) == 0 {
+				continue
+			}
+			bmUnpacked, err := bitmapArgs.Unpack(r.ReturnData)
+			if err != nil {
+				s.logger.Warn("multicall: unpack tickBitmap result failed",
+					"wordPos", chunk[i], "error", err)
+				continue
+			}
+			bm := bmUnpacked[0].(*big.Int)
+			if bm.Sign() != 0 {
+				bitmaps[chunk[i]] = bm
+			}
+		}
+	}
+
+	return bitmaps, nil
+}
+
+// FetchTickInfoBatchAtBlock 通过 Multicall3 在指定区块高度批量获取 tick 数据。
+func (s *Subscriber) FetchTickInfoBatchAtBlock(ticks []int32, blockNumber uint64) (map[int32]*TickData, error) {
+	if len(ticks) == 0 {
+		return nil, nil
+	}
+
+	client, done, err := s.rpcDialWithRetry()
+	if err != nil {
+		return nil, fmt.Errorf("dial: %w", err)
+	}
+	defer done()
+
+	const tickABI = `[{"inputs":[{"internalType":"int24","name":"tick","type":"int24"}],"name":"ticks","outputs":[{"internalType":"uint128","name":"liquidityGross","type":"uint128"},{"internalType":"int128","name":"liquidityNet","type":"int128"},{"internalType":"uint256","name":"feeGrowthOutside0X128","type":"uint256"},{"internalType":"uint256","name":"feeGrowthOutside1X128","type":"uint256"},{"internalType":"int56","name":"tickCumulativeOutside","type":"int56"},{"internalType":"uint160","name":"secondsPerLiquidityOutsideX128","type":"uint160"},{"internalType":"uint32","name":"secondsOutside","type":"uint32"},{"internalType":"bool","name":"initialized","type":"bool"}],"stateMutability":"view","type":"function"}]`
+
+	tickParsed, err := abi.JSON(strings.NewReader(tickABI))
+	if err != nil {
+		return nil, fmt.Errorf("parse ticks abi: %w", err)
+	}
+
+	const multicallABI = `[{"inputs":[{"components":[{"internalType":"address","name":"target","type":"address"},{"internalType":"bool","name":"allowFailure","type":"bool"},{"internalType":"bytes","name":"callData","type":"bytes"}],"internalType":"struct Multicall3.Call3[]","name":"calls","type":"tuple[]"}],"name":"aggregate3","outputs":[{"components":[{"internalType":"bool","name":"success","type":"bool"},{"internalType":"bytes","name":"returnData","type":"bytes"}],"internalType":"struct Multicall3.Result[]","name":"returnData","type":"tuple[]"}],"stateMutability":"payable","type":"function"}]`
+
+	multicallParsed, err := abi.JSON(strings.NewReader(multicallABI))
+	if err != nil {
+		return nil, fmt.Errorf("parse multicall abi: %w", err)
+	}
+
+	type call3 struct {
+		Target       common.Address `json:"target"`
+		AllowFailure bool           `json:"allowFailure"`
+		CallData     []byte         `json:"callData"`
+	}
+
+	blockNum := new(big.Int).SetUint64(blockNumber)
+	result := make(map[int32]*TickData, len(ticks))
+
+	for start := 0; start < len(ticks); start += maxMulticallBatchSize {
+		end := start + maxMulticallBatchSize
+		if end > len(ticks) {
+			end = len(ticks)
+		}
+		chunk := ticks[start:end]
+
+		calls := make([]call3, len(chunk))
+		for i, t := range chunk {
+			data, _ := tickParsed.Pack("ticks", big.NewInt(int64(t)))
+			calls[i] = call3{
+				Target:       s.poolAddr,
+				AllowFailure: true,
+				CallData:     data,
+			}
+		}
+
+		data, err := multicallParsed.Pack("aggregate3", calls)
+		if err != nil {
+			return nil, fmt.Errorf("pack multicall: %w", err)
+		}
+
+		rawResult, err := client.CallContract(s.ctx, ethereum.CallMsg{
+			To:   &s.multicallAddr,
+			Data: data,
+		}, blockNum)
+		if err != nil {
+			if isConnectionError(err) {
+				s.resetRPCClient()
+			}
+			return nil, maskError(fmt.Errorf("multicall aggregate3 at block %d: %w", blockNumber, err))
 		}
 
 		unpacked, err := multicallParsed.Unpack("aggregate3", rawResult)

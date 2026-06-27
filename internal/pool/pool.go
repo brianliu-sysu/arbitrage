@@ -70,13 +70,13 @@ func NewPoolState(address, token0, token1 common.Address, fee uint32) *PoolState
 	}
 }
 
-// SetTokens 设置池子的代币地址、手续费率并推断小数位数。
+// SetTokens 设置池子的代币地址和手续费率（代币元信息留空，后续由缓存填充）。
 func (p *PoolState) SetTokens(token0, token1 common.Address, fee uint32) {
 	p.SetTokensWithInfo(token0, token1, fee, nil, nil)
 }
 
 // SetTokensWithInfo 设置池子的代币地址、手续费率和代币元信息。
-// 当 token info 为空时，回退到本地 guess 逻辑。
+// 当 token info 为空时，使用合理默认值（decimals=18，symbol 取地址缩写）。
 func (p *PoolState) SetTokensWithInfo(token0, token1 common.Address, fee uint32, token0Info, token1Info *TokenInfo) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -88,127 +88,25 @@ func (p *PoolState) SetTokensWithInfo(token0, token1 common.Address, fee uint32,
 		p.Token0Decimals = token0Info.Decimals
 		p.Token0Symbol = token0Info.Symbol
 	} else {
-		p.Token0Decimals = guessDecimals(token0)
-		p.Token0Symbol = guessSymbol(token0)
+		p.Token0Decimals = 18
+		p.Token0Symbol = shortAddr(token0)
 	}
 	if token1Info != nil {
 		p.Token1Decimals = token1Info.Decimals
 		p.Token1Symbol = token1Info.Symbol
 	} else {
-		p.Token1Decimals = guessDecimals(token1)
-		p.Token1Symbol = guessSymbol(token1)
-	}
-	if p.Token0Symbol == "" {
-		p.Token0Symbol = guessSymbol(token0)
-	}
-	if p.Token1Symbol == "" {
-		p.Token1Symbol = guessSymbol(token1)
+		p.Token1Decimals = 18
+		p.Token1Symbol = shortAddr(token1)
 	}
 }
 
-// guessDecimals 根据已知地址推断代币小数位数，未知代币默认 18。
-func guessDecimals(addr common.Address) int {
-	switch addr.Hex() {
-	// 6 decimals
-	case "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48": // USDC
-		return 6
-	case "0xdAC17F958D2ee523a2206206994597C13D831ec7": // USDT
-		return 6
-	case "0xaf88d065e77c8cC2239327C5EDb3A432268e5831": // USDC (Arbitrum)
-		return 6
-	case "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9": // USDT (Arbitrum)
-		return 6
-	case "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913": // USDC (Base)
-		return 6
-	// 8 decimals
-	case "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599": // WBTC
-		return 8
-	case "0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f": // WBTC (Arbitrum)
-		return 8
-	default:
-		return 18 // 绝大多数 ERC20 都是 18 位
+// shortAddr 返回地址的缩写形式（如 "0xa0b8..c599"）。
+func shortAddr(addr common.Address) string {
+	h := addr.Hex()
+	if len(h) >= 10 {
+		return h[:6] + ".." + h[len(h)-4:]
 	}
-}
-
-// guessSymbol 根据已知地址推断代币符号，未知返回地址前 6 位。
-func guessSymbol(addr common.Address) string {
-	switch addr.Hex() {
-	// ---- Ethereum Mainnet ----
-	case "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2":
-		return "WETH"
-	case "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48":
-		return "USDC"
-	case "0xdAC17F958D2ee523a2206206994597C13D831ec7":
-		return "USDT"
-	case "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599":
-		return "WBTC"
-	case "0x6B175474E89094C44Da98b954EedeAC495271d0F":
-		return "DAI"
-	case "0x514910771AF9Ca656af840dff83E8264EcF986CA":
-		return "LINK"
-	case "0x7D1AfA7B718fb893dB30A3aBc0Cfc608AaCfeBB0":
-		return "MATIC"
-	case "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984":
-		return "UNI"
-	case "0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9":
-		return "AAVE"
-	case "0x0d8775F648430679A709E98d2b0Cb6250d2887EF":
-		return "BAT"
-	case "0x9f8F72aA9304c8B593d555F12eF6589cC3A579A2":
-		return "MKR"
-	case "0x111111111117dC0aa78b770fA6A738034120C302":
-		return "1INCH"
-	case "0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE":
-		return "SHIB"
-	case "0xfAbA6f8e4a5E8Ab82F62fe7C39859FA577269BE3":
-		return "ONDO"
-	case "0x6982508145454Ce325dDbE47a25d4ec3d2311933":
-		return "PEPE"
-	case "0xc00e94Cb662C3520282E6f5717214004A7f26888":
-		return "COMP"
-	case "0x0F5D2fB29fb7d3CFeE444a200298f468908cC942":
-		return "MANA"
-	case "0x4d224452801ACEd8B2F0aebE155379bb5D594381":
-		return "APE"
-	case "0xd533a949740bb3306d119CC777fa900bA034cd52":
-		return "CRV"
-	case "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84":
-		return "stETH"
-	case "0xBe9895146f7af43049ca1c1AE358B0541Ea49704":
-		return "cbETH"
-	case "0x5A98FcBEA516Cf06857215779Fd812CA3beF1B32":
-		return "LDO"
-	case "0x5283D291DBCF85356A21bA090E6db59121208b44":
-		return "BLUR"
-	// ---- Arbitrum ----
-	case "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1":
-		return "WETH"
-	case "0xaf88d065e77c8cC2239327C5EDb3A432268e5831":
-		return "USDC"
-	case "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9":
-		return "USDT"
-	case "0x912CE59144191C1204E64559FE8253a0e49E6548":
-		return "ARB"
-	// ---- Base ----
-	case "0x4200000000000000000000000000000000000006":
-		return "WETH"
-	case "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913":
-		return "USDC"
-	// ---- Optimism ----
-	case "0x4200000000000000000000000000000000000042":
-		return "OP"
-	case "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85":
-		return "USDC"
-	case "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58":
-		return "USDT"
-	default:
-		// 返回地址缩写: "0xa0b8..."
-		h := addr.Hex()
-		if len(h) >= 10 {
-			return h[:6] + ".." + h[len(h)-4:]
-		}
-		return h
-	}
+	return h
 }
 
 // UpdateFromSwap 根据 Swap 事件更新状态。

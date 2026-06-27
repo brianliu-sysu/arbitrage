@@ -3,17 +3,18 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
-	"sort"
 	"syscall"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 
+	"github.com/brianliu-sysu/arbitrage/internal/cache"
 	"github.com/brianliu-sysu/arbitrage/internal/config"
 	"github.com/brianliu-sysu/arbitrage/internal/httpapi"
 	"github.com/brianliu-sysu/arbitrage/internal/logx"
@@ -50,31 +51,32 @@ func main() {
 		defer st.Close()
 	}
 
+	// ---- 4.5. Redis 缓存 ----
+	tokenCache := initTokenCache(cfg, logger)
+	if tokenCache != nil {
+		defer tokenCache.Close()
+	}
+
 	// ---- 5. 初始化链与池子 ----
 	chains := cfg.GetChains()
 	multiChain := service.NewMultiChainService(logger)
 
-	totalPools, addedCount := setupAllChains(chains, cfg, logger, st, multiChain)
-	if addedCount == 0 {
-		logger.Error("zero pools started successfully, exiting")
+	err := setupAllChains(chains, cfg, logger, st, tokenCache, multiChain)
+	if err != nil {
+		logger.Error("setup all chains", "error", err)
 		os.Exit(1)
 	}
 
 	logger.Info("Uniswap V3 Multi-Pool Quote Service starting",
-		"chains", len(chains), "pools", totalPools, "http_port", cfg.HTTPPort,
+		"chains", len(chains), "http_port", cfg.HTTPPort,
 	)
 
 	// ---- 6. 启动 HTTP API ----
 	httpSrv := startHTTPServer(cfg, multiChain, logger)
 
-	// ---- 7. 启动定时任务 ----
-	cronScheduler := setupPeriodicTasks(logger, len(chains), totalPools)
-	defer cronScheduler.Stop()
-
-	// ---- 8. 等待信号并优雅关闭 ----
+	// ---- 7. 等待信号并优雅关闭 ----
 	waitForShutdown()
 	logger.Info("shutting down...")
-	cronScheduler.Stop()
 
 	shutdownGracefully(httpSrv, multiChain, st, tracingShutdown, logger)
 	logger.Info("graceful shutdown complete")
@@ -119,6 +121,20 @@ func mustInitTracing(cfg *config.AppConfig, logger logx.Logger) func(context.Con
 	return shutdown
 }
 
+// initTokenCache 初始化 Redis token 元信息缓存，失败返回 nil（降级运行）。
+func initTokenCache(cfg *config.AppConfig, logger logx.Logger) cache.TokenCache {
+	if cfg.RedisURL == "" {
+		return nil
+	}
+	c, err := cache.NewRedisTokenCache(cfg.RedisURL)
+	if err != nil {
+		logger.Warn("failed to connect to redis, running without token cache", "error", err)
+		return nil
+	}
+	logger.Info("redis token cache connected")
+	return c
+}
+
 // initStore 初始化持久化存储，失败返回 nil（降级运行）。
 func initStore(cfg *config.AppConfig, logger logx.Logger) store.Storer {
 	if cfg.DBURL == "" {
@@ -134,7 +150,7 @@ func initStore(cfg *config.AppConfig, logger logx.Logger) store.Storer {
 		return nil
 	}
 
-	logger.Info("database connected", "url", maskEndpoint(cfg.DBURL))
+	logger.Info("database connected", "url", cfg.DBURL)
 	return st
 }
 
@@ -149,25 +165,16 @@ func setupAllChains(
 	cfg *config.AppConfig,
 	logger logx.Logger,
 	st store.Storer,
+	tokenCache cache.TokenCache,
 	multiChain *service.MultiChainService,
-) (totalPools, addedCount int) {
+) error {
 	for _, ch := range chains {
-		if ch.WSEndpoint == "" {
-			ch.WSEndpoint = os.Getenv("ETH_WS_URL")
+		err := setupSingleChain(ch, cfg, logger, st, tokenCache, multiChain)
+		if err != nil {
+			return err
 		}
-		if ch.WSEndpoint == "" {
-			logger.Error("chain has empty ws_endpoint, skipping", "chain", ch.Name)
-			continue
-		}
-
-		added, autoAdded := setupSingleChain(ch, cfg, logger, st, multiChain)
-		addedCount += added + autoAdded
-		totalPools += added + autoAdded
-
-		logger.Info("chain started", "chain", ch.Name,
-			"manualPools", len(ch.Pools), "autoDiscovered", autoAdded)
 	}
-	return
+	return nil
 }
 
 // setupSingleChain 为单条链创建服务并添加手动配置的池子 + 自动发现池子。
@@ -177,8 +184,9 @@ func setupSingleChain(
 	cfg *config.AppConfig,
 	logger logx.Logger,
 	st store.Storer,
+	tokenCache cache.TokenCache,
 	multiChain *service.MultiChainService,
-) (addedCount, autoAdded int) {
+) error {
 	baseTokens := make([]common.Address, len(ch.BaseTokens))
 	for i, t := range ch.BaseTokens {
 		baseTokens[i] = common.HexToAddress(t)
@@ -191,46 +199,45 @@ func setupSingleChain(
 
 	factoryAddr := common.HexToAddress(ch.FactoryAddress)
 	multicallAddr := common.HexToAddress(ch.GetMulticallAddress())
-	quoterAddr := common.HexToAddress(ch.GetQuoterAddress())
-
 	svc := service.NewMultiPoolService(
 		ch.Name, ch.WSEndpoint, ch.RPCEndpoint, maxHops, baseTokens,
 		cfg.MaxBlockGapForFullSync, factoryAddr,
-		multicallAddr, quoterAddr, logger, st,
+		multicallAddr, logger, st, tokenCache,
 	)
-	multiChain.AddChain(ch.Name, svc)
+	err := multiChain.AddChain(ch.Name, svc)
+	if err != nil {
+		return err
+	}
+
+	if st == nil {
+		return errors.New("nil store")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	preloaded, err := st.LoadAll(ctx, ch.Name)
+	if err != nil {
+		logger.Warn("failed to load chain pools from DB, continue with config pools",
+			"chain", ch.Name, "error", err)
+	}
 
 	// 顺序：DB 池子 -> 手动配置池子。
 	// 批量添加后只重建一次 PathFinder（AddPoolsBatch 内部保证）。
 	poolEntries := make([]service.PoolEntry, 0, len(ch.Pools))
 	seen := make(map[common.Address]struct{})
-
-	if st != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		preloaded, err := st.LoadAll(ctx, ch.Name)
-		cancel()
-		if err != nil {
-			logger.Warn("failed to load chain pools from DB, continue with config pools",
-				"chain", ch.Name, "error", err)
-		} else {
-			addrs := make([]string, 0, len(preloaded))
-			for addr := range preloaded {
-				addrs = append(addrs, addr)
-			}
-			sort.Strings(addrs)
-			for _, addrStr := range addrs {
-				addr := common.HexToAddress(addrStr)
-				if _, ok := seen[addr]; ok {
-					continue
-				}
-				seen[addr] = struct{}{}
-				poolEntries = append(poolEntries, service.PoolEntry{
-					PoolAddress:            addr,
-					HealthCheckIntervalSec: cfg.HealthCheckIntervalSec,
-					SyncFromBlock:          preloaded[addrStr].BlockNumber,
-				})
-			}
+	for addrStr, pool := range preloaded {
+		addr := common.HexToAddress(addrStr)
+		if _, ok := seen[addr]; ok {
+			continue
 		}
+		seen[addr] = struct{}{}
+		poolEntries = append(poolEntries, service.PoolEntry{
+			PoolAddress:            addr,
+			HealthCheckIntervalSec: cfg.HealthCheckIntervalSec,
+			SyncFromBlock:          preloaded[addrStr].BlockNumber,
+
+			PoolSnapshot: pool,
+		})
 	}
 
 	for _, pc := range ch.Pools {
@@ -243,15 +250,13 @@ func setupSingleChain(
 			PoolAddress:            addr,
 			HealthCheckIntervalSec: cfg.HealthCheckIntervalSec,
 			SyncFromBlock:          pc.SyncFromBlock,
+
+			PoolSnapshot: nil,
 		})
 	}
 
-	if len(poolEntries) > 0 {
-		if err := svc.AddPoolsBatch(poolEntries); err != nil {
-			logger.Error("failed to add pools to chain", "chain", ch.Name, "error", err)
-		} else {
-			addedCount = len(poolEntries)
-		}
+	if err := svc.AddPoolsBatch(poolEntries); err != nil {
+		logger.Error("failed to add pools to chain", "chain", ch.Name, "error", err)
 	}
 
 	// Subgraph 自动发现（异步，不阻塞主流程启动）。
@@ -265,7 +270,7 @@ func setupSingleChain(
 		})
 	}
 
-	return
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -345,11 +350,4 @@ func shutdownGracefully(
 		logger.Error("graceful shutdown timed out, forcing exit")
 		os.Exit(1)
 	}
-}
-
-func maskEndpoint(url string) string {
-	if len(url) > 50 {
-		return url[:50] + "..."
-	}
-	return url
 }

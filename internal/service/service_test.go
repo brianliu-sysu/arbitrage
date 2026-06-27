@@ -20,7 +20,7 @@ func TestNewPoolQuoteServiceBasic(t *testing.T) {
 		MaxBlockGapForFullSync: 100,
 	}
 	// With empty wsURL, dial will fail
-	_, err := NewPoolQuoteService("invalid://url", "invalid://url", cfg, logx.Nop(), nil)
+	_, err := NewPoolQuoteService("invalid://url", "invalid://url", cfg, logx.Nop(), nil, nil)
 	if err == nil {
 		t.Log("unexpectedly created service with invalid URL")
 	}
@@ -189,7 +189,7 @@ func TestStartAndStop(t *testing.T) {
 		HealthCheckIntervalSec: 0,
 		MaxBlockGapForFullSync: 100,
 	}
-	ps, err := NewPoolQuoteService("http://127.0.0.1:1", "http://127.0.0.1:1", cfg, logx.Nop(), nil)
+	ps, err := NewPoolQuoteService("http://127.0.0.1:1", "http://127.0.0.1:1", cfg, logx.Nop(), nil, nil)
 	if err == nil {
 		// Start will fail to connect, but should not panic
 		err := ps.Start(0)

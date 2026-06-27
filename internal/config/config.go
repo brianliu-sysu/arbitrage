@@ -90,6 +90,7 @@ type AppConfig struct {
 	LogLevel               string        `yaml:"log_level"`                 // 日志级别: debug/info/warn/error，默认 info
 	TracingEndpoint        string        `yaml:"tracing_endpoint"`          // OTLP 端点，空禁用
 	DBURL                  string        `yaml:"db_url"`                    // PostgreSQL 连接串
+	RedisURL               string        `yaml:"redis_url"`                 // Redis 连接串（token 元信息缓存），空则禁用
 	MaxBlockGapForFullSync uint64        `yaml:"max_block_gap_for_full_sync"` // 全量同步最大区块间隔
 	MaxHops                int           `yaml:"max_hops"`                  // 跨池报价最大跳数
 	HTTPRateLimit          int           `yaml:"http_rate_limit"`           // HTTP API 每秒最大请求数，0 不限，默认 100

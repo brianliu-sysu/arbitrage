@@ -431,7 +431,10 @@ func TestGetTicksCopy(t *testing.T) {
 
 func TestHumanPrice(t *testing.T) {
 	ps := NewPoolState(addrPool, addrUSDC, addrWETH, 3000)
-	ps.SetTokens(addrUSDC, addrWETH, 3000)
+	ps.SetTokensWithInfo(addrUSDC, addrWETH, 3000,
+		&TokenInfo{Decimals: 6, Symbol: "USDC"},  // token0
+		&TokenInfo{Decimals: 18, Symbol: "WETH"}, // token1
+	)
 	// ETH/USDC: token0=USDC(6dec), token1=WETH(18dec)
 	ps.UpdateFromSwap(testSqrtPriceX96, 202669, testLiquidity, 100)
 
@@ -506,33 +509,178 @@ func TestQuoteExactInputLocalUninitialized(t *testing.T) {
 	}
 }
 
-func TestGuessDecimals(t *testing.T) {
-	tests := []struct {
-		addr common.Address
-		want int
-	}{
-		{common.HexToAddress("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"), 6},  // USDC
-		{common.HexToAddress("0xdAC17F958D2ee523a2206206994597C13D831ec7"), 6},  // USDT
-		{common.HexToAddress("0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"), 8},  // WBTC
-		{common.HexToAddress("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"), 18}, // WETH
-		{common.HexToAddress("0x0000000000000000000000000000000000000001"), 18}, // unknown
-	}
-	for _, tt := range tests {
-		got := guessDecimals(tt.addr)
-		if got != tt.want {
-			t.Errorf("guessDecimals(%s) = %d, want %d", tt.addr.Hex(), got, tt.want)
-		}
-	}
-}
-
-func TestSetTokensGuessesDecimals(t *testing.T) {
+func TestSetTokensDefaults(t *testing.T) {
 	ps := NewPoolState(addrPool, common.Address{}, common.Address{}, 0)
 	ps.SetTokens(addrUSDC, addrWETH, 3000)
 
+	// 未传入 TokenInfo 时，decimals 默认为 18，symbol 为地址缩写
+	if ps.Token0Decimals != 18 {
+		t.Errorf("Token0Decimals = %d, want 18 (default)", ps.Token0Decimals)
+	}
+	if ps.Token1Decimals != 18 {
+		t.Errorf("Token1Decimals = %d, want 18 (default)", ps.Token1Decimals)
+	}
+	if ps.Token0Symbol == "" {
+		t.Error("Token0Symbol should not be empty")
+	}
+	if ps.Token1Symbol == "" {
+		t.Error("Token1Symbol should not be empty")
+	}
+}
+
+func TestSetTickLiquidity(t *testing.T) {
+	ps := NewPoolState(addrPool, addrUSDC, addrWETH, 3000)
+	ps.SetTickLiquidity(100, big.NewInt(500000))
+	if l := ps.GetTickLiquidity(100); l.Cmp(big.NewInt(500000)) != 0 {
+		t.Errorf("tick 100 liquidity = %s, want 500000", l.String())
+	}
+	// Setting zero should be ignored (no entry created)
+	ps.SetTickLiquidity(200, big.NewInt(0))
+	if l := ps.GetTickLiquidity(200); l.Sign() != 0 {
+		t.Errorf("tick 200 should be 0, got %s", l.String())
+	}
+}
+
+func TestClearTicks(t *testing.T) {
+	ps := NewPoolState(addrPool, addrUSDC, addrWETH, 3000)
+	ps.UpdateTickFromMint(-10, 10, big.NewInt(500))
+	ps.ClearTicks()
+	if ps.GetTickCount() != 0 {
+		t.Errorf("GetTickCount after ClearTicks = %d, want 0", ps.GetTickCount())
+	}
+}
+
+func TestReplaceTicks(t *testing.T) {
+	ps := NewPoolState(addrPool, addrUSDC, addrWETH, 3000)
+	ps.UpdateTickFromMint(-10, 10, big.NewInt(100))
+	// Replace with completely new tick map
+	newTicks := map[int32]*TickLiquidity{
+		5:  {LiquidityNet: big.NewInt(999)},
+		-5: {LiquidityNet: big.NewInt(-999)},
+	}
+	ps.ReplaceTicks(newTicks)
+	if ps.GetTickCount() != 2 {
+		t.Errorf("GetTickCount after ReplaceTicks = %d, want 2", ps.GetTickCount())
+	}
+	if l := ps.GetTickLiquidity(5); l.Cmp(big.NewInt(999)) != 0 {
+		t.Errorf("tick 5 = %s, want 999", l.String())
+	}
+	if l := ps.GetTickLiquidity(-10); l.Sign() != 0 {
+		t.Error("old tick -10 should be gone after replace")
+	}
+}
+
+func TestQuoteExactInputNilAmount(t *testing.T) {
+	ps := NewPoolState(addrPool, addrUSDC, addrWETH, 3000)
+	ps.SetTokens(addrUSDC, addrWETH, 3000)
+	ps.UpdateFromSwap(testSqrtPriceX96, 0, testLiquidity, 100)
+	_, err := ps.QuoteExactInput(nil, addrUSDC)
+	if err == nil {
+		t.Error("expected error for nil amountIn")
+	}
+	_, err = ps.QuoteExactInput(big.NewInt(-1), addrUSDC)
+	if err == nil {
+		t.Error("expected error for negative amountIn")
+	}
+	_, err = ps.QuoteExactInput(big.NewInt(0), addrUSDC)
+	if err == nil {
+		t.Error("expected error for zero amountIn")
+	}
+}
+
+func TestQuoteExactInputMaxFee(t *testing.T) {
+	ps := NewPoolState(addrPool, addrUSDC, addrWETH, 1_000_000) // fee >= 1e6
+	ps.SetTokens(addrUSDC, addrWETH, 1_000_000)
+	ps.UpdateFromSwap(testSqrtPriceX96, 0, testLiquidity, 100)
+	_, err := ps.QuoteExactInput(big.NewInt(1000), addrUSDC)
+	if err == nil {
+		t.Error("expected error for invalid fee")
+	}
+}
+
+func TestQuoteExactInputTinyAmount(t *testing.T) {
+	ps := NewPoolState(addrPool, addrUSDC, addrWETH, 3000)
+	ps.SetTokens(addrUSDC, addrWETH, 3000)
+	ps.UpdateFromSwap(testSqrtPriceX96, 0, testLiquidity, 100)
+	// Very small amount that rounds to 0 after fee
+	out, err := ps.QuoteExactInput(big.NewInt(1), addrUSDC)
+	if err != nil {
+		t.Fatalf("QuoteExactInput: %v", err)
+	}
+	if out.Sign() != 0 {
+		t.Logf("tiny amount output = %s", out.String())
+	}
+}
+
+func TestHumanPriceDifferentDecimals(t *testing.T) {
+	// Token0=USDC(6), Token1=WETH(18): 1 ETH = 10^(18-6)/1.0001^tick USDC
+	ps := NewPoolState(addrPool, addrUSDC, addrWETH, 3000)
+	ps.SetTokensWithInfo(addrUSDC, addrWETH, 3000,
+		&TokenInfo{Decimals: 6, Symbol: "USDC"},
+		&TokenInfo{Decimals: 18, Symbol: "WETH"},
+	)
+	// tick=0 early-returns 0; use tick=1 to verify calculation
+	ps.UpdateFromSwap(testSqrtPriceX96, 1, testLiquidity, 100)
+	hp := ps.HumanPrice()
+	// 1 ETH = 10^(18-6) / 1.0001^1 ≈ 1e12 / 1.0001 ≈ 9.999e11
+	if hp <= 0 {
+		t.Errorf("HumanPrice at tick=1 with 6/18 decimals = %f, want positive", hp)
+	}
+}
+
+func TestRecalcPricesWithNilSqrtPrice(t *testing.T) {
+	ps := NewPoolState(addrPool, addrUSDC, addrWETH, 3000)
+	ps.SqrtPriceX96 = nil
+	ps.recalcPrices()
+	// Should not panic, prices should be zero
+	if ps.Price0In1 != 0 {
+		t.Errorf("Price0In1 should be 0 with nil SqrtPriceX96")
+	}
+}
+
+func TestSetTokensWithInfoPartial(t *testing.T) {
+	ps := NewPoolState(addrPool, common.Address{}, common.Address{}, 0)
+	// Only token0 info provided, token1 info is nil
+	ps.SetTokensWithInfo(addrUSDC, addrWETH, 500,
+		&TokenInfo{Symbol: "USDCx", Decimals: 6},
+		nil,
+	)
+	if ps.Token0Symbol != "USDCx" {
+		t.Errorf("Token0Symbol = %s", ps.Token0Symbol)
+	}
 	if ps.Token0Decimals != 6 {
-		t.Errorf("Token0Decimals = %d, want 6", ps.Token0Decimals)
+		t.Errorf("Token0Decimals = %d", ps.Token0Decimals)
+	}
+	if ps.Token1Decimals != 18 {
+		t.Errorf("Token1Decimals = %d, want 18 (default)", ps.Token1Decimals)
+	}
+	if ps.Token1Symbol == "" {
+		t.Error("Token1Symbol should have default")
+	}
+}
+
+func TestSetTokensWithInfoBothNil(t *testing.T) {
+	ps := NewPoolState(addrPool, common.Address{}, common.Address{}, 0)
+	ps.SetTokensWithInfo(addrUSDC, addrWETH, 500, nil, nil)
+	if ps.Token0Decimals != 18 {
+		t.Errorf("Token0Decimals = %d, want 18", ps.Token0Decimals)
 	}
 	if ps.Token1Decimals != 18 {
 		t.Errorf("Token1Decimals = %d, want 18", ps.Token1Decimals)
+	}
+	if ps.Token0Symbol == "" || ps.Token1Symbol == "" {
+		t.Error("symbols should have defaults")
+	}
+}
+
+func TestTickMinMaxConstants(t *testing.T) {
+	if TickMin >= TickMax {
+		t.Error("TickMin should be less than TickMax")
+	}
+	if TickMin != -887272 {
+		t.Errorf("TickMin = %d", TickMin)
+	}
+	if TickMax != 887272 {
+		t.Errorf("TickMax = %d", TickMax)
 	}
 }
