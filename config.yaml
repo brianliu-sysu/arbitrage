@@ -22,8 +22,8 @@ http_rate_limit: 100
 # HTTP API 鉴权 key（X-API-Key 头）。空字符串表示不鉴权。
 api_key: ""
 
-# 全量同步最大区块间隔。启动时如果 DB 存块与链上差距在此值以内，跳过 tick 重建。默认: 1000
-max_block_gap_for_full_sync: 1000
+# 全量同步最大区块间隔。启动时如果 DB 存块与链上差距在此值以内，跳过 tick 重建。默认: 100
+max_block_gap_for_full_sync: 100
 
 # 跨池报价最大跳数（全局默认，链级可覆盖）。
 max_hops: 2
@@ -31,6 +31,10 @@ max_hops: 2
 # 持久化存储（PostgreSQL）。空字符串表示禁用。
 # 状态在每次 Swap 事件时自动保存，启动时自动加载。
 db_url: "postgres://{{ARBITRAGE_DB_USER}}:{{ARBITRAGE_DB_PASSWORD}}@localhost:5432/arbitrage?sslmode=disable"
+
+# Redis 缓存（代币元信息）。空字符串表示禁用。
+# 代币 symbol/decimals 缓存（1 小时 TTL），减少 RPC 调用量。
+redis_url: "redis://:{{ARBITRAGE_REDIS_PASSWORD}}@localhost:6379/0"
 
 # 链路追踪（OpenTelemetry / OTLP）。空字符串表示禁用。
 tracing_endpoint: ""
@@ -80,9 +84,10 @@ chains:
   # - name: "arbitrum"
   #   ws_endpoint: "wss://arb-mainnet.g.alchemy.com/v2/{{ALCHEMY_API_KEY}}"
   #   factory_address: "0x1F98431c8aD98523631AE4a59f267346ea31F984"
-  #   weth: "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"
-  #   usdc: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"
-  #   usdt: "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9"
+  #   base_tokens:
+  #     - "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"   # WETH
+  #     - "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"   # USDC
+  #     - "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9"   # USDT
   #   auto_discover:
   #     enabled: true
   #     min_tvl_usd: 500000

@@ -9,10 +9,15 @@ services:
       - ./arbitrage.log:/var/log/arbitrage.log
     environment:
       - ALCHEMY_API_KEY=${ALCHEMY_API_KEY}
+      - ARBITRAGE_DB_USER=arbitrage
+      - ARBITRAGE_DB_PASSWORD=${DB_PASSWORD:-arbitrage}
+      - ARBITRAGE_REDIS_PASSWORD=${REDIS_PASSWORD:-}
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_started
       jaeger:
         condition: service_started
 
@@ -30,6 +35,21 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    command:
+      - redis-server
+      - --save 60 1
+      - --loglevel warning
+      - --requirepass ${REDIS_PASSWORD:-}
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   jaeger:
     image: jaegertracing/all-in-one:latest
     ports:
@@ -39,3 +59,4 @@ services:
 
 volumes:
   pgdata:
+  redisdata:
