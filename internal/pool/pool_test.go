@@ -8,9 +8,9 @@ import (
 )
 
 var (
-	addrPool  = common.HexToAddress("0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8")
-	addrUSDC  = common.HexToAddress("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")
-	addrWETH  = common.HexToAddress("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")
+	addrPool = common.HexToAddress("0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8")
+	addrUSDC = common.HexToAddress("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")
+	addrWETH = common.HexToAddress("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")
 )
 
 // sqrtPriceX96 for ETH/USDC at ~$2000: sqrt(2000) * 2^96 ≈ 3.5e34
@@ -154,34 +154,6 @@ func TestUpdateFromSwapZeroValues(t *testing.T) {
 	ps.UpdateFromSwap(big.NewInt(0), 0, testLiquidity, 1)
 	if ps.Price0In1 != 0 {
 		t.Errorf("Price0In1 should be 0, got %f", ps.Price0In1)
-	}
-}
-
-func TestUpdateFromMint(t *testing.T) {
-	ps := NewPoolState(addrPool, addrUSDC, addrWETH, 3000)
-	liq := big.NewInt(500)
-
-	ps.UpdateFromMint(liq, 999)
-
-	if ps.Liquidity.Cmp(liq) != 0 {
-		t.Errorf("Liquidity = %s, want %s", ps.Liquidity.String(), liq.String())
-	}
-	if ps.BlockNumber != 999 {
-		t.Errorf("BlockNumber = %d, want 999", ps.BlockNumber)
-	}
-}
-
-func TestUpdateFromBurn(t *testing.T) {
-	ps := NewPoolState(addrPool, addrUSDC, addrWETH, 3000)
-	liq := big.NewInt(200)
-
-	ps.UpdateFromBurn(liq, 888)
-
-	if ps.Liquidity.Cmp(liq) != 0 {
-		t.Errorf("Liquidity = %s, want %s", ps.Liquidity.String(), liq.String())
-	}
-	if ps.BlockNumber != 888 {
-		t.Errorf("BlockNumber = %d, want 888", ps.BlockNumber)
 	}
 }
 
@@ -348,6 +320,48 @@ func TestUpdateTickFromBurn(t *testing.T) {
 	}
 	if l := ps.GetTickLiquidity(100); l.Sign() != 0 {
 		t.Error("liquidity should be 0 after mint+burn cycle")
+	}
+}
+
+func TestUpdateTickFromMintUpdatesActiveLiquidity(t *testing.T) {
+	ps := NewPoolState(addrPool, addrUSDC, addrWETH, 3000)
+	baseLiquidity := big.NewInt(1_000_000)
+	amount := big.NewInt(500_000)
+	ps.UpdateFromSwap(testSqrtPriceX96, 0, baseLiquidity, 100)
+
+	ps.UpdateTickFromMint(-10, 10, amount)
+
+	_, _, liquidity, _ := ps.GetRawState()
+	want := new(big.Int).Add(baseLiquidity, amount)
+	if liquidity.Cmp(want) != 0 {
+		t.Fatalf("liquidity = %s, want %s", liquidity, want)
+	}
+}
+
+func TestUpdateTickFromMintDoesNotUpdateLiquidityAtUpperBound(t *testing.T) {
+	ps := NewPoolState(addrPool, addrUSDC, addrWETH, 3000)
+	baseLiquidity := big.NewInt(1_000_000)
+	ps.UpdateFromSwap(testSqrtPriceX96, 10, baseLiquidity, 100)
+
+	ps.UpdateTickFromMint(-10, 10, big.NewInt(500_000))
+
+	_, _, liquidity, _ := ps.GetRawState()
+	if liquidity.Cmp(baseLiquidity) != 0 {
+		t.Fatalf("liquidity = %s, want %s", liquidity, baseLiquidity)
+	}
+}
+
+func TestUpdateTickFromBurnUpdatesActiveLiquidity(t *testing.T) {
+	ps := NewPoolState(addrPool, addrUSDC, addrWETH, 3000)
+	baseLiquidity := big.NewInt(1_000_000)
+	amount := big.NewInt(500_000)
+	ps.UpdateFromSwap(testSqrtPriceX96, 0, baseLiquidity, 100)
+	ps.UpdateTickFromMint(-10, 10, amount)
+	ps.UpdateTickFromBurn(-10, 10, amount)
+
+	_, _, liquidity, _ := ps.GetRawState()
+	if liquidity.Cmp(baseLiquidity) != 0 {
+		t.Fatalf("liquidity = %s, want %s", liquidity, baseLiquidity)
 	}
 }
 

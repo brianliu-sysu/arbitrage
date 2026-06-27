@@ -25,14 +25,14 @@ type TickLiquidity struct {
 type PoolState struct {
 	mu sync.RWMutex
 
-	Address      common.Address // 池子合约地址
-	Token0       common.Address // Token0 地址（数值较小者为 token0）
-	Token1       common.Address // Token1 地址
-	Token0Symbol string         // Token0 符号，如 "USDC"
-	Token1Symbol string         // Token1 符号，如 "WETH"
-	Fee          uint32         // 手续费率，以 1e-6 为单位
-	Token0Decimals int          // Token0 小数位数，默认 18
-	Token1Decimals int          // Token1 小数位数，默认 18
+	Address        common.Address // 池子合约地址
+	Token0         common.Address // Token0 地址（数值较小者为 token0）
+	Token1         common.Address // Token1 地址
+	Token0Symbol   string         // Token0 符号，如 "USDC"
+	Token1Symbol   string         // Token1 符号，如 "WETH"
+	Fee            uint32         // 手续费率，以 1e-6 为单位
+	Token0Decimals int            // Token0 小数位数，默认 18
+	Token1Decimals int            // Token1 小数位数，默认 18
 
 	// ---- 核心状态字段（通过事件更新）----
 	SqrtPriceX96 *big.Int // sqrt(token1/token0) * 2^96
@@ -225,34 +225,20 @@ func (p *PoolState) UpdateFromSwap(sqrtPriceX96 *big.Int, tick int32, liquidity 
 	p.recalcPrices()
 }
 
-// UpdateFromMint 已弃用，请使用 UpdateTickFromMint。
-// 保留用于向后兼容。
-func (p *PoolState) UpdateFromMint(newLiquidity *big.Int, blockNumber uint64) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.Liquidity.Set(newLiquidity)
-	p.BlockNumber = blockNumber
-}
-
-// UpdateFromBurn 已弃用，请使用 UpdateTickFromBurn。
-// 保留用于向后兼容。
-func (p *PoolState) UpdateFromBurn(newLiquidity *big.Int, blockNumber uint64) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.Liquidity.Set(newLiquidity)
-	p.BlockNumber = blockNumber
-}
-
 // UpdateTickFromMint 根据 Mint 事件更新 tick 级的流动性地图。
 //
 // tickLower → liquidityNet +amount
 // tickUpper → liquidityNet -amount
+// 如果当前 tick 位于 [tickLower, tickUpper)，该头寸立即成为活跃流动性。
 func (p *PoolState) UpdateTickFromMint(tickLower, tickUpper int32, amount *big.Int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	p.addTickLiquidity(tickLower, new(big.Int).Set(amount))       // +amount
-	p.addTickLiquidity(tickUpper, new(big.Int).Neg(amount))        // -amount
+	p.addTickLiquidity(tickLower, new(big.Int).Set(amount)) // +amount
+	p.addTickLiquidity(tickUpper, new(big.Int).Neg(amount)) // -amount
+	if p.tickInRange(tickLower, tickUpper) {
+		p.Liquidity.Add(p.Liquidity, amount)
+	}
 }
 
 // UpdateTickFromBurn 根据 Burn 事件更新 tick 级的流动性地图。
@@ -260,12 +246,22 @@ func (p *PoolState) UpdateTickFromMint(tickLower, tickUpper int32, amount *big.I
 // 与 Mint 方向相反：
 // tickLower → liquidityNet -amount
 // tickUpper → liquidityNet +amount
+// 如果当前 tick 位于 [tickLower, tickUpper)，该头寸从活跃流动性中移除。
 func (p *PoolState) UpdateTickFromBurn(tickLower, tickUpper int32, amount *big.Int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	p.addTickLiquidity(tickLower, new(big.Int).Neg(amount)) // -amount
-	p.addTickLiquidity(tickUpper, new(big.Int).Set(amount))  // +amount
+	p.addTickLiquidity(tickUpper, new(big.Int).Set(amount)) // +amount
+	if p.tickInRange(tickLower, tickUpper) {
+		p.Liquidity.Sub(p.Liquidity, amount)
+	}
+}
+
+// tickInRange 判断当前 tick 是否落在 Uniswap V3 头寸区间 [lower, upper)。
+// 需在持有锁时调用。
+func (p *PoolState) tickInRange(tickLower, tickUpper int32) bool {
+	return p.Tick >= tickLower && p.Tick < tickUpper
 }
 
 // addTickLiquidity 更新指定 tick 上的流动性净额（需持有写锁）。
@@ -362,7 +358,7 @@ func (p *PoolState) recalcPrices() {
 
 	q := new(big.Float).SetInt(p.SqrtPriceX96)
 	q.Quo(q, new(big.Float).SetFloat64(79228162514264337593543950336.0)) // 2^96
-	q.Mul(q, q) // square to get price
+	q.Mul(q, q)                                                          // square to get price
 
 	price0In1, _ := q.Float64()
 	p.Price0In1 = price0In1

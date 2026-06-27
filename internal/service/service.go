@@ -267,7 +267,7 @@ func (s *PoolQuoteService) OnMint(event *pool.MintEvent) {
 		return
 	}
 
-	// 仅更新 tick 级流动性地图（总流动性 L 由后续 Swap 事件或 RPC 同步修正）
+	// 更新 tick 级流动性；如果当前 tick 位于该区间内，也同步更新活跃 L。
 	s.pool.UpdateTickFromMint(event.TickLower, event.TickUpper, event.Amount)
 
 	s.logger.Debug("mint event",
@@ -286,7 +286,7 @@ func (s *PoolQuoteService) OnBurn(event *pool.BurnEvent) {
 		return
 	}
 
-	// 仅更新 tick 级流动性地图（总流动性 L 由后续 Swap 事件或 RPC 同步修正）
+	// 更新 tick 级流动性；如果当前 tick 位于该区间内，也同步更新活跃 L。
 	s.pool.UpdateTickFromBurn(event.TickLower, event.TickUpper, event.Amount)
 
 	s.logger.Debug("burn event",

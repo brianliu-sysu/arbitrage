@@ -127,10 +127,13 @@ func TestOnMint(t *testing.T) {
 
 	svc.OnMint(event)
 
-	// OnMint 只更新 tick 地图，不更新总流动性（总流动性由 Swap 事件或 RPC 同步修正）
-	// Tick map should now have 2 ticks
 	if ps.GetTickCount() != 2 {
 		t.Errorf("GetTickCount = %d, want 2", ps.GetTickCount())
+	}
+	_, _, liquidity, _ := ps.GetRawState()
+	wantLiquidity := new(big.Int).Add(testLiq, amount)
+	if liquidity.Cmp(wantLiquidity) != 0 {
+		t.Errorf("liquidity after active mint = %s, want %s", liquidity, wantLiquidity)
 	}
 }
 
@@ -156,6 +159,10 @@ func TestOnBurn(t *testing.T) {
 	// After burning the entire position, ticks should be empty
 	if ps.GetTickCount() != 0 {
 		t.Errorf("GetTickCount after burn = %d, want 0", ps.GetTickCount())
+	}
+	_, _, liquidity, _ := ps.GetRawState()
+	if liquidity.Cmp(testLiq) != 0 {
+		t.Errorf("liquidity after active burn = %s, want %s", liquidity, testLiq)
 	}
 }
 
