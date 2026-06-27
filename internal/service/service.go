@@ -483,58 +483,49 @@ func (s *PoolQuoteService) GetPoolInfo() map[string]interface{} {
 	}
 }
 
-// DoFullSync 执行全量状态同步：
-//  1. 通过 RPC slot0() + liquidity() 获取当前链上快照
-//  2. 通过 Tick Bitmap 直接从链上重建所有活跃 tick 的流动性地图
-//  3. 应用 RPC 快照兜底
+// DoFullSync 执行全量状态同步（锚点区块模式）。
 //
-// syncFromBlock 不再用于事件回放（tick 状态直接从链上读取）。
+// 核心思路：先确定一个绝对的同步终点区块（锚点），然后所有 RPC 请求统一查询该
+// 区块高度的静态快照，最后将内存原子复位到锚点状态。缓冲区内只有严格大于锚点
+// 区块的事件才会被回放，确保不会遗漏同步期间到达的新事件。
 //
-// 竞态保护：如果在全量同步期间收到 Swap 事件：
-//   - 价格/流动性：在 tick 重建完成后重新获取 RPC 快照，确保不覆盖并发 Swap 更新
-//   - tick 地图：构建到临时 map，验证后原子替换，避免 ClearTicks 和 SetTickLiquidity 之间的窗口
+// syncFromBlock 参数保留用于签名兼容，实际逻辑中不再使用。
 func (s *PoolQuoteService) DoFullSync(syncFromBlock uint64) error {
 	if s.subscriber == nil {
 		return fmt.Errorf("subscriber is nil")
 	}
 
-	// 1. RPC 快照 —— 获取当前链上最新状态（用于判断是否需要重建和定位当前 tick）
-	_, _, _, memBlock := s.pool.GetPrices()
-	tickCount := s.pool.GetTickCount()
-	if memBlock == 0 {
-		// 冷启动：先获取一次快照，更新内存中的 tick / sqrtPrice / liquidity，
-		// 确保后续 RebuildTickMapFromChain 能从正确的 word 开始扫描。
-		initialState, err := s.subscriber.FetchStateViaRPC()
-		if err != nil {
-			return fmt.Errorf("fetch rpc state: %w", err)
-		}
-		s.pool.UpdateFromSwap(initialState.SqrtPriceX96, initialState.Tick, initialState.Liquidity, initialState.BlockNumber)
-		memBlock = initialState.BlockNumber
-	}
-
-	// 需要全量重建的条件：tick 地图为空
-	needsRebuild := tickCount == 0
-
-	if needsRebuild {
-		if err := s.RebuildTickMapFromChain(); err != nil {
-			s.logger.Warn("tick map rebuild failed, price/liquidity sync will proceed", "error", err)
-		}
-	}
-
-	// 2. 在 tick 重建完成后重新获取 RPC 快照，确保不覆盖重建期间到达的 Swap 事件更新
-	// （Swap 事件 → OnSwap → UpdateFromSwap 发生在重建期间，如果用在重建前取的快照就会覆盖）
-	rpcState, err := s.subscriber.FetchStateViaRPC()
+	// 1. 确定锚点区块（同步终点）
+	targetBlock, err := s.subscriber.FetchBlockNumber()
 	if err != nil {
-		return fmt.Errorf("fetch rpc state (final): %w", err)
+		return fmt.Errorf("fetch target block: %w", err)
 	}
 
-	// 3. 应用 RPC 快照 —— 仅当链上数据比内存新时更新，避免覆盖并发的 Swap 事件
-	if rpcState.BlockNumber >= memBlock {
-		s.pool.UpdateFromSwap(rpcState.SqrtPriceX96, rpcState.Tick, rpcState.Liquidity, rpcState.BlockNumber)
+	// 2. 获取 targetBlock 时刻的 RPC 静态快照（slot0 + liquidity）
+	rpcState, err := s.subscriber.FetchStateViaRPCAtBlock(targetBlock)
+	if err != nil {
+		return fmt.Errorf("fetch rpc state at block %d: %w", targetBlock, err)
 	}
+
+	// 3. 全量重建 Tick Map（同样基于 targetBlock）
+	if err := s.RebuildTickMapFromChainAtBlock(targetBlock); err != nil {
+		s.logger.Warn("tick map rebuild failed, price/liquidity sync will proceed", "error", err)
+	}
+
+	// 4. 原子复位内存到 targetBlock 快照状态
+	s.pool.UpdateFromSwap(rpcState.SqrtPriceX96, rpcState.Tick, rpcState.Liquidity, targetBlock)
+
+	// 5. 设置回放下界：只有严格大于 targetBlock 的缓冲事件才需要回放
+	s.snapshotStartBlock = targetBlock + 1
 
 	s.lastFullSyncTime = time.Now()
 	return nil
+}
+
+// SyncStateFromRPC 已弃用，请使用 DoFullSync。
+// 保留用于向后兼容。
+func (s *PoolQuoteService) SyncStateFromRPC() error {
+	return s.DoFullSync(0)
 }
 
 // DoLightSync 执行轻量同步：仅 RPC 快照（slot0 + liquidity），不重建 tick 地图。
@@ -784,10 +775,188 @@ func (s *PoolQuoteService) applyTickData(data map[int32]*subscriber.TickData) in
 	return count
 }
 
-// SyncStateFromRPC 已弃用，请使用 DoFullSync。
-// 保留用于向后兼容。
-func (s *PoolQuoteService) SyncStateFromRPC() error {
-	return s.DoFullSync(0)
+// ---------------------------------------------------------------------------
+// 锚点区块模式 — Tick Bitmap 重建（AtBlock 变体）
+// ---------------------------------------------------------------------------
+
+// RebuildTickMapFromChainAtBlock 在指定区块高度通过 Tick Bitmap 重建完整的 tick 流动性地图。
+// 与 RebuildTickMapFromChain 不同，所有 RPC 查询统一使用相同的 targetBlock，确保一致性快照。
+func (s *PoolQuoteService) RebuildTickMapFromChainAtBlock(targetBlock uint64) error {
+	if s.subscriber == nil {
+		return fmt.Errorf("subscriber is nil")
+	}
+
+	currentTick := s.pool.Tick
+	beforeCount := s.pool.GetTickCount()
+
+	tickSpacing, err := s.subscriber.FetchTickSpacing()
+	if err != nil {
+		return fmt.Errorf("fetch tick spacing: %w", err)
+	}
+	wordRange := int32(256) * tickSpacing
+	startWord := tickToWord(currentTick, wordRange)
+
+	// 1. 发现所有活跃 word（基于 targetBlock）
+	words, wordBitmaps, err := s.discoverActiveWordsAtBlock(startWord, wordRange, 8192, targetBlock)
+	if err != nil {
+		return fmt.Errorf("discover words at block %d: %w", targetBlock, err)
+	}
+	s.logger.Info("active words at block", "length", len(words), "block", targetBlock)
+
+	// 2. 从已缓存的 bitmap 中提取活跃 tick 索引
+	allTicks := s.collectTicksFromWordsCachedAtBlock(words, wordRange, tickSpacing, wordBitmaps, targetBlock)
+	s.logger.Info("active tick at block", "length", len(allTicks), "block", targetBlock)
+
+	// 3. 获取 tick 的链上数据（基于 targetBlock）
+	tickDataMap := s.fetchTicksConcurrentlyAtBlock(allTicks, targetBlock)
+
+	// 4. 应用结果
+	totalTicks := s.applyTickData(tickDataMap)
+
+	s.logger.Info("tick rebuild complete at block",
+		"ticks", totalTicks, "before", beforeCount,
+		"tickSpacing", tickSpacing, "currentTick", currentTick, "block", targetBlock)
+	return nil
+}
+
+// discoverActiveWordsAtBlock 在指定区块高度扫描活跃 tick bitmap word。
+func (s *PoolQuoteService) discoverActiveWordsAtBlock(startWord int16, wordRange int32, maxWord int16, blockNumber uint64) ([]int16, map[int16]*big.Int, error) {
+	const windowSize int16 = 1000
+
+	var words []int16
+	bitmaps := make(map[int16]*big.Int)
+	words = append(words, startWord)
+
+	posEdge := startWord
+	negEdge := startWord
+	posStopped := false
+	negStopped := false
+
+	for !posStopped || !negStopped {
+		var windowCandidates []int16
+
+		if !posStopped {
+			from := posEdge + 1
+			to := from + windowSize - 1
+			if to > maxWord {
+				to = maxWord
+			}
+			for w := from; w <= to; w++ {
+				windowCandidates = append(windowCandidates, w)
+			}
+		}
+
+		if !negStopped {
+			from := negEdge - 1
+			to := from - windowSize + 1
+			if to < -maxWord {
+				to = -maxWord
+			}
+			for w := from; w >= to; w-- {
+				windowCandidates = append(windowCandidates, w)
+			}
+		}
+
+		if len(windowCandidates) == 0 {
+			break
+		}
+
+		batchResults, err := s.subscriber.FetchTickBitmapBatchAtBlock(windowCandidates, blockNumber)
+		if err != nil {
+			return nil, nil, fmt.Errorf("batch fetch bitmaps at block %d: %w", blockNumber, err)
+		}
+		for k, v := range batchResults {
+			bitmaps[k] = v
+		}
+
+		if !posStopped {
+			emptyStreak := 0
+			var foundWords []int16
+			for w := posEdge + 1; w <= maxWord; w++ {
+				if _, ok := bitmaps[w]; ok {
+					foundWords = append(foundWords, w)
+					emptyStreak = 0
+				} else {
+					emptyStreak++
+				}
+				posEdge = w
+				if emptyStreak >= 3 || w == maxWord {
+					break
+				}
+			}
+			words = append(words, foundWords...)
+			if emptyStreak >= 3 || posEdge >= maxWord {
+				posStopped = true
+			}
+		}
+
+		if !negStopped {
+			emptyStreak := 0
+			var foundWords []int16
+			for w := negEdge - 1; w >= -maxWord; w-- {
+				if _, ok := bitmaps[w]; ok {
+					foundWords = append(foundWords, w)
+					emptyStreak = 0
+				} else {
+					emptyStreak++
+				}
+				negEdge = w
+				if emptyStreak >= 3 || w == -maxWord {
+					break
+				}
+			}
+			words = append(words, foundWords...)
+			if emptyStreak >= 3 || negEdge <= -maxWord {
+				negStopped = true
+			}
+		}
+	}
+
+	return words, bitmaps, nil
+}
+
+// collectTicksFromWordsCachedAtBlock 遍历 word bitmap 提取活跃 tick，缺失时通过 at-block RPC 补查。
+func (s *PoolQuoteService) collectTicksFromWordsCachedAtBlock(words []int16, wordRange, tickSpacing int32, bitmaps map[int16]*big.Int, blockNumber uint64) []int32 {
+	var ticks []int32
+	for _, wordPos := range words {
+		bitmap, ok := bitmaps[wordPos]
+		if !ok {
+			var err error
+			bitmap, err = s.subscriber.FetchTickBitmapAtBlock(wordPos, blockNumber)
+			if err != nil || bitmap.Sign() == 0 {
+				continue
+			}
+			if bitmaps != nil {
+				bitmaps[wordPos] = bitmap
+			}
+		}
+		for bit := 0; bit < 256; bit++ {
+			if bitmap.Bit(bit) == 0 {
+				continue
+			}
+			tick := tickFromWordBit(wordPos, bit, wordRange, tickSpacing)
+			if tick >= pool.TickMin && tick <= pool.TickMax {
+				ticks = append(ticks, tick)
+			}
+		}
+	}
+	return ticks
+}
+
+// fetchTicksConcurrentlyAtBlock 在指定区块高度批量获取 tick 的链上数据。
+func (s *PoolQuoteService) fetchTicksConcurrentlyAtBlock(ticks []int32, blockNumber uint64) map[int32]*subscriber.TickData {
+	if len(ticks) == 0 {
+		return nil
+	}
+
+	data, err := s.subscriber.FetchTickInfoBatchAtBlock(ticks, blockNumber)
+	if err != nil {
+		s.logger.Warn("tick rebuild: batch fetch at block failed, falling back to empty",
+			"total", len(ticks), "block", blockNumber, "error", err)
+		return nil
+	}
+
+	return data
 }
 
 // startHealthCheck 启动定时健康检查（使用 cron 调度）。
@@ -826,24 +995,18 @@ func (s *PoolQuoteService) runHealthCheck() {
 
 	memSqrtPrice, memTick, memLiquidity, memBlock := s.pool.GetRawState()
 
-	// 将 RPC 状态与内存状态逐一比对
-	var diverged bool
-	if memTick != rpcState.Tick {
-		s.logger.Warn("health check: tick diverged", "mem", memTick, "chain", rpcState.Tick)
-		diverged = true
-	}
-	if memSqrtPrice.Cmp(rpcState.SqrtPriceX96) != 0 {
-		s.logger.Warn("health check: sqrtPrice diverged", "mem", memSqrtPrice.String(), "chain", rpcState.SqrtPriceX96.String())
-		diverged = true
-	}
-	if memLiquidity.Cmp(rpcState.Liquidity) != 0 {
-		s.logger.Warn("health check: liquidity diverged", "mem", memLiquidity.String(), "chain", rpcState.Liquidity.String())
-		diverged = true
-	}
-
-	if !diverged {
+	if memTick == rpcState.Tick &&
+		memSqrtPrice.Cmp(rpcState.SqrtPriceX96) == 0 &&
+		memLiquidity.Cmp(rpcState.Liquidity) == 0 &&
+		s.pool.GetTickCount() > 0 {
 		return
 	}
+
+	s.logger.Info("pool state is difference",
+		"tick", fmt.Sprintf("[%v:%v]", rpcState.Tick, memTick),
+		"liquidity", fmt.Sprintf("[%v:%v]", rpcState.Liquidity, memLiquidity),
+		"price", fmt.Sprintf("[%v:%v]", rpcState.SqrtPriceX96, memSqrtPrice),
+		"tick count", s.pool.GetTickCount())
 
 	metrics.HealthRepairsTotal.WithLabelValues(s.pool.Address.Hex()).Inc()
 
