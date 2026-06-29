@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/brianliu-sysu/arbitrage/internal/logx"
@@ -29,6 +30,10 @@ type Server struct {
 	rateLimit int    // 每秒最大请求数，0 不限
 	apiKey    string // API key (X-API-Key header)，空则跳过验证
 	logger    logx.Logger
+
+	bgCtx    context.Context
+	bgCancel context.CancelFunc
+	bgWG     sync.WaitGroup
 }
 
 // NewServer 创建 HTTP 服务器。
@@ -36,7 +41,17 @@ type Server struct {
 // addr 为监听地址（如 ":8080"），srv 为 HTTP 服务器实现（nil 则使用默认 *http.Server）。
 // svc 为报价服务实现，logger 为日志记录器。
 func NewServer(addr string, svc QuoteProvider, srv HTTPServer, logger logx.Logger, rateLimit int, apiKey string) *Server {
-	hs := &Server{svc: svc, srv: srv, addr: addr, rateLimit: rateLimit, apiKey: apiKey, logger: logger}
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	hs := &Server{
+		svc:       svc,
+		srv:       srv,
+		addr:      addr,
+		rateLimit: rateLimit,
+		apiKey:    apiKey,
+		logger:    logger,
+		bgCtx:     bgCtx,
+		bgCancel:  bgCancel,
+	}
 
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
@@ -107,11 +122,15 @@ func (s *Server) Start() error {
 
 // Shutdown 优雅关闭 HTTP 服务器（立即）。
 func (s *Server) Shutdown() error {
+	s.bgCancel()
+	s.bgWG.Wait()
 	return s.srv.Close()
 }
 
 // ShutdownGraceful 带超时的优雅关闭。
 func (s *Server) ShutdownGraceful(ctx context.Context) error {
+	s.bgCancel()
+	s.bgWG.Wait()
 	if stdSrv, ok := s.srv.(*http.Server); ok {
 		return stdSrv.Shutdown(ctx)
 	}
@@ -129,14 +148,21 @@ func (s *Server) rateLimitMiddleware() gin.HandlerFunc {
 		tokens <- struct{}{}
 	}
 	// 每秒补充令牌
+	s.bgWG.Add(1)
 	utils.SafeGo(s.logger, func() {
+		defer s.bgWG.Done()
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
-		for range ticker.C {
-			for i := 0; i < s.rateLimit; i++ {
-				select {
-				case tokens <- struct{}{}:
-				default:
+		for {
+			select {
+			case <-s.bgCtx.Done():
+				return
+			case <-ticker.C:
+				for i := 0; i < s.rateLimit; i++ {
+					select {
+					case tokens <- struct{}{}:
+					default:
+					}
 				}
 			}
 		}

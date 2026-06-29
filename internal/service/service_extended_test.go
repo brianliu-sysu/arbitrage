@@ -1,16 +1,118 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"math/big"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/brianliu-sysu/arbitrage/internal/logx"
 	"github.com/brianliu-sysu/arbitrage/internal/pool"
+	"github.com/brianliu-sysu/arbitrage/internal/store"
 	"github.com/brianliu-sysu/arbitrage/internal/subscriber"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 )
+
+type testAppliedLogCache struct {
+	seen map[string]struct{}
+}
+
+type recordingStore struct {
+	mu          sync.Mutex
+	savedBlocks []uint64
+}
+
+func (s *recordingStore) Save(_ context.Context, snap *store.PoolSnapshot) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.savedBlocks = append(s.savedBlocks, snap.BlockNumber)
+	return nil
+}
+
+func (s *recordingStore) SaveHistory(_ context.Context, _ *store.PoolSnapshot) error { return nil }
+func (s *recordingStore) Load(_ context.Context, _, _ string) (*store.PoolSnapshot, error) {
+	return nil, nil
+}
+func (s *recordingStore) LoadAll(_ context.Context, _ string) (map[string]*store.PoolSnapshot, error) {
+	return nil, nil
+}
+func (s *recordingStore) LoadTokenMetadata(_ context.Context, _, _ string) (*store.TokenMetadata, error) {
+	return nil, nil
+}
+func (s *recordingStore) SaveTokenMetadata(_ context.Context, _ *store.TokenMetadata) error {
+	return nil
+}
+func (s *recordingStore) Close() {}
+
+func (s *recordingStore) blocks() []uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := make([]uint64, len(s.savedBlocks))
+	copy(cp, s.savedBlocks)
+	return cp
+}
+
+func newTestAppliedLogCache() *testAppliedLogCache {
+	return &testAppliedLogCache{seen: make(map[string]struct{})}
+}
+
+func (c *testAppliedLogCache) MarkAppliedIfNew(_ context.Context, chainName, poolAddress string, blockNumber uint64, txHash string, logIndex uint) (bool, error) {
+	key := fmt.Sprintf("%s:%s:%d:%s:%d", chainName, poolAddress, blockNumber, txHash, logIndex)
+	if _, ok := c.seen[key]; ok {
+		return false, nil
+	}
+	c.seen[key] = struct{}{}
+	return true, nil
+}
+
+func (c *testAppliedLogCache) Close() error { return nil }
+
+func TestDrainAndReplayDedupAppliedLogs(t *testing.T) {
+	ps := pool.NewPoolState(addrPool1, tkUSDC, tkWETH, 3000)
+	ps.UpdateFromSwap(testSQ96, 0, testLiq, 100)
+
+	svc := &PoolQuoteService{
+		pool:               ps,
+		logger:             logx.Nop(),
+		chainName:          "ethereum",
+		logCache:           newTestAppliedLogCache(),
+		snapshotStartBlock: 100,
+	}
+	svc.bufferingMode.Store(true)
+
+	tx := common.HexToHash("0x1111111111111111111111111111111111111111111111111111111111111111")
+	mint := &pool.MintEvent{
+		Owner:     common.HexToAddress("0x1111111111111111111111111111111111111111"),
+		Amount:    big.NewInt(100000),
+		TickLower: -10,
+		TickUpper: 10,
+		Raw: types.Log{
+			BlockNumber: 101,
+			TxHash:      tx,
+			Index:       1,
+		},
+	}
+
+	// 同一条日志重复进入回放时，第二次应被去重过滤。
+	svc.eventBuffer = []bufferedEvent{
+		{mint: mint},
+		{mint: mint},
+	}
+	svc.drainAndReplay()
+
+	if svc.bufferingMode.Load() {
+		t.Fatal("buffering mode should be disabled after draining")
+	}
+
+	_, _, liq, _ := ps.GetRawState()
+	want := new(big.Int).Add(testLiq, big.NewInt(100000))
+	if liq.Cmp(want) != 0 {
+		t.Fatalf("liquidity after dedup replay = %s, want %s", liq, want)
+	}
+}
 
 func TestDrainAndReplaySkipsEventsBelowSnapshot(t *testing.T) {
 	ps := pool.NewPoolState(addrPool1, tkUSDC, tkWETH, 3000)
@@ -190,7 +292,7 @@ func TestTryBufferEventMintAndBurn(t *testing.T) {
 func TestDoLightSyncNilSubscriber(t *testing.T) {
 	ps := pool.NewPoolState(addrPool1, tkUSDC, tkWETH, 3000)
 	svc := &PoolQuoteService{pool: ps, logger: logx.Nop()}
-	err := svc.DoLightSync(0)
+	err := svc.DoLightSync()
 	if err == nil {
 		t.Error("expected error with nil subscriber")
 	}
@@ -453,7 +555,7 @@ func TestCollectTicksFromWordsCachedTicksOutOfRange(t *testing.T) {
 	// wordPos=500 → tick=500*15360=7680000 which is > TickMax (887272)
 	// all bits in this word are out of range, so should be filtered
 	bitmap := big.NewInt(0)
-	bitmap.SetBit(bitmap, 100, 1)   // tick = 500*15360 + 100*60 = 7680000+6000 > 887272
+	bitmap.SetBit(bitmap, 100, 1) // tick = 500*15360 + 100*60 = 7680000+6000 > 887272
 	bitmaps := map[int16]*big.Int{500: bitmap}
 
 	ticks := svc.collectTicksFromWordsCached([]int16{500}, wordRange, 60, bitmaps)
@@ -523,7 +625,7 @@ func TestRunBufferedLightSync(t *testing.T) {
 
 	// runBufferedLightSync calls DoLightSync which needs subscriber
 	svc.bufferingMode.Store(true)
-	err := svc.runBufferedLightSync(0, 0)
+	err := svc.runBufferedLightSync(0)
 	if err == nil {
 		t.Error("expected error with nil subscriber")
 	}
@@ -566,4 +668,162 @@ func TestSaveSnapshotWithTicks(t *testing.T) {
 	svc := &PoolQuoteService{pool: ps, logger: logx.Nop(), store: nil}
 	// Should not panic with nil store and ticks present
 	svc.saveSnapshot()
+}
+
+func TestMaybeFlushSnapshotBeforeEventFlushesOncePerBlock(t *testing.T) {
+	ps := pool.NewPoolState(addrPool1, tkUSDC, tkWETH, 3000)
+	ps.UpdateFromSwap(testSQ96, 0, testLiq, 100)
+	st := &recordingStore{}
+	svc := &PoolQuoteService{
+		pool:      ps,
+		logger:    logx.Nop(),
+		store:     st,
+		bgCtx:     context.Background(),
+		chainName: "ethereum",
+	}
+
+	// block 100: 聚合多个事件，不立即更新内存。
+	svc.stageLiveEvent(bufferedEvent{
+		swap: &pool.SwapEvent{
+			SqrtPriceX96: testSQ96,
+			Tick:         11,
+			Liquidity:    testLiq,
+			Raw:          types.Log{BlockNumber: 100, Index: 1},
+		},
+	})
+	svc.stageLiveEvent(bufferedEvent{
+		mint: &pool.MintEvent{
+			Amount:    big.NewInt(1000),
+			TickLower: -10,
+			TickUpper: 10,
+			Raw:       types.Log{BlockNumber: 100, Index: 2},
+		},
+	})
+	// block 101 到来，触发 block 100 的批量提交。
+	svc.stageLiveEvent(bufferedEvent{
+		swap: &pool.SwapEvent{
+			SqrtPriceX96: testSQ96,
+			Tick:         12,
+			Liquidity:    testLiq,
+			Raw:          types.Log{BlockNumber: 101, Index: 1},
+		},
+	})
+	svc.bgWG.Wait()
+
+	blocks := st.blocks()
+	if len(blocks) != 1 {
+		t.Fatalf("saved blocks = %v, want one snapshot", blocks)
+	}
+	if blocks[0] != 100 {
+		t.Fatalf("saved block = %d, want 100", blocks[0])
+	}
+	_, _, tick := svc.GetPrice()
+	if tick != 11 {
+		t.Fatalf("tick = %d, want 11 (block 100 applied once)", tick)
+	}
+}
+
+func TestMaybeFlushSnapshotByTimeFlushesWhenRPCBlockAdvances(t *testing.T) {
+	ps := pool.NewPoolState(addrPool1, tkUSDC, tkWETH, 3000)
+	ps.UpdateFromSwap(testSQ96, 0, testLiq, 200)
+	st := &recordingStore{}
+	svc := &PoolQuoteService{
+		pool:                     ps,
+		logger:                   logx.Nop(),
+		store:                    st,
+		bgCtx:                    context.Background(),
+		chainName:                "ethereum",
+		snapshotMaxWriteInterval: 20 * time.Millisecond,
+		fetchCurrentBlockNumber: func() (uint64, error) {
+			return 201, nil
+		},
+	}
+
+	svc.stageLiveEvent(bufferedEvent{
+		swap: &pool.SwapEvent{
+			SqrtPriceX96: testSQ96,
+			Tick:         21,
+			Liquidity:    testLiq,
+			Raw:          types.Log{BlockNumber: 200, Index: 1},
+		},
+	})
+	svc.maybeFlushSnapshotByTime() // rpc block advanced => flush
+	svc.bgWG.Wait()
+
+	blocks := st.blocks()
+	if len(blocks) != 1 {
+		t.Fatalf("saved blocks = %v, want one snapshot", blocks)
+	}
+	if blocks[0] != 200 {
+		t.Fatalf("saved block = %d, want 200", blocks[0])
+	}
+}
+
+func TestMaybeFlushSnapshotByTimeWithoutNewEvent(t *testing.T) {
+	ps := pool.NewPoolState(addrPool1, tkUSDC, tkWETH, 3000)
+	ps.UpdateFromSwap(testSQ96, 0, testLiq, 300)
+	st := &recordingStore{}
+	svc := &PoolQuoteService{
+		pool:                     ps,
+		logger:                   logx.Nop(),
+		store:                    st,
+		bgCtx:                    context.Background(),
+		chainName:                "ethereum",
+		snapshotMaxWriteInterval: 20 * time.Millisecond,
+		fetchCurrentBlockNumber: func() (uint64, error) {
+			return 300, nil
+		},
+	}
+
+	// 仅收到同一 block 的事件后，不再有新事件。
+	svc.stageLiveEvent(bufferedEvent{
+		swap: &pool.SwapEvent{
+			SqrtPriceX96: testSQ96,
+			Tick:         31,
+			Liquidity:    testLiq,
+			Raw:          types.Log{BlockNumber: 300, Index: 1},
+		},
+	})
+	// 模拟后台 ticker 的一次检查：rpc block 仍等于 pending block，不应写入。
+	svc.maybeFlushSnapshotByTime()
+	svc.bgWG.Wait()
+
+	blocks := st.blocks()
+	if len(blocks) != 0 {
+		t.Fatalf("saved blocks = %v, want none while rpc block has not advanced", blocks)
+	}
+}
+
+func TestSkipFlushWhileFullSyncInProgress(t *testing.T) {
+	ps := pool.NewPoolState(addrPool1, tkUSDC, tkWETH, 3000)
+	ps.UpdateFromSwap(testSQ96, 0, testLiq, 400)
+	st := &recordingStore{}
+	svc := &PoolQuoteService{
+		pool:                     ps,
+		logger:                   logx.Nop(),
+		store:                    st,
+		bgCtx:                    context.Background(),
+		chainName:                "ethereum",
+		snapshotMaxWriteInterval: 20 * time.Millisecond,
+	}
+
+	svc.stageLiveEvent(bufferedEvent{
+		swap: &pool.SwapEvent{
+			SqrtPriceX96: testSQ96,
+			Tick:         41,
+			Liquidity:    testLiq,
+			Raw:          types.Log{BlockNumber: 400, Index: 1},
+		},
+	})
+
+	svc.fullSyncInProgress.Store(true)
+	time.Sleep(30 * time.Millisecond)
+	svc.maybeFlushSnapshotByTime()
+	svc.flushPendingSnapshotIfDue(401, false)
+	svc.fullSyncInProgress.Store(false)
+	svc.bgWG.Wait()
+
+	if blocks := st.blocks(); len(blocks) != 0 {
+		t.Fatalf("saved blocks during full sync = %v, want none", blocks)
+	}
 }

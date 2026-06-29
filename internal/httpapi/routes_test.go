@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"github.com/brianliu-sysu/arbitrage/internal/logx"
+	"github.com/brianliu-sysu/arbitrage/internal/quote"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -10,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/brianliu-sysu/arbitrage/internal/service"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -21,7 +21,7 @@ type mockQuoteProvider struct {
 	prices      map[common.Address][3]interface{}
 	quoteResult *big.Int
 	quoteErr    error
-	crossResult *service.QuoteResult
+	crossResult *quote.Result
 	crossErr    error
 }
 
@@ -44,7 +44,7 @@ func (m *mockQuoteProvider) QuoteExactInput(chain string, poolAddr common.Addres
 	return m.quoteResult, nil
 }
 
-func (m *mockQuoteProvider) CrossQuote(chain string, amountIn *big.Int, tokenIn, tokenOut common.Address) (*service.QuoteResult, error) {
+func (m *mockQuoteProvider) CrossQuote(chain string, amountIn *big.Int, tokenIn, tokenOut common.Address) (*quote.Result, error) {
 	if m.crossErr != nil {
 		return nil, m.crossErr
 	}
@@ -321,8 +321,8 @@ func TestCrossQuote(t *testing.T) {
 	poolAddr := common.HexToAddress("0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8")
 
 	mock := &mockQuoteProvider{
-		crossResult: &service.QuoteResult{
-			Hops: []service.QuoteHop{
+		crossResult: &quote.Result{
+			Hops: []quote.Hop{
 				{Pool: poolAddr, TokenIn: tk0, TokenOut: tk1},
 			},
 			AmountIn:  big.NewInt(1000000),

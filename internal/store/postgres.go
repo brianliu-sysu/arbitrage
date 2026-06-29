@@ -15,7 +15,7 @@ import (
 
 // PostgresStore PostgreSQL 实现。
 type PostgresStore struct {
-	pool  *pgxpool.Pool
+	pool *pgxpool.Pool
 }
 
 // NewPostgresStore 创建 PostgreSQL 持久化存储。
@@ -130,14 +130,9 @@ func (s *PostgresStore) Load(ctx context.Context, chainName, poolAddress string)
 		return nil, fmt.Errorf("invalid liquidity: %s", liquidity)
 	}
 
-	var tickData map[string]string
-	if tickJSON != "" && tickJSON != "{}" {
-		if err := json.Unmarshal([]byte(tickJSON), &tickData); err != nil {
-			return nil, fmt.Errorf("unmarshal tick data: %w", err)
-		}
-	}
-	if tickData == nil {
-		tickData = make(map[string]string)
+	tickData, err := decodeTickDataJSON(tickJSON)
+	if err != nil {
+		return nil, fmt.Errorf("decode tick data: %w", err)
 	}
 
 	return &PoolSnapshot{
@@ -196,12 +191,9 @@ func (s *PostgresStore) LoadAll(ctx context.Context, chainName string) (map[stri
 			return nil, fmt.Errorf("invalid liquidity: %s for pool %s", liquidity, poolAddr)
 		}
 
-		var tickData map[string]string
-		if tickJSON != "" && tickJSON != "{}" {
-			_ = json.Unmarshal([]byte(tickJSON), &tickData)
-		}
-		if tickData == nil {
-			tickData = make(map[string]string)
+		tickData, err := decodeTickDataJSON(tickJSON)
+		if err != nil {
+			return nil, fmt.Errorf("decode tick data for pool %s: %w", poolAddr, err)
 		}
 
 		result[poolAddr] = &PoolSnapshot{
@@ -278,4 +270,27 @@ func (s *PostgresStore) SaveTokenMetadata(ctx context.Context, meta *TokenMetada
 
 func (s *PostgresStore) Close() {
 	s.pool.Close()
+}
+
+func decodeTickDataJSON(tickJSON string) (map[int32]TickLiquiditySnapshot, error) {
+	if tickJSON == "" || tickJSON == "{}" {
+		return make(map[int32]TickLiquiditySnapshot), nil
+	}
+
+	var out map[int32]TickLiquiditySnapshot
+	if err := json.Unmarshal([]byte(tickJSON), &out); err != nil {
+		return nil, err
+	}
+	for tick, cur := range out {
+		if cur.LiquidityNet == nil {
+			return nil, fmt.Errorf("empty liquidityNet at tick %d", tick)
+		}
+		if cur.LiquidityGross == nil {
+			return nil, fmt.Errorf("empty liquidityGross at tick %d", tick)
+		}
+		if cur.LiquidityGross.Sign() < 0 {
+			return nil, fmt.Errorf("negative liquidityGross at tick %d: %s", tick, cur.LiquidityGross.String())
+		}
+	}
+	return out, nil
 }

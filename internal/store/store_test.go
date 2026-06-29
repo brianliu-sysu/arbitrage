@@ -17,7 +17,10 @@ func TestPoolSnapshotTypes(t *testing.T) {
 		Token0Symbol: "USDC",
 		Token1Symbol: "WETH",
 		Fee:          3000,
-		TickData:     map[string]string{"10": "500", "-10": "-500"},
+		TickData: map[int32]TickLiquiditySnapshot{
+			10:  {LiquidityNet: big.NewInt(500), LiquidityGross: big.NewInt(500)},
+			-10: {LiquidityNet: big.NewInt(-500), LiquidityGross: big.NewInt(500)},
+		},
 	}
 	if snap.ChainName != "ethereum" {
 		t.Errorf("ChainName = %q", snap.ChainName)
@@ -46,8 +49,25 @@ func TestPoolSnapshotTypes(t *testing.T) {
 	if len(snap.TickData) != 2 {
 		t.Errorf("TickData len = %d", len(snap.TickData))
 	}
-	if snap.TickData["10"] != "500" {
-		t.Errorf("TickData[10] = %q", snap.TickData["10"])
+	if snap.TickData[10].LiquidityNet.Cmp(big.NewInt(500)) != 0 {
+		t.Errorf("TickData[10].LiquidityNet = %s", snap.TickData[10].LiquidityNet.String())
+	}
+}
+
+func TestDecodeTickDataJSON_RejectLegacyFormat(t *testing.T) {
+	_, err := decodeTickDataJSON(`{"10":"500","-10":"-400"}`)
+	if err == nil {
+		t.Fatalf("expected legacy format decode to fail")
+	}
+}
+
+func TestDecodeTickDataJSON_NewFormat(t *testing.T) {
+	current, err := decodeTickDataJSON(`{"10":{"liquidityNet":500,"liquidityGross":900}}`)
+	if err != nil {
+		t.Fatalf("decode current: %v", err)
+	}
+	if current[10].LiquidityNet.Cmp(big.NewInt(500)) != 0 || current[10].LiquidityGross.Cmp(big.NewInt(900)) != 0 {
+		t.Fatalf("current decode mismatch: %+v", current[10])
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/brianliu-sysu/arbitrage/internal/logx"
+	"github.com/brianliu-sysu/arbitrage/internal/quote"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -117,7 +118,7 @@ func (m *MultiChainService) QuoteExactInput(chain string, poolAddr common.Addres
 }
 
 // CrossQuote 在指定链上执行跨池报价。
-func (m *MultiChainService) CrossQuote(chain string, amountIn *big.Int, tokenIn, tokenOut common.Address) (*QuoteResult, error) {
+func (m *MultiChainService) CrossQuote(chain string, amountIn *big.Int, tokenIn, tokenOut common.Address) (*quote.Result, error) {
 	svc, ok := m.GetChain(chain)
 	if !ok {
 		return nil, fmt.Errorf("chain %q not found", chain)

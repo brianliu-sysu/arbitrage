@@ -5,7 +5,7 @@ import (
 	"context"
 	"fmt"
 	"math/big"
-	"strconv"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,6 +19,7 @@ import (
 	"github.com/brianliu-sysu/arbitrage/internal/tracing"
 	"github.com/brianliu-sysu/arbitrage/internal/utils"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/robfig/cron/v3"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -34,10 +35,17 @@ type PoolQuoteService struct {
 	logger     logx.Logger
 	store      store.Storer
 	tokenCache cache.TokenCache
+	logCache   cache.AppliedLogCache
 	chainName  string
+
+	fetchCurrentBlockNumber func() (uint64, error) // 测试注入；nil 时使用 subscriber
 
 	mu            sync.RWMutex
 	onPriceUpdate func(poolAddr common.Address, price0In1, price1In0 float64, tick int32)
+
+	bgCtx    context.Context
+	bgCancel context.CancelFunc
+	bgWG     sync.WaitGroup
 
 	// 健康检查
 	healthCheckInterval time.Duration
@@ -48,7 +56,22 @@ type PoolQuoteService struct {
 	fullSyncMinGap         time.Duration // 两次全量同步的最小间隔，默认 5 分钟
 	maxBlockGapForFullSync uint64        // 全量同步最大区块间隔，超过此值才重建 tick 地图
 
+	// 增量同步节流（内存 + DB）：
+	// - 事件先按 block 聚合
+	// - 每个 block 批量应用一次到内存
+	// - 应用后立刻同步落库
+	// - 当长时间未观测到新 block 时，按最大间隔兜底触发
+	snapshotPersistMu        sync.Mutex
+	pendingSnapshotBlock     uint64
+	pendingSnapshotEvents    []bufferedEvent
+	pendingSnapshotFirstSeen time.Time
+	lastFlushedSnapshotBlock uint64
+	snapshotMaxWriteInterval time.Duration
+
 	// 快照 + 缓冲重放：在全量同步期间缓存 WebSocket 事件，同步完成后重放。
+	// syncWindowMu 保证缓冲同步流程串行执行，避免 light/full 并发污染状态。
+	syncWindowMu       sync.Mutex
+	fullSyncInProgress atomic.Bool     // true 时禁止增量写入触发（时间驱动/跨块触发）
 	bufferingMode      atomic.Bool     // true 时事件进入缓冲区而非直接更新内存
 	eventBufferMu      sync.Mutex      // 保护 eventBuffer
 	eventBuffer        []bufferedEvent // 全量同步期间缓存的事件
@@ -77,7 +100,7 @@ type Config struct {
 //
 // wsURL 为 WebSocket 端点（订阅链上事件），rpcURL 为 HTTP RPC 端点（eth_call 等）。
 // token0 / token1 / fee 会在调用 ResolvePoolMetadata 时通过 RPC 获取。
-func NewPoolQuoteService(wsURL, rpcURL string, cfg Config, logger logx.Logger, st store.Storer, tokenCache cache.TokenCache) (*PoolQuoteService, error) {
+func NewPoolQuoteService(wsURL, rpcURL string, cfg Config, logger logx.Logger, st store.Storer, tokenCache cache.TokenCache, logCache cache.AppliedLogCache) (*PoolQuoteService, error) {
 	poolState := pool.NewState(cfg.PoolAddress, common.Address{}, common.Address{}, 0)
 
 	maxGap := cfg.MaxBlockGapForFullSync
@@ -86,15 +109,18 @@ func NewPoolQuoteService(wsURL, rpcURL string, cfg Config, logger logx.Logger, s
 	}
 
 	svc := &PoolQuoteService{
-		pool:                   poolState,
-		logger:                 logger,
-		store:                  st,
-		tokenCache:             tokenCache,
-		chainName:              cfg.ChainName,
-		healthCheckInterval:    time.Duration(cfg.HealthCheckIntervalSec) * time.Second,
-		fullSyncMinGap:         5 * time.Minute,
-		maxBlockGapForFullSync: maxGap,
+		pool:                     poolState,
+		logger:                   logger,
+		store:                    st,
+		tokenCache:               tokenCache,
+		logCache:                 logCache,
+		chainName:                cfg.ChainName,
+		healthCheckInterval:      time.Duration(cfg.HealthCheckIntervalSec) * time.Second,
+		fullSyncMinGap:           5 * time.Minute,
+		maxBlockGapForFullSync:   maxGap,
+		snapshotMaxWriteInterval: 3 * time.Second,
 	}
+	svc.bgCtx, svc.bgCancel = context.WithCancel(context.Background())
 
 	sub, err := subscriber.NewSubscriber(wsURL, rpcURL, cfg.PoolAddress, svc, cfg.MulticallAddress, cfg.QuoterAddress, logger)
 	if err != nil {
@@ -107,7 +133,7 @@ func NewPoolQuoteService(wsURL, rpcURL string, cfg Config, logger logx.Logger, s
 
 // ResolvePoolMetadata 通过 RPC 获取池子的 token0 / token1 / fee 并设置到内部状态中。
 //
-// 必须在 Start 之前调用（Start 中的 SyncStateFromRPC 会用到 fee 信息）。
+// 必须在 Start 之前调用（Start 中的 DoFullSync 会用到 fee 信息）。
 func (s *PoolQuoteService) ResolvePoolMetadata() error {
 	if s.subscriber == nil {
 		return fmt.Errorf("subscriber is nil")
@@ -131,57 +157,15 @@ func (s *PoolQuoteService) ResolvePoolMetadata() error {
 	return nil
 }
 
-// resolveTokenInfo 先从数据库缓存读取代币元信息，未命中时通过 RPC 获取并写回缓存。
-func (s *PoolQuoteService) resolveTokenInfo(tokenAddr common.Address) (*pool.TokenInfo, error) {
-	tokenHex := tokenAddr.Hex()
-	if s.store != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		cached, err := s.store.LoadTokenMetadata(ctx, s.chainName, tokenHex)
-		cancel()
-		if err == nil && cached != nil {
-			return &pool.TokenInfo{
-				Symbol:   cached.Symbol,
-				Decimals: cached.Decimals,
-			}, nil
-		}
-		if err != nil {
-			s.logger.Warn("failed to load token metadata cache", "token", tokenHex, "error", err)
-		}
-	}
-
-	meta, err := s.subscriber.FetchTokenMetadata(tokenAddr)
-	if err != nil {
-		return nil, err
-	}
-
-	if s.store != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		saveErr := s.store.SaveTokenMetadata(ctx, &store.TokenMetadata{
-			ChainName:    s.chainName,
-			TokenAddress: tokenHex,
-			Symbol:       meta.Symbol,
-			Decimals:     meta.Decimals,
-		})
-		cancel()
-		if saveErr != nil {
-			s.logger.Warn("failed to save token metadata cache", "token", tokenHex, "error", saveErr)
-		}
-	}
-
-	return &pool.TokenInfo{
-		Symbol:   meta.Symbol,
-		Decimals: meta.Decimals,
-	}, nil
-}
-
 // Start 启动服务：
 //  1. 启动实时事件订阅
-//  2. 启动定时健康检查（如已配置）
+//  2. 启动快照定时 flush（纯时间驱动）
+//  3. 启动定时健康检查（如已配置）
 //
 // 注意：
 //   - 启动主流程不再执行全量同步，优先保证快速启动（DB 状态 + 配置即可上线）。
 //   - 全量/轻量修复由定时健康检查与重连流程触发。
-func (s *PoolQuoteService) Start() error {
+func (s *PoolQuoteService) Start(_ ...uint64) error {
 	if s.subscriber == nil {
 		return fmt.Errorf("subscriber is nil")
 	}
@@ -194,7 +178,10 @@ func (s *PoolQuoteService) Start() error {
 	// 立即发一次回调/指标，便于上层拿到当前（可能来自 DB）的初始状态。
 	s.emitPriceUpdate()
 
-	// Step 2: 启动定时健康检查
+	// Step 2: 启动快照定时 flush（无新事件时也能按时间落库）
+	s.startSnapshotFlushLoop()
+
+	// Step 3: 启动定时健康检查
 	s.startHealthCheck()
 	return nil
 }
@@ -205,10 +192,14 @@ func (s *PoolQuoteService) Stop() {
 	if s.healthCheckCron != nil {
 		s.healthCheckCron.Stop()
 	}
+	if s.bgCancel != nil {
+		s.bgCancel()
+	}
 
 	if s.subscriber != nil {
 		s.subscriber.Stop()
 	}
+	s.bgWG.Wait()
 }
 
 // ---------------------------------------------------------------------------
@@ -224,7 +215,6 @@ func (s *PoolQuoteService) OnSwap(event *pool.SwapEvent) {
 		)
 		return
 	}
-
 	_, span := tracing.Tracer().Start(context.Background(), "service.on_swap", // context.Background() since events arrive async from WS
 		trace.WithAttributes(
 			attribute.String("pool", s.pool.Address.Hex()),
@@ -233,13 +223,6 @@ func (s *PoolQuoteService) OnSwap(event *pool.SwapEvent) {
 	)
 	defer span.End()
 
-	s.pool.UpdateFromSwap(
-		event.SqrtPriceX96,
-		event.Tick,
-		event.Liquidity,
-		event.Raw.BlockNumber,
-	)
-
 	s.logger.Debug("swap event",
 		"block", event.Raw.BlockNumber,
 		"amount0", event.Amount0.String(),
@@ -247,8 +230,11 @@ func (s *PoolQuoteService) OnSwap(event *pool.SwapEvent) {
 		"tick", event.Tick,
 	)
 
-	s.emitPriceUpdate()
-	s.saveSnapshot()
+	// 不影响主流程，但需要记录已应用日志
+	if !s.markLogAppliedIfNew(event.Raw) {
+		return
+	}
+	s.stageLiveEvent(bufferedEvent{swap: event})
 }
 
 func (s *PoolQuoteService) OnMint(event *pool.MintEvent) {
@@ -256,18 +242,19 @@ func (s *PoolQuoteService) OnMint(event *pool.MintEvent) {
 	if s.tryBufferEvent(bufferedEvent{mint: event}) {
 		return
 	}
-
-	// 更新 tick 级流动性；如果当前 tick 位于该区间内，也同步更新活跃 L。
-	s.pool.UpdateTickFromMint(event.TickLower, event.TickUpper, event.Amount, event.Raw.BlockNumber)
-
 	s.logger.Debug("mint event",
 		"block", event.Raw.BlockNumber,
 		"owner", event.Owner.Hex(),
 		"tickLower", event.TickLower,
 		"tickUpper", event.TickUpper,
 		"amount", event.Amount.String(),
-		"totalTicks", s.pool.GetTickCount(),
 	)
+
+	// 不影响主流程，但需要记录已应用日志
+	if !s.markLogAppliedIfNew(event.Raw) {
+		return
+	}
+	s.stageLiveEvent(bufferedEvent{mint: event})
 }
 
 func (s *PoolQuoteService) OnBurn(event *pool.BurnEvent) {
@@ -275,18 +262,19 @@ func (s *PoolQuoteService) OnBurn(event *pool.BurnEvent) {
 	if s.tryBufferEvent(bufferedEvent{burn: event}) {
 		return
 	}
-
-	// 更新 tick 级流动性；如果当前 tick 位于该区间内，也同步更新活跃 L。
-	s.pool.UpdateTickFromBurn(event.TickLower, event.TickUpper, event.Amount, event.Raw.BlockNumber)
-
 	s.logger.Debug("burn event",
 		"block", event.Raw.BlockNumber,
 		"owner", event.Owner.Hex(),
 		"tickLower", event.TickLower,
 		"tickUpper", event.TickUpper,
 		"amount", event.Amount.String(),
-		"totalTicks", s.pool.GetTickCount(),
 	)
+
+	// 不影响主流程，但需要记录已应用日志
+	if !s.markLogAppliedIfNew(event.Raw) {
+		return
+	}
+	s.stageLiveEvent(bufferedEvent{burn: event})
 }
 
 // ---------------------------------------------------------------------------
@@ -326,9 +314,18 @@ func (s *PoolQuoteService) drainAndReplay() {
 		s.eventBuffer = nil
 		s.eventBufferMu.Unlock()
 
+		// 兼容“历史回放 + 实时缓冲”并存场景：按 block 升序重放，避免时序倒退。
+		sort.SliceStable(buf, func(i, j int) bool {
+			return buf[i].blockNumber() < buf[j].blockNumber()
+		})
+
 		for _, ev := range buf {
 			blockNum := ev.blockNumber()
 			if blockNum >= s.snapshotStartBlock {
+				if !s.markLogAppliedIfNew(ev.rawLog()) {
+					skipped++
+					continue
+				}
 				s.applyBufferedEvent(ev)
 				replayed++
 			} else {
@@ -349,6 +346,50 @@ func (ev *bufferedEvent) blockNumber() uint64 {
 		return ev.burn.Raw.BlockNumber
 	}
 	return 0
+}
+
+func (ev *bufferedEvent) rawLog() types.Log {
+	switch {
+	case ev.swap != nil:
+		return ev.swap.Raw
+	case ev.mint != nil:
+		return ev.mint.Raw
+	case ev.burn != nil:
+		return ev.burn.Raw
+	}
+	return types.Log{}
+}
+
+func (s *PoolQuoteService) markLogAppliedIfNew(vLog types.Log) bool {
+	if s.logCache == nil {
+		return true
+	}
+	if vLog.TxHash == (common.Hash{}) {
+		// 历史/回放日志理论上都包含 txHash；缺失时降级为不过滤，避免误丢事件。
+		return true
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	isNew, err := s.logCache.MarkAppliedIfNew(
+		ctx,
+		s.chainName,
+		s.pool.Address.Hex(),
+		vLog.BlockNumber,
+		vLog.TxHash.Hex(),
+		vLog.Index,
+	)
+	if err != nil {
+		// Redis 抖动时 fail-open，主流程继续，避免因为缓存异常丢失事件。
+		s.logger.Warn("applied-log cache unavailable, skip dedupe",
+			"pool", s.pool.Address.Hex(),
+			"block", vLog.BlockNumber,
+			"index", vLog.Index,
+			"error", err,
+		)
+		return true
+	}
+	return isNew
 }
 
 // applyBufferedEvent 将单个缓冲事件应用到正式内存。
@@ -385,27 +426,14 @@ func (s *PoolQuoteService) OnReconnected() {
 		return
 	}
 
-	memBlock := s.pool.BlockNumber
-	s.logger.Info("reconnected, syncing state", "pool", s.pool.Address.Hex(), "fromBlock", memBlock)
+	s.logger.Info("reconnected, syncing state", "pool", s.pool.Address.Hex(), "memBlock", s.pool.BlockNumber)
 
-	// Step 1: 执行全量或轻量同步
-	if time.Since(s.lastFullSyncTime) > s.fullSyncMinGap {
-		s.logger.Info("full tick rebuild due (last rebuild was %v ago)", "elapsed", time.Since(s.lastFullSyncTime))
-		s.beginBufferingWindow("reconnect")
-		utils.SafeGo(s.logger, func() {
-			// 等待 runEventLoop 将 logsCh 中的积压事件消费到 eventBuffer 后再回放。
-			if err := s.runBufferedFullSync(1 * time.Second); err != nil {
-				s.logger.Error("full sync failed after reconnect", "pool", s.pool.Address.Hex(), "error", err)
-			}
-		})
-	} else {
-		s.beginBufferingWindow("reconnect-light")
-		utils.SafeGo(s.logger, func() {
-			if err := s.runBufferedLightSync(1 * time.Second); err != nil {
-				s.logger.Error("light sync failed after reconnect", "pool", s.pool.Address.Hex(), "error", err)
-			}
-		})
-	}
+	// Step 1: 执行轻量同步（串行化，避免与 full sync 并发覆盖）
+	s.runAsync(func(context.Context) {
+		if err := s.runBufferedLightSync(1 * time.Second); err != nil {
+			s.logger.Error("light sync failed after reconnect", "pool", s.pool.Address.Hex(), "error", err)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -452,12 +480,30 @@ func (s *PoolQuoteService) GetPoolInfo() map[string]interface{} {
 		"address":      state.Address.Hex(),
 		"token0":       state.Token0.Hex(),
 		"token1":       state.Token1.Hex(),
+		"token0Symbol": state.Token0Symbol,
+		"token1Symbol": state.Token1Symbol,
 		"fee":          state.Fee,
 		"tick":         state.Tick,
 		"sqrtPriceX96": state.SqrtPriceX96.String(),
 		"liquidity":    state.Liquidity.String(),
 		"blockNumber":  state.BlockNumber,
 	}
+}
+
+// GetPrice 返回当前池子的价格快照。
+func (s *PoolQuoteService) GetPrice() (price0In1, price1In0 float64, tick int32) {
+	sqrtPriceX96, tick, _, _ := s.pool.GetRawState()
+
+	sqrtF := new(big.Float).SetInt(sqrtPriceX96)
+	x96F := new(big.Float).SetInt(utils.X96)
+	ratio := new(big.Float).Quo(sqrtF, x96F)
+	price0 := new(big.Float).Mul(ratio, ratio)
+
+	price0In1, _ = price0.Float64()
+	if price0In1 > 0 {
+		price1In0 = 1 / price0In1
+	}
+	return price0In1, price1In0, tick
 }
 
 // DoFullSync 执行全量状态同步（锚点区块模式）。
@@ -467,7 +513,7 @@ func (s *PoolQuoteService) GetPoolInfo() map[string]interface{} {
 // 区块的事件才会被回放，确保不会遗漏同步期间到达的新事件。
 //
 // syncFromBlock 参数保留用于签名兼容，实际逻辑中不再使用。
-func (s *PoolQuoteService) DoFullSync() error {
+func (s *PoolQuoteService) DoFullSync(_ ...uint64) error {
 	if s.subscriber == nil {
 		return fmt.Errorf("subscriber is nil")
 	}
@@ -499,28 +545,43 @@ func (s *PoolQuoteService) DoFullSync() error {
 	return nil
 }
 
-// SyncStateFromRPC 已弃用，请使用 DoFullSync。
-// 保留用于向后兼容。
-func (s *PoolQuoteService) SyncStateFromRPC() error {
-	return s.DoFullSync()
-}
-
-// DoLightSync 执行轻量同步：仅 RPC 快照（slot0 + liquidity），不重建 tick 地图。
-// 适用于 WebSocket 重连后快速恢复状态，避免频繁的 tick bitmap 扫描。
-// RPC 快照直接返回链上权威的 slot0 + liquidity，无需额外的事件回放。
+// DoLightSync 执行轻量同步：仅做状态快照与事件回放，不重建 tick 地图。
+//
+// 当提供 syncFromBlock 时，采用“锚点快照 + 历史回放”模式：
+//  1. 以 syncFromBlock-1 作为锚点读取静态快照
+//  2. 回放 [syncFromBlock, tip] 区间全部事件
+//
+// 这样可以从断线起始区块补齐数据，而不是只拉取当前 tick 快照。
+//
+// 未提供 syncFromBlock 时，回退到当前块快照模式（兼容旧行为）。
 func (s *PoolQuoteService) DoLightSync() error {
 	if s.subscriber == nil {
 		return fmt.Errorf("subscriber is nil")
 	}
 
-	rpcState, err := s.subscriber.FetchStateViaRPC()
-	if err != nil {
-		return fmt.Errorf("fetch rpc state: %w", err)
+	fromBlock := s.pool.BlockNumber
+
+	if fromBlock <= 0 {
+		return fmt.Errorf("need a full sync")
 	}
 
-	s.pool.UpdateFromSwap(rpcState.SqrtPriceX96, rpcState.Tick, rpcState.Liquidity, rpcState.BlockNumber)
-	s.logger.Info("light sync completed",
-		"block", rpcState.BlockNumber, "tick", rpcState.Tick,
+	tipBlock, err := s.subscriber.FetchBlockNumber()
+	if err != nil {
+		return fmt.Errorf("fetch tip block: %w", err)
+	}
+	if tipBlock >= fromBlock {
+		if err := s.subscriber.SyncHistoricalAll(
+			new(big.Int).SetUint64(fromBlock),
+			new(big.Int).SetUint64(tipBlock),
+		); err != nil {
+			return fmt.Errorf("historical replay [%d,%d]: %w", fromBlock, tipBlock, err)
+		}
+	}
+	s.snapshotStartBlock = fromBlock
+	s.logger.Info("light sync completed with historical replay",
+		"fromBlock", fromBlock,
+		"tipBlock", tipBlock,
+		"tick", s.pool.Tick,
 		"ticks", s.pool.GetTickCount(),
 	)
 
@@ -778,11 +839,9 @@ func (s *PoolQuoteService) RebuildTickMapFromChainAtBlock(targetBlock uint64) er
 	if err != nil {
 		return fmt.Errorf("discover words at block %d: %w", targetBlock, err)
 	}
-	s.logger.Info("active words at block", "length", len(words), "block", targetBlock)
 
 	// 2. 从已缓存的 bitmap 中提取活跃 tick 索引
 	allTicks := s.collectTicksFromWordsCachedAtBlock(words, wordRange, tickSpacing, wordBitmaps, targetBlock)
-	s.logger.Info("active tick at block", "length", len(allTicks), "block", targetBlock)
 
 	// 3. 获取 tick 的链上数据（基于 targetBlock）
 	tickDataMap := s.fetchTicksConcurrentlyAtBlock(allTicks, targetBlock)
@@ -989,7 +1048,6 @@ func (s *PoolQuoteService) runHealthCheck() {
 
 	// 传入内存中的当前块号作为重放下界，补齐断线期间的缺失事件。
 	// 健康修复与启动/重连路径保持一致，统一走「缓冲 + 全量 + 重放」流程。
-	s.beginBufferingWindow("health-check")
 	if err := s.runBufferedFullSync(0); err != nil {
 		s.logger.Error("health check: full sync failed", "error", err)
 	}
@@ -997,12 +1055,28 @@ func (s *PoolQuoteService) runHealthCheck() {
 
 // beginBufferingWindow 进入缓冲窗口：记录快照起点块高并开启 buffering 模式。
 func (s *PoolQuoteService) beginBufferingWindow(reason string) {
+	if s.subscriber == nil {
+		s.logger.Warn("subscriber is nil, buffering from block 0", "reason", reason)
+		s.snapshotStartBlock = 0
+		s.bufferingMode.Store(true)
+		return
+	}
+
 	startBlock, err := s.subscriber.FetchBlockNumber()
 	if err != nil {
 		s.logger.Warn("failed to fetch snapshot start block, using 0", "reason", reason, "error", err)
 	}
 	s.snapshotStartBlock = startBlock
 	s.bufferingMode.Store(true)
+}
+
+// runBufferedSyncWithWindow 将「开启缓冲窗口 + 同步 + 回放」串行化执行，避免 light/full 并发污染状态。
+func (s *PoolQuoteService) runBufferedSyncWithWindow(reason string, replayDelay time.Duration, syncFn func() error) error {
+	s.syncWindowMu.Lock()
+	defer s.syncWindowMu.Unlock()
+
+	s.beginBufferingWindow(reason)
+	return s.runBufferedSync(syncFn, replayDelay)
 }
 
 // runBufferedSync 在已开启缓冲窗口的前提下执行同步函数并回放缓冲事件。
@@ -1018,18 +1092,217 @@ func (s *PoolQuoteService) runBufferedSync(syncFn func() error, replayDelay time
 	return err
 }
 
+// maybeFlushSnapshotByTime 纯时间驱动的快照持久化触发器。
+// 当 pending block 在最大写入间隔内一直未落库时，执行一次写入。
+func (s *PoolQuoteService) maybeFlushSnapshotByTime() {
+	if s.snapshotMaxWriteInterval <= 0 {
+		return
+	}
+	s.flushPendingSnapshotIfDue(0, true)
+}
+
+// stageLiveEvent 将实时事件按 block 聚合；当观测到新区块时提交上一个 block。
+func (s *PoolQuoteService) stageLiveEvent(ev bufferedEvent) {
+	blockNum := ev.blockNumber()
+	if blockNum == 0 {
+		return
+	}
+
+	s.snapshotPersistMu.Lock()
+	now := time.Now()
+	if s.pendingSnapshotBlock == 0 {
+		s.pendingSnapshotBlock = blockNum
+		s.pendingSnapshotFirstSeen = now
+		s.pendingSnapshotEvents = append(s.pendingSnapshotEvents, ev)
+		s.snapshotPersistMu.Unlock()
+		return
+	}
+	if blockNum == s.pendingSnapshotBlock {
+		s.pendingSnapshotEvents = append(s.pendingSnapshotEvents, ev)
+		s.snapshotPersistMu.Unlock()
+		return
+	}
+	// 进入新区块：先提交上一个 block，再开始聚合当前 block。
+	s.snapshotPersistMu.Unlock()
+	s.flushPendingSnapshotIfDue(blockNum, false)
+
+	s.snapshotPersistMu.Lock()
+	if s.pendingSnapshotBlock == 0 {
+		s.pendingSnapshotBlock = blockNum
+		s.pendingSnapshotFirstSeen = now
+	}
+	s.pendingSnapshotEvents = append(s.pendingSnapshotEvents, ev)
+	s.snapshotPersistMu.Unlock()
+}
+
+// flushPendingSnapshotIfDue 提交 pending block 的批量事件（内存 + DB 同步更新）。
+// whenByTime=true 表示时间驱动检查；否则表示事件驱动（通过 nextBlock 判断 block 切换）。
+func (s *PoolQuoteService) flushPendingSnapshotIfDue(nextBlock uint64, whenByTime bool) {
+	if s.fullSyncInProgress.Load() {
+		// 全量同步过程中，不进行定时写入和跨块触发写入。
+		return
+	}
+
+	var (
+		flushEvents []bufferedEvent
+		flushBlock  uint64
+		rpcBlock    uint64
+		hasRPCBlock bool
+	)
+
+	if whenByTime {
+		var err error
+		rpcBlock, err = s.currentBlockNumber()
+		if err != nil {
+			s.logger.Warn("snapshot flush: fetch current block failed", "error", err)
+			return
+		}
+		hasRPCBlock = true
+	}
+
+	s.snapshotPersistMu.Lock()
+	if s.pendingSnapshotBlock == 0 || len(s.pendingSnapshotEvents) == 0 {
+		s.snapshotPersistMu.Unlock()
+		return
+	}
+
+	shouldFlush := false
+	if whenByTime {
+		shouldFlush = hasRPCBlock && rpcBlock != s.pendingSnapshotBlock
+	} else {
+		shouldFlush = nextBlock != 0 && nextBlock != s.pendingSnapshotBlock
+	}
+
+	if shouldFlush {
+		flushBlock = s.pendingSnapshotBlock
+		flushEvents = append(flushEvents, s.pendingSnapshotEvents...)
+		s.pendingSnapshotBlock = 0
+		s.pendingSnapshotEvents = nil
+		s.pendingSnapshotFirstSeen = time.Time{}
+		s.lastFlushedSnapshotBlock = flushBlock
+	}
+	s.snapshotPersistMu.Unlock()
+
+	if !shouldFlush {
+		return
+	}
+
+	// 块内按 logIndex 保序应用，确保状态确定性。
+	sort.SliceStable(flushEvents, func(i, j int) bool {
+		return flushEvents[i].rawLog().Index < flushEvents[j].rawLog().Index
+	})
+	s.applyEventsBatchAtomically(flushEvents)
+	s.emitPriceUpdate()
+	s.saveSnapshot()
+}
+
+func (s *PoolQuoteService) currentBlockNumber() (uint64, error) {
+	if s.fetchCurrentBlockNumber != nil {
+		return s.fetchCurrentBlockNumber()
+	}
+	if s.subscriber == nil {
+		return 0, fmt.Errorf("subscriber is nil")
+	}
+	return s.subscriber.FetchBlockNumber()
+}
+
+// startSnapshotFlushLoop 启动后台时间驱动 flush 任务。
+func (s *PoolQuoteService) startSnapshotFlushLoop() {
+	if s.snapshotMaxWriteInterval <= 0 {
+		return
+	}
+
+	interval := s.snapshotMaxWriteInterval / 2
+	if interval < 200*time.Millisecond {
+		interval = 200 * time.Millisecond
+	}
+
+	s.runAsync(func(ctx context.Context) {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.maybeFlushSnapshotByTime()
+			}
+		}
+	})
+}
+
+// flushPendingSnapshotNow 无条件提交当前 pending block（若存在）。
+func (s *PoolQuoteService) flushPendingSnapshotNow() {
+	var (
+		flushEvents []bufferedEvent
+	)
+	s.snapshotPersistMu.Lock()
+	if len(s.pendingSnapshotEvents) == 0 {
+		s.snapshotPersistMu.Unlock()
+		return
+	}
+	flushEvents = append(flushEvents, s.pendingSnapshotEvents...)
+	s.pendingSnapshotBlock = 0
+	s.pendingSnapshotEvents = nil
+	s.pendingSnapshotFirstSeen = time.Time{}
+	s.snapshotPersistMu.Unlock()
+
+	sort.SliceStable(flushEvents, func(i, j int) bool {
+		return flushEvents[i].rawLog().Index < flushEvents[j].rawLog().Index
+	})
+	s.applyEventsBatchAtomically(flushEvents)
+	s.emitPriceUpdate()
+	s.saveSnapshot()
+}
+
+// applyEventsBatchAtomically 在临时状态上批量回放事件，再一次性替换正式内存状态。
+func (s *PoolQuoteService) applyEventsBatchAtomically(events []bufferedEvent) {
+	if len(events) == 0 {
+		return
+	}
+
+	next := s.pool.GetStateCopy()
+	for _, ev := range events {
+		applyBufferedEventToState(next, ev)
+	}
+	s.pool.ReplaceFromState(next)
+}
+
+func applyBufferedEventToState(state *pool.State, ev bufferedEvent) {
+	if state == nil {
+		return
+	}
+	switch {
+	case ev.swap != nil:
+		state.UpdateFromSwap(
+			ev.swap.SqrtPriceX96,
+			ev.swap.Tick,
+			ev.swap.Liquidity,
+			ev.swap.Raw.BlockNumber,
+		)
+	case ev.mint != nil:
+		state.UpdateTickFromMint(ev.mint.TickLower, ev.mint.TickUpper, ev.mint.Amount, ev.mint.Raw.BlockNumber)
+	case ev.burn != nil:
+		state.UpdateTickFromBurn(ev.burn.TickLower, ev.burn.TickUpper, ev.burn.Amount, ev.burn.Raw.BlockNumber)
+	}
+}
+
 // runBufferedFullSync 在缓冲窗口中执行全量同步并回放缓冲事件。
-func (s *PoolQuoteService) runBufferedFullSync(replayDelay time.Duration) error {
-	return s.runBufferedSync(func() error {
+func (s *PoolQuoteService) runBufferedFullSync(replayDelay time.Duration, _ ...uint64) error {
+	s.fullSyncInProgress.Store(true)
+	defer s.fullSyncInProgress.Store(false)
+
+	return s.runBufferedSyncWithWindow("full-sync", replayDelay, func() error {
 		return s.DoFullSync()
-	}, replayDelay)
+	})
 }
 
 // runBufferedLightSync 在缓冲窗口中执行轻量同步并回放缓冲事件。
 func (s *PoolQuoteService) runBufferedLightSync(replayDelay time.Duration) error {
-	return s.runBufferedSync(func() error {
+	return s.runBufferedSyncWithWindow("light-sync", replayDelay, func() error {
 		return s.DoLightSync()
-	}, replayDelay)
+	})
 }
 
 // saveSnapshot 将当前池子状态持久化到数据库。
@@ -1049,23 +1322,26 @@ func (s *PoolQuoteService) saveSnapshot() {
 		SqrtPriceX96: state.SqrtPriceX96,
 		Liquidity:    state.Liquidity,
 		Fee:          state.Fee,
-		TickData:     make(map[string]string),
+		TickData:     make(map[int32]store.TickLiquiditySnapshot),
 	}
 	for tick, tl := range state.Ticks {
-		snap.TickData[fmt.Sprintf("%d", tick)] = tl.LiquidityNet.String()
+		snap.TickData[tick] = store.TickLiquiditySnapshot{
+			LiquidityNet:   new(big.Int).Set(tl.LiquidityNet),
+			LiquidityGross: new(big.Int).Set(tl.LiquidityGross),
+		}
 	}
 
 	select {
 	case saveSem <- struct{}{}:
-		utils.SafeGo(s.logger, func() {
+		s.runAsync(func(ctx context.Context) {
 			defer func() { <-saveSem }()
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			saveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
-			if err := s.store.Save(ctx, snap); err != nil {
+			if err := s.store.Save(saveCtx, snap); err != nil {
 				s.logger.Warn("failed to save pool state", "pool", snap.PoolAddress, "error", err)
 			}
 			// 同时写入历史记录（纯追加），失败不影响主流程
-			if err := s.store.SaveHistory(ctx, snap); err != nil {
+			if err := s.store.SaveHistory(saveCtx, snap); err != nil {
 				s.logger.Warn("failed to save pool history", "pool", snap.PoolAddress, "error", err)
 			}
 		})
@@ -1073,6 +1349,22 @@ func (s *PoolQuoteService) saveSnapshot() {
 		// 写入太频繁，丢弃本次快照（下一个 swap 会再次触发保存）
 		s.logger.Debug("save snapshot skipped (rate limited)", "pool", snap.PoolAddress)
 	}
+}
+
+func (s *PoolQuoteService) runAsync(fn func(ctx context.Context)) {
+	if s.bgCtx == nil {
+		s.bgCtx, s.bgCancel = context.WithCancel(context.Background())
+	}
+	s.bgWG.Add(1)
+	utils.SafeGo(s.logger, func() {
+		defer s.bgWG.Done()
+		select {
+		case <-s.bgCtx.Done():
+			return
+		default:
+			fn(s.bgCtx)
+		}
+	})
 }
 
 // LoadFromStore 从数据库恢复池子状态和元数据，返回上次保存的区块号。
@@ -1096,11 +1388,18 @@ func (s *PoolQuoteService) LoadFromStore(chainName string) (uint64, error) {
 	}
 	// 恢复 tick 地图
 	newTicks := make(map[int32]*pool.TickLiquidity)
-	for tickStr, liqStr := range snap.TickData {
-		tickVal, _ := strconv.ParseInt(tickStr, 10, 32)
-		liqNet, ok := new(big.Int).SetString(liqStr, 10)
-		if ok && liqNet.Sign() != 0 {
-			newTicks[int32(tickVal)] = &pool.TickLiquidity{LiquidityNet: liqNet}
+	for tick, tickSnap := range snap.TickData {
+		liqNet := tickSnap.LiquidityNet
+		if liqNet == nil || liqNet.Sign() == 0 {
+			continue
+		}
+		liqGross := tickSnap.LiquidityGross
+		if liqGross == nil || liqGross.Sign() < 0 {
+			continue
+		}
+		newTicks[tick] = &pool.TickLiquidity{
+			LiquidityNet:   new(big.Int).Set(liqNet),
+			LiquidityGross: new(big.Int).Set(liqGross),
 		}
 	}
 	s.pool.ReplaceTicks(newTicks)
@@ -1122,5 +1421,6 @@ func (s *PoolQuoteService) emitPriceUpdate() {
 		return
 	}
 
-	fn(s.pool.Address, 0, 0, s.pool.Tick)
+	p0, p1, tick := s.GetPrice()
+	fn(s.pool.Address, p0, p1, tick)
 }

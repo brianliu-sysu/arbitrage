@@ -1,10 +1,6 @@
 package service
 
-import (
-	"math/big"
-
-	"github.com/ethereum/go-ethereum/common"
-)
+import "github.com/ethereum/go-ethereum/common"
 
 // PoolEdge 表示一个池子的两条边：从 token0→token1 和 token1→token0。
 type PoolEdge struct {
@@ -182,20 +178,4 @@ func copyHops(hops []SwapHop) []SwapHop {
 	cp := make([]SwapHop, len(hops))
 	copy(cp, hops)
 	return cp
-}
-
-// QuoteResult 跨池报价结果。
-type QuoteResult struct {
-	Hops      []QuoteHop // 路径中的每一跳
-	AmountIn  *big.Int   // 输入数量
-	AmountOut *big.Int   // 输出数量
-	TokenIn   common.Address
-	TokenOut  common.Address
-}
-
-// QuoteHop 报价路径中的一跳（可序列化）。
-type QuoteHop struct {
-	Pool     common.Address // 池子地址
-	TokenIn  common.Address // 输入代币
-	TokenOut common.Address // 输出代币
 }

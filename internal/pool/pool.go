@@ -25,11 +25,13 @@ type TickLiquidity struct {
 type State struct {
 	mu sync.RWMutex
 
-	Address     common.Address // 池子合约地址
-	Token0      common.Address // Token0 地址（数值较小者为 token0）
-	Token1      common.Address // Token1 地址
-	Fee         uint32         // 手续费率，以 1e-6 为单位
-	TickSpacing int32          // tick spacing
+	Address      common.Address // 池子合约地址
+	Token0       common.Address // Token0 地址（数值较小者为 token0）
+	Token1       common.Address // Token1 地址
+	Fee          uint32         // 手续费率，以 1e-6 为单位
+	TickSpacing  int32          // tick spacing
+	Token0Symbol string
+	Token1Symbol string
 
 	// ---- 核心状态字段（通过事件更新）----
 	SqrtPriceX96 *big.Int // sqrt(token1/token0) * 2^96
@@ -42,6 +44,9 @@ type State struct {
 
 	BlockNumber uint64
 }
+
+// PoolState 兼容历史命名，避免外部调用方一次性改动。
+type PoolState = State
 
 // TokenInfo 代币元信息。
 type TokenInfo struct {
@@ -56,11 +61,17 @@ func NewState(address, token0, token1 common.Address, fee uint32) *State {
 		Token0:       token0,
 		Token1:       token1,
 		Fee:          fee,
+		TickSpacing:  1,
 		SqrtPriceX96: new(big.Int),
 		Liquidity:    new(big.Int),
 		Ticks:        make(map[int32]*TickLiquidity),
 		Bitmap:       make(map[uint16]utils.Word256),
 	}
+}
+
+// NewPoolState 兼容历史命名，等价于 NewState。
+func NewPoolState(address, token0, token1 common.Address, fee uint32) *State {
+	return NewState(address, token0, token1, fee)
 }
 
 // SetTokens 设置池子的代币地址和手续费率（代币元信息留空，后续由缓存填充）。
@@ -90,7 +101,7 @@ func (p *State) UpdateFromSwap(sqrtPriceX96 *big.Int, tick int32, liquidity *big
 // tickLower → liquidityNet +amount
 // tickUpper → liquidityNet -amount
 // 如果当前 tick 位于 [tickLower, tickUpper)，该头寸立即成为活跃流动性。
-func (p *State) UpdateTickFromMint(tickLower, tickUpper int32, amount *big.Int, blockNumber uint64) {
+func (p *State) UpdateTickFromMint(tickLower, tickUpper int32, amount *big.Int, blockNumber ...uint64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -100,7 +111,9 @@ func (p *State) UpdateTickFromMint(tickLower, tickUpper int32, amount *big.Int, 
 		p.Liquidity.Add(p.Liquidity, amount)
 	}
 
-	p.BlockNumber = blockNumber
+	if len(blockNumber) > 0 {
+		p.BlockNumber = blockNumber[0]
+	}
 }
 
 // UpdateTickFromBurn 根据 Burn 事件更新 tick 级的流动性地图。
@@ -109,7 +122,7 @@ func (p *State) UpdateTickFromMint(tickLower, tickUpper int32, amount *big.Int, 
 // tickLower → liquidityNet -amount
 // tickUpper → liquidityNet +amount
 // 如果当前 tick 位于 [tickLower, tickUpper)，该头寸从活跃流动性中移除。
-func (p *State) UpdateTickFromBurn(tickLower, tickUpper int32, amount *big.Int, blockNumber uint64) {
+func (p *State) UpdateTickFromBurn(tickLower, tickUpper int32, amount *big.Int, blockNumber ...uint64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -119,7 +132,9 @@ func (p *State) UpdateTickFromBurn(tickLower, tickUpper int32, amount *big.Int, 
 		p.Liquidity.Sub(p.Liquidity, amount)
 	}
 
-	p.BlockNumber = blockNumber
+	if len(blockNumber) > 0 {
+		p.BlockNumber = blockNumber[0]
+	}
 }
 
 // tickInRange 判断当前 tick 是否落在 Uniswap V3 头寸区间 [lower, upper)。
@@ -138,8 +153,15 @@ func (p *State) updateTickAndBitmap(tick int32, delta *big.Int, isUpper, isMint 
 		tl = &TickLiquidity{LiquidityNet: new(big.Int), LiquidityGross: new(big.Int)}
 		p.Ticks[tick] = tl
 	}
+	if tl.LiquidityNet == nil {
+		tl.LiquidityNet = new(big.Int)
+	}
+	if tl.LiquidityGross == nil {
+		// 历史快照可能只有 LiquidityNet，缺少 LiquidityGross；先做保守恢复避免空指针。
+		tl.LiquidityGross = new(big.Int).Abs(tl.LiquidityNet)
+	}
 
-	liquidityGrossBefore := tl.LiquidityGross
+	liquidityGrossBefore := new(big.Int).Set(tl.LiquidityGross)
 	if isMint {
 		tl.LiquidityGross.Add(tl.LiquidityGross, delta)
 	} else {
@@ -151,9 +173,9 @@ func (p *State) updateTickAndBitmap(tick int32, delta *big.Int, isUpper, isMint 
 
 	if isMint {
 		if isUpper {
-			tl.LiquidityGross.Sub(tl.LiquidityNet, delta)
+			tl.LiquidityNet.Sub(tl.LiquidityNet, delta)
 		} else {
-			tl.LiquidityGross.Add(tl.LiquidityNet, delta)
+			tl.LiquidityNet.Add(tl.LiquidityNet, delta)
 		}
 	} else {
 		if isUpper {
@@ -164,10 +186,10 @@ func (p *State) updateTickAndBitmap(tick int32, delta *big.Int, isUpper, isMint 
 	}
 
 	// 3. 联动更新 Bitmap 位图索引与内存垃圾回收 (GC)
-	if isMint && liquidityGrossBefore.BitLen() == 0 {
+	if isMint && liquidityGrossBefore.Sign() == 0 && tl.LiquidityGross.Sign() > 0 {
 		// Mint 场景：流动性从无到有 (0 -> >0)，将位图对应的 0 翻转为 1
 		p.flipBitmapBit(tick)
-	} else if !isMint && liquidityGrossBefore.BitLen() == 0 {
+	} else if !isMint && liquidityGrossBefore.Sign() > 0 && tl.LiquidityGross.Sign() == 0 {
 		// Burn 场景：流动性被完全抽干 (>0 -> 0)，将位图对应的 1 翻转为 0
 		p.flipBitmapBit(tick)
 
@@ -205,14 +227,85 @@ func (p *State) ClearTicks() {
 // 先构建好 newTicks，一次性替换，避免 ClearTicks + 逐个 SetTickLiquidity 之间的竞态窗口。
 func (p *State) ReplaceTicks(newTicks map[int32]*TickLiquidity) {
 	bitmap := make(map[uint16]utils.Word256)
-	for tick := range newTicks {
+	normalized := make(map[int32]*TickLiquidity, len(newTicks))
+	for tick, tl := range newTicks {
+		if tl == nil {
+			tl = &TickLiquidity{}
+		}
+		liqNet := new(big.Int)
+		if tl.LiquidityNet != nil {
+			liqNet.Set(tl.LiquidityNet)
+		}
+		liqGross := new(big.Int)
+		if tl.LiquidityGross != nil {
+			liqGross.Set(tl.LiquidityGross)
+		} else {
+			// DB 快照旧格式可能不包含 gross，使用 |net| 作为保守初值，避免后续事件处理崩溃。
+			liqGross.Abs(liqNet)
+		}
+		normalized[tick] = &TickLiquidity{
+			LiquidityNet:   liqNet,
+			LiquidityGross: liqGross,
+		}
 		utils.SetBitmapBit(tick, p.TickSpacing, true, bitmap)
 	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.Ticks = newTicks
+	p.Ticks = normalized
 	p.Bitmap = bitmap
+}
+
+// ReplaceFromState 原子替换整个池子运行时状态。
+// 传入状态会先深拷贝，避免外部后续修改影响内部内存。
+func (p *State) ReplaceFromState(next *State) {
+	if next == nil {
+		return
+	}
+	cp := next.GetStateCopy()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.Address = cp.Address
+	p.Token0 = cp.Token0
+	p.Token1 = cp.Token1
+	p.Fee = cp.Fee
+	p.TickSpacing = cp.TickSpacing
+	p.Token0Symbol = cp.Token0Symbol
+	p.Token1Symbol = cp.Token1Symbol
+	p.SqrtPriceX96 = new(big.Int).Set(cp.SqrtPriceX96)
+	p.Tick = cp.Tick
+	p.Liquidity = new(big.Int).Set(cp.Liquidity)
+	p.BlockNumber = cp.BlockNumber
+
+	p.Ticks = make(map[int32]*TickLiquidity, len(cp.Ticks))
+	for tick, tl := range cp.Ticks {
+		if tl == nil {
+			p.Ticks[tick] = &TickLiquidity{
+				LiquidityNet:   new(big.Int),
+				LiquidityGross: new(big.Int),
+			}
+			continue
+		}
+		liqNet := new(big.Int)
+		if tl.LiquidityNet != nil {
+			liqNet.Set(tl.LiquidityNet)
+		}
+		liqGross := new(big.Int)
+		if tl.LiquidityGross != nil {
+			liqGross.Set(tl.LiquidityGross)
+		}
+		p.Ticks[tick] = &TickLiquidity{
+			LiquidityNet:   liqNet,
+			LiquidityGross: liqGross,
+		}
+	}
+
+	p.Bitmap = make(map[uint16]utils.Word256, len(cp.Bitmap))
+	for k, v := range cp.Bitmap {
+		p.Bitmap[k] = v
+	}
 }
 
 // GetTickLiquidity 获取指定 tick 上的流动性净额。
@@ -241,7 +334,20 @@ func (p *State) GetTicksCopy() map[int32]*TickLiquidity {
 
 	cp := make(map[int32]*TickLiquidity, len(p.Ticks))
 	for k, v := range p.Ticks {
-		cp[k] = &TickLiquidity{LiquidityNet: new(big.Int).Set(v.LiquidityNet)}
+		liqNet := new(big.Int)
+		liqGross := new(big.Int)
+		if v != nil {
+			if v.LiquidityNet != nil {
+				liqNet.Set(v.LiquidityNet)
+			}
+			if v.LiquidityGross != nil {
+				liqGross.Set(v.LiquidityGross)
+			}
+		}
+		cp[k] = &TickLiquidity{
+			LiquidityNet:   liqNet,
+			LiquidityGross: liqGross,
+		}
 	}
 	return cp
 }
@@ -264,10 +370,18 @@ func (p *State) GetStateCopy() *State {
 		Token0:       p.Token0,
 		Token1:       p.Token1,
 		Fee:          p.Fee,
+		TickSpacing:  p.TickSpacing,
+		Token0Symbol: p.Token0Symbol,
+		Token1Symbol: p.Token1Symbol,
 		SqrtPriceX96: new(big.Int).Set(p.SqrtPriceX96),
 		Tick:         p.Tick,
 		Liquidity:    new(big.Int).Set(p.Liquidity),
 		Ticks:        p.GetTicksCopy(),
+		Bitmap:       make(map[uint16]utils.Word256, len(p.Bitmap)),
+		BlockNumber:  p.BlockNumber,
+	}
+	for k, v := range p.Bitmap {
+		cp.Bitmap[k] = v
 	}
 	return cp
 }
@@ -342,7 +456,7 @@ func (p *State) SimulateSwap(amountIn *big.Int, zeroForOne bool) *big.Int {
 		state.amountCalculated.Add(state.amountCalculated, step.amountOut)
 
 		// 步骤五：如果价格成功推到了下一个 Tick 边界，且该 Tick 被真实初始化了，需要“穿过”它
-		if state.sqrtPriceX96.Cmp(step.sqrtPriceNextX96) == 0 {
+		if step.sqrtPriceAfterX96.Cmp(step.sqrtPriceNextX96) == 0 {
 			if step.initialized {
 				tickData := p.Ticks[step.tickNext]
 				if tickData != nil {
@@ -378,6 +492,10 @@ func (p *State) SimulateSwap(amountIn *big.Int, zeroForOne bool) *big.Int {
 // tick: 当前的物理 tick 刻度（未压缩）
 // lte: true 代表向左找（价格下跌，<= tick）；false 代表向右找（价格上涨，> tick）
 func (p *State) NextInitializedTickWithinOneWord(tick int32, lte bool) (nextTick int32, initialized bool) {
+	if p.TickSpacing <= 0 {
+		p.TickSpacing = 1
+	}
+
 	// 1. 边界对齐与压缩
 	// 如果 tick 是负数且不能被 tickSpacing 整除，Go 的 '/' 是向零取整，
 	// 而 Uniswap 官方需要向下（向负无穷）取整，所以需要特殊处理。
@@ -403,12 +521,12 @@ func (p *State) NextInitializedTickWithinOneWord(tick int32, lte bool) (nextTick
 			nextBitIndex := utils.MostSignificantBit(maskedWord)
 			// 还原成物理 Tick：(wordIndex * 256 + bitIndex) * tickSpacing
 			nextTick = ((int32(wordIndex) << 8) | int32(nextBitIndex)) * p.TickSpacing
-			return nextTick, true
+			return clampTick(nextTick), true
 		}
 
 		// 没找到，返回当前 Word 的左边界
 		nextTick = (int32(wordIndex) << 8) * p.TickSpacing
-		return nextTick, false
+		return clampTick(nextTick), false
 
 	} else {
 		// === 向右找 (> 当前 tick) ===
@@ -428,11 +546,21 @@ func (p *State) NextInitializedTickWithinOneWord(tick int32, lte bool) (nextTick
 			// 找到最低位的 1
 			nextBitIndex := utils.LeastSignificantBit(maskedWord)
 			nextTick = ((int32(wordIndex) << 8) | int32(nextBitIndex)) * p.TickSpacing
-			return nextTick, true
+			return clampTick(nextTick), true
 		}
 
 		// 没找到，返回当前 Word 的右边界（即下一个 Word 的开头）
-		nextTick = (int32(wordIndex) + 1) << 8 * p.TickSpacing
-		return nextTick, false
+		nextTick = ((int32(wordIndex) + 1) << 8) * p.TickSpacing
+		return clampTick(nextTick), false
 	}
+}
+
+func clampTick(tick int32) int32 {
+	if tick < utils.MinTick {
+		return utils.MinTick
+	}
+	if tick > utils.MaxTick {
+		return utils.MaxTick
+	}
+	return tick
 }

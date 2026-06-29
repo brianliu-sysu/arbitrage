@@ -69,7 +69,7 @@ func TestUpdateFromSwap(t *testing.T) {
 	sqrtPrice := new(big.Int).Set(testSqrtPriceX96)
 	liq := new(big.Int).Set(testLiquidity)
 
-	ps.UpdateFromSwap(sqrtPrice, 0, liq)
+	ps.UpdateFromSwap(sqrtPrice, 0, liq, 0)
 
 	if ps.Tick != 0 {
 		t.Errorf("Tick = %d, want 0", ps.Tick)
@@ -91,8 +91,24 @@ func TestUpdateFromSwapPriceCalculation(t *testing.T) {
 	two96 := new(big.Int).Lsh(big.NewInt(1), 96)
 	sqrtPrice := new(big.Int).Mul(two, two96)
 
-	ps.UpdateFromSwap(sqrtPrice, 100, testLiquidity)
+	ps.UpdateFromSwap(sqrtPrice, 100, testLiquidity, 0)
 	if ps.Tick != 100 {
 		t.Errorf("Tick = %d, want 100", ps.Tick)
 	}
+}
+
+func TestUpdateTickFromBurn_WithMissingLiquidityGross_DoesNotPanic(t *testing.T) {
+	ps := NewState(addrPool, addrUSDC, addrWETH, 3000)
+	ps.TickSpacing = 60
+	ps.UpdateFromSwap(testSqrtPriceX96, 0, big.NewInt(1_000_000), 1)
+
+	// 模拟旧快照恢复：只有 net，没有 gross。
+	ps.ReplaceTicks(map[int32]*TickLiquidity{
+		60: {
+			LiquidityNet: big.NewInt(1000),
+		},
+	})
+
+	// 这里此前会因为 LiquidityGross=nil 在 Burn 路径崩溃。
+	ps.UpdateTickFromBurn(0, 60, big.NewInt(100), 2)
 }

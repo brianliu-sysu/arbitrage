@@ -13,6 +13,12 @@ import (
 // 使用 big.Float 512-bit 精度，保证 160-bit sqrtPriceX96 的精确转换。
 const tickMathPrec = 512
 
+var (
+	// TickMin/TickMax 为 Uniswap V3 支持的合法 tick 范围。
+	TickMin = utils.MinTick
+	TickMax = utils.MaxTick
+)
+
 var tickMathCache [20]*big.Float
 
 func init() {

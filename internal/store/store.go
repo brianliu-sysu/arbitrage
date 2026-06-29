@@ -25,7 +25,13 @@ type PoolSnapshot struct {
 	Token0Symbol string
 	Token1Symbol string
 	Fee          uint32
-	TickData     map[string]string
+	TickData     map[int32]TickLiquiditySnapshot
+}
+
+// TickLiquiditySnapshot 持久化的单个 tick 流动性信息。
+type TickLiquiditySnapshot struct {
+	LiquidityNet   *big.Int `json:"liquidityNet"`
+	LiquidityGross *big.Int `json:"liquidityGross"`
 }
 
 // TokenMetadata 代币元信息缓存（按链 + 代币地址唯一）。

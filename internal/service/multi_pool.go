@@ -3,12 +3,12 @@ package service
 import (
 	"fmt"
 	"math/big"
-	"strconv"
 	"sync"
 
 	"github.com/brianliu-sysu/arbitrage/internal/cache"
 	"github.com/brianliu-sysu/arbitrage/internal/logx"
 	"github.com/brianliu-sysu/arbitrage/internal/pool"
+	"github.com/brianliu-sysu/arbitrage/internal/quote"
 	"github.com/brianliu-sysu/arbitrage/internal/store"
 	"github.com/brianliu-sysu/arbitrage/internal/subgraph"
 	"github.com/brianliu-sysu/arbitrage/internal/subscriber"
@@ -31,6 +31,7 @@ type MultiPoolService struct {
 	baseTokens             []common.Address // 基础代币列表（跨池报价中间代币 + 自动发现基础代币）
 	store                  store.Storer
 	tokenCache             cache.TokenCache
+	logCache               cache.AppliedLogCache
 	maxBlockGapForFullSync uint64
 	factoryAddr            common.Address
 	logger                 logx.Logger
@@ -44,12 +45,13 @@ type MultiPoolService struct {
 // wsEndpoint 为 WebSocket 端点地址，将被所有池子的事件订阅共享。
 // rpcEndpoint 为 HTTP RPC 端点，用于 eth_call / eth_getLogs 等只读调用。
 // maxHops 为跨池报价最大跳数，baseTokens 为基础代币白名单。
-func NewMultiPoolService(chainName, wsEndpoint, rpcEndpoint string, maxHops int, baseTokens []common.Address, maxBlockGapForFullSync uint64, factoryAddr, multicallAddr common.Address, logger logx.Logger, st store.Storer, tokenCache cache.TokenCache) *MultiPoolService {
+func NewMultiPoolService(chainName, wsEndpoint, rpcEndpoint string, maxHops int, baseTokens []common.Address, maxBlockGapForFullSync uint64, factoryAddr, multicallAddr, quoterAddr common.Address, logger logx.Logger, st store.Storer, tokenCache cache.TokenCache, logCache cache.AppliedLogCache) *MultiPoolService {
 	return &MultiPoolService{
 		chainName:              chainName,
 		wsEndpoint:             wsEndpoint,
 		rpcEndpoint:            rpcEndpoint,
 		multicallAddr:          multicallAddr,
+		quoterAddr:             quoterAddr,
 		services:               make(map[common.Address]*PoolQuoteService),
 		maxHops:                maxHops,
 		baseTokens:             baseTokens,
@@ -57,6 +59,7 @@ func NewMultiPoolService(chainName, wsEndpoint, rpcEndpoint string, maxHops int,
 		factoryAddr:            factoryAddr,
 		store:                  st,
 		tokenCache:             tokenCache,
+		logCache:               logCache,
 		logger:                 logger,
 	}
 }
@@ -108,7 +111,7 @@ func (m *MultiPoolService) addPool(poolAddress common.Address, healthCheckInterv
 	}
 	m.mu.Unlock()
 
-	svc, err := NewPoolQuoteService(m.wsEndpoint, m.rpcEndpoint, cfg, m.logger, m.store, m.tokenCache)
+	svc, err := NewPoolQuoteService(m.wsEndpoint, m.rpcEndpoint, cfg, m.logger, m.store, m.tokenCache, m.logCache)
 	if err != nil {
 		return fmt.Errorf("create pool service for %s: %w", addr.Hex(), err)
 	}
@@ -120,11 +123,18 @@ func (m *MultiPoolService) addPool(poolAddress common.Address, healthCheckInterv
 		svc.pool.Fee = preloaded.Fee
 		if len(preloaded.TickData) > 0 {
 			newTicks := make(map[int32]*pool.TickLiquidity, len(preloaded.TickData))
-			for tickStr, liqStr := range preloaded.TickData {
-				tickVal, _ := strconv.ParseInt(tickStr, 10, 64)
-				liqNet, ok := new(big.Int).SetString(liqStr, 10)
-				if ok && liqNet.Sign() != 0 {
-					newTicks[int32(tickVal)] = &pool.TickLiquidity{LiquidityNet: liqNet}
+			for tick, tickSnap := range preloaded.TickData {
+				liqNet := tickSnap.LiquidityNet
+				if liqNet == nil || liqNet.Sign() == 0 {
+					continue
+				}
+				liqGross := tickSnap.LiquidityGross
+				if liqGross == nil || liqGross.Sign() < 0 {
+					continue
+				}
+				newTicks[tick] = &pool.TickLiquidity{
+					LiquidityNet:   new(big.Int).Set(liqNet),
+					LiquidityGross: new(big.Int).Set(liqGross),
 				}
 			}
 			svc.pool.ReplaceTicks(newTicks)
@@ -212,7 +222,8 @@ func (m *MultiPoolService) GetPrice(poolAddr common.Address) (price0In1, price1I
 		return 0, 0, 0, false
 	}
 
-	return price0In1, price1In0, svc.pool.Tick, true
+	p0, p1, t := svc.GetPrice()
+	return p0, p1, t, true
 }
 
 // GetAllPoolInfo 获取所有池子的基本信息，用于调试与监控。
@@ -234,7 +245,7 @@ func (m *MultiPoolService) GetAllPoolInfo() []map[string]interface{} {
 // CrossQuote 执行跨池报价：搜索从 tokenIn 到 tokenOut 的最优路径并报价。
 //
 // 返回 QuoteResult（包含路径和输出量），如果没有有效路径则返回 nil。
-func (m *MultiPoolService) CrossQuote(amountIn *big.Int, tokenIn, tokenOut common.Address) (*QuoteResult, error) {
+func (m *MultiPoolService) CrossQuote(amountIn *big.Int, tokenIn, tokenOut common.Address) (*quote.Result, error) {
 	m.mu.RLock()
 	pf := m.pathFinder
 	m.mu.RUnlock()
@@ -249,7 +260,7 @@ func (m *MultiPoolService) CrossQuote(amountIn *big.Int, tokenIn, tokenOut commo
 	}
 
 	// 对每条路径报价，选最优
-	var bestResult *QuoteResult
+	var bestResult *quote.Result
 	for _, path := range paths {
 		currentAmount := new(big.Int).Set(amountIn)
 		valid := true
@@ -273,9 +284,9 @@ func (m *MultiPoolService) CrossQuote(amountIn *big.Int, tokenIn, tokenOut commo
 		}
 
 		// 转换为可序列化的 QuoteHop 列表
-		hops := make([]QuoteHop, len(path.Hops))
+		hops := make([]quote.Hop, len(path.Hops))
 		for i, h := range path.Hops {
-			hops[i] = QuoteHop{
+			hops[i] = quote.Hop{
 				Pool:     h.Pool.pool.Address,
 				TokenIn:  h.TokenIn,
 				TokenOut: h.TokenOut,
@@ -283,7 +294,7 @@ func (m *MultiPoolService) CrossQuote(amountIn *big.Int, tokenIn, tokenOut commo
 		}
 
 		if bestResult == nil || currentAmount.Cmp(bestResult.AmountOut) > 0 {
-			bestResult = &QuoteResult{
+			bestResult = &quote.Result{
 				Hops:      hops,
 				AmountIn:  new(big.Int).Set(amountIn),
 				AmountOut: currentAmount,
