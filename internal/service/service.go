@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,7 +29,7 @@ import (
 // 它持有池子状态（pool.PoolState），实现 subscriber.EventHandler 接口
 // 以接收链上事件，并向上层暴露报价查询接口。
 type PoolQuoteService struct {
-	pool       *pool.PoolState
+	pool       *pool.State
 	subscriber *subscriber.Subscriber
 	logger     logx.Logger
 	store      store.Storer
@@ -77,7 +78,7 @@ type Config struct {
 // wsURL 为 WebSocket 端点（订阅链上事件），rpcURL 为 HTTP RPC 端点（eth_call 等）。
 // token0 / token1 / fee 会在调用 ResolvePoolMetadata 时通过 RPC 获取。
 func NewPoolQuoteService(wsURL, rpcURL string, cfg Config, logger logx.Logger, st store.Storer, tokenCache cache.TokenCache) (*PoolQuoteService, error) {
-	poolState := pool.NewPoolState(cfg.PoolAddress, common.Address{}, common.Address{}, 0)
+	poolState := pool.NewState(cfg.PoolAddress, common.Address{}, common.Address{}, 0)
 
 	maxGap := cfg.MaxBlockGapForFullSync
 	if maxGap == 0 {
@@ -126,18 +127,7 @@ func (s *PoolQuoteService) ResolvePoolMetadata() error {
 		return fmt.Errorf("fetch pool metadata for %s: %w", s.pool.Address.Hex(), err)
 	}
 
-	token0Info, err := s.resolveTokenInfo(meta.Token0)
-	if err != nil {
-		s.logger.Warn("failed to resolve token0 metadata, fallback to local guess",
-			"token", meta.Token0.Hex(), "error", err)
-	}
-	token1Info, err := s.resolveTokenInfo(meta.Token1)
-	if err != nil {
-		s.logger.Warn("failed to resolve token1 metadata, fallback to local guess",
-			"token", meta.Token1.Hex(), "error", err)
-	}
-
-	s.pool.SetTokensWithInfo(meta.Token0, meta.Token1, meta.Fee, token0Info, token1Info)
+	s.pool.SetTokens(meta.Token0, meta.Token1, meta.Fee)
 	return nil
 }
 
@@ -191,13 +181,10 @@ func (s *PoolQuoteService) resolveTokenInfo(tokenAddr common.Address) (*pool.Tok
 // 注意：
 //   - 启动主流程不再执行全量同步，优先保证快速启动（DB 状态 + 配置即可上线）。
 //   - 全量/轻量修复由定时健康检查与重连流程触发。
-func (s *PoolQuoteService) Start(syncFromBlock uint64) error {
+func (s *PoolQuoteService) Start() error {
 	if s.subscriber == nil {
 		return fmt.Errorf("subscriber is nil")
 	}
-
-	// 启动路径不再使用该参数；保留签名用于兼容上层调用。
-	_ = syncFromBlock
 
 	// Step 1: 开启 WebSocket 监听（首连不触发 OnReconnected）。
 	if err := s.subscriber.Start(); err != nil {
@@ -271,7 +258,7 @@ func (s *PoolQuoteService) OnMint(event *pool.MintEvent) {
 	}
 
 	// 更新 tick 级流动性；如果当前 tick 位于该区间内，也同步更新活跃 L。
-	s.pool.UpdateTickFromMint(event.TickLower, event.TickUpper, event.Amount)
+	s.pool.UpdateTickFromMint(event.TickLower, event.TickUpper, event.Amount, event.Raw.BlockNumber)
 
 	s.logger.Debug("mint event",
 		"block", event.Raw.BlockNumber,
@@ -290,7 +277,7 @@ func (s *PoolQuoteService) OnBurn(event *pool.BurnEvent) {
 	}
 
 	// 更新 tick 级流动性；如果当前 tick 位于该区间内，也同步更新活跃 L。
-	s.pool.UpdateTickFromBurn(event.TickLower, event.TickUpper, event.Amount)
+	s.pool.UpdateTickFromBurn(event.TickLower, event.TickUpper, event.Amount, event.Raw.BlockNumber)
 
 	s.logger.Debug("burn event",
 		"block", event.Raw.BlockNumber,
@@ -375,9 +362,9 @@ func (s *PoolQuoteService) applyBufferedEvent(ev bufferedEvent) {
 			ev.swap.Raw.BlockNumber,
 		)
 	case ev.mint != nil:
-		s.pool.UpdateTickFromMint(ev.mint.TickLower, ev.mint.TickUpper, ev.mint.Amount)
+		s.pool.UpdateTickFromMint(ev.mint.TickLower, ev.mint.TickUpper, ev.mint.Amount, ev.mint.Raw.BlockNumber)
 	case ev.burn != nil:
-		s.pool.UpdateTickFromBurn(ev.burn.TickLower, ev.burn.TickUpper, ev.burn.Amount)
+		s.pool.UpdateTickFromBurn(ev.burn.TickLower, ev.burn.TickUpper, ev.burn.Amount, ev.burn.Raw.BlockNumber)
 	}
 }
 
@@ -398,7 +385,7 @@ func (s *PoolQuoteService) OnReconnected() {
 		return
 	}
 
-	_, _, _, memBlock := s.pool.GetPrices()
+	memBlock := s.pool.BlockNumber
 	s.logger.Info("reconnected, syncing state", "pool", s.pool.Address.Hex(), "fromBlock", memBlock)
 
 	// Step 1: 执行全量或轻量同步
@@ -407,14 +394,14 @@ func (s *PoolQuoteService) OnReconnected() {
 		s.beginBufferingWindow("reconnect")
 		utils.SafeGo(s.logger, func() {
 			// 等待 runEventLoop 将 logsCh 中的积压事件消费到 eventBuffer 后再回放。
-			if err := s.runBufferedFullSync(memBlock, 1*time.Second); err != nil {
+			if err := s.runBufferedFullSync(1 * time.Second); err != nil {
 				s.logger.Error("full sync failed after reconnect", "pool", s.pool.Address.Hex(), "error", err)
 			}
 		})
 	} else {
 		s.beginBufferingWindow("reconnect-light")
 		utils.SafeGo(s.logger, func() {
-			if err := s.runBufferedLightSync(memBlock, 1*time.Second); err != nil {
+			if err := s.runBufferedLightSync(1 * time.Second); err != nil {
 				s.logger.Error("light sync failed after reconnect", "pool", s.pool.Address.Hex(), "error", err)
 			}
 		})
@@ -430,12 +417,6 @@ func (s *PoolQuoteService) SetOnPriceUpdate(fn func(poolAddr common.Address, pri
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.onPriceUpdate = fn
-}
-
-// GetPrice 获取当前现货价格及其所在 tick。
-func (s *PoolQuoteService) GetPrice() (price0In1, price1In0 float64, tick int32) {
-	price0In1, price1In0, tick, _ = s.pool.GetPrices()
-	return
 }
 
 // QuoteExactInput 精确输入报价：使用内存中的池子状态本地模拟，不访问 RPC。
@@ -471,14 +452,10 @@ func (s *PoolQuoteService) GetPoolInfo() map[string]interface{} {
 		"address":      state.Address.Hex(),
 		"token0":       state.Token0.Hex(),
 		"token1":       state.Token1.Hex(),
-		"token0Symbol": state.Token0Symbol,
-		"token1Symbol": state.Token1Symbol,
 		"fee":          state.Fee,
 		"tick":         state.Tick,
 		"sqrtPriceX96": state.SqrtPriceX96.String(),
 		"liquidity":    state.Liquidity.String(),
-		"price0In1":    state.Price0In1,
-		"price1In0":    state.Price1In0,
 		"blockNumber":  state.BlockNumber,
 	}
 }
@@ -490,7 +467,7 @@ func (s *PoolQuoteService) GetPoolInfo() map[string]interface{} {
 // 区块的事件才会被回放，确保不会遗漏同步期间到达的新事件。
 //
 // syncFromBlock 参数保留用于签名兼容，实际逻辑中不再使用。
-func (s *PoolQuoteService) DoFullSync(syncFromBlock uint64) error {
+func (s *PoolQuoteService) DoFullSync() error {
 	if s.subscriber == nil {
 		return fmt.Errorf("subscriber is nil")
 	}
@@ -525,13 +502,13 @@ func (s *PoolQuoteService) DoFullSync(syncFromBlock uint64) error {
 // SyncStateFromRPC 已弃用，请使用 DoFullSync。
 // 保留用于向后兼容。
 func (s *PoolQuoteService) SyncStateFromRPC() error {
-	return s.DoFullSync(0)
+	return s.DoFullSync()
 }
 
 // DoLightSync 执行轻量同步：仅 RPC 快照（slot0 + liquidity），不重建 tick 地图。
 // 适用于 WebSocket 重连后快速恢复状态，避免频繁的 tick bitmap 扫描。
 // RPC 快照直接返回链上权威的 slot0 + liquidity，无需额外的事件回放。
-func (s *PoolQuoteService) DoLightSync(syncFromBlock uint64) error {
+func (s *PoolQuoteService) DoLightSync() error {
 	if s.subscriber == nil {
 		return fmt.Errorf("subscriber is nil")
 	}
@@ -734,7 +711,7 @@ func (s *PoolQuoteService) collectTicksFromWordsCached(words []int16, wordRange,
 				continue
 			}
 			tick := tickFromWordBit(wordPos, bit, wordRange, tickSpacing)
-			if tick >= pool.TickMin && tick <= pool.TickMax {
+			if tick >= utils.MinTick && tick <= utils.MaxTick {
 				ticks = append(ticks, tick)
 			}
 		}
@@ -935,7 +912,7 @@ func (s *PoolQuoteService) collectTicksFromWordsCachedAtBlock(words []int16, wor
 				continue
 			}
 			tick := tickFromWordBit(wordPos, bit, wordRange, tickSpacing)
-			if tick >= pool.TickMin && tick <= pool.TickMax {
+			if tick >= utils.MinTick && tick <= utils.MaxTick {
 				ticks = append(ticks, tick)
 			}
 		}
@@ -993,7 +970,7 @@ func (s *PoolQuoteService) runHealthCheck() {
 		return
 	}
 
-	memSqrtPrice, memTick, memLiquidity, memBlock := s.pool.GetRawState()
+	memSqrtPrice, memTick, memLiquidity, _ := s.pool.GetRawState()
 
 	if memTick == rpcState.Tick &&
 		memSqrtPrice.Cmp(rpcState.SqrtPriceX96) == 0 &&
@@ -1013,7 +990,7 @@ func (s *PoolQuoteService) runHealthCheck() {
 	// 传入内存中的当前块号作为重放下界，补齐断线期间的缺失事件。
 	// 健康修复与启动/重连路径保持一致，统一走「缓冲 + 全量 + 重放」流程。
 	s.beginBufferingWindow("health-check")
-	if err := s.runBufferedFullSync(memBlock, 0); err != nil {
+	if err := s.runBufferedFullSync(0); err != nil {
 		s.logger.Error("health check: full sync failed", "error", err)
 	}
 }
@@ -1042,16 +1019,16 @@ func (s *PoolQuoteService) runBufferedSync(syncFn func() error, replayDelay time
 }
 
 // runBufferedFullSync 在缓冲窗口中执行全量同步并回放缓冲事件。
-func (s *PoolQuoteService) runBufferedFullSync(syncFromBlock uint64, replayDelay time.Duration) error {
+func (s *PoolQuoteService) runBufferedFullSync(replayDelay time.Duration) error {
 	return s.runBufferedSync(func() error {
-		return s.DoFullSync(syncFromBlock)
+		return s.DoFullSync()
 	}, replayDelay)
 }
 
 // runBufferedLightSync 在缓冲窗口中执行轻量同步并回放缓冲事件。
-func (s *PoolQuoteService) runBufferedLightSync(syncFromBlock uint64, replayDelay time.Duration) error {
+func (s *PoolQuoteService) runBufferedLightSync(replayDelay time.Duration) error {
 	return s.runBufferedSync(func() error {
-		return s.DoLightSync(syncFromBlock)
+		return s.DoLightSync()
 	}, replayDelay)
 }
 
@@ -1071,9 +1048,6 @@ func (s *PoolQuoteService) saveSnapshot() {
 		Tick:         state.Tick,
 		SqrtPriceX96: state.SqrtPriceX96,
 		Liquidity:    state.Liquidity,
-		Price0In1:    state.Price0In1,
-		Token0Symbol: state.Token0Symbol,
-		Token1Symbol: state.Token1Symbol,
 		Fee:          state.Fee,
 		TickData:     make(map[string]string),
 	}
@@ -1116,21 +1090,14 @@ func (s *PoolQuoteService) LoadFromStore(chainName string) (uint64, error) {
 		return 0, nil
 	}
 	s.pool.UpdateFromSwap(snap.SqrtPriceX96, snap.Tick, snap.Liquidity, snap.BlockNumber)
-	// 从 DB 恢复元数据（token0/token1/fee/symbols 已在 ResolvePoolMetadata 中设置，这里补充符号）
-	if snap.Token0Symbol != "" {
-		s.pool.Token0Symbol = snap.Token0Symbol
-	}
-	if snap.Token1Symbol != "" {
-		s.pool.Token1Symbol = snap.Token1Symbol
-	}
+
 	if snap.Fee != 0 {
 		s.pool.Fee = snap.Fee
 	}
 	// 恢复 tick 地图
 	newTicks := make(map[int32]*pool.TickLiquidity)
 	for tickStr, liqStr := range snap.TickData {
-		var tickVal int64
-		fmt.Sscanf(tickStr, "%d", &tickVal)
+		tickVal, _ := strconv.ParseInt(tickStr, 10, 32)
 		liqNet, ok := new(big.Int).SetString(liqStr, 10)
 		if ok && liqNet.Sign() != 0 {
 			newTicks[int32(tickVal)] = &pool.TickLiquidity{LiquidityNet: liqNet}
@@ -1146,16 +1113,14 @@ func (s *PoolQuoteService) emitPriceUpdate() {
 	fn := s.onPriceUpdate
 	s.mu.RUnlock()
 
-	price0, price1, tick, blockNum := s.pool.GetPrices()
-
 	// 更新 Prometheus 指标（小数位调整后的可读价格）
 	poolAddr := s.pool.Address.Hex()
-	metrics.Price.WithLabelValues(poolAddr).Set(s.pool.HumanPrice())
-	metrics.BlockNumber.WithLabelValues(poolAddr).Set(float64(blockNum))
+	metrics.Price.WithLabelValues(poolAddr).Set(float64(s.pool.Tick))
+	metrics.BlockNumber.WithLabelValues(poolAddr).Set(float64(s.pool.BlockNumber))
 
 	if fn == nil {
 		return
 	}
 
-	fn(s.pool.Address, price0, price1, tick)
+	fn(s.pool.Address, 0, 0, s.pool.Tick)
 }

@@ -117,8 +117,6 @@ func (m *MultiPoolService) addPool(poolAddress common.Address, healthCheckInterv
 	if preloaded != nil {
 		// 批量模式：直接用预加载的快照恢复，跳过 DB 查询
 		svc.pool.UpdateFromSwap(preloaded.SqrtPriceX96, preloaded.Tick, preloaded.Liquidity, preloaded.BlockNumber)
-		svc.pool.Token0Symbol = preloaded.Token0Symbol
-		svc.pool.Token1Symbol = preloaded.Token1Symbol
 		svc.pool.Fee = preloaded.Fee
 		if len(preloaded.TickData) > 0 {
 			newTicks := make(map[int32]*pool.TickLiquidity, len(preloaded.TickData))
@@ -150,7 +148,7 @@ func (m *MultiPoolService) addPool(poolAddress common.Address, healthCheckInterv
 	}
 
 	// 不在锁内执行 Start（会阻塞等待 RPC 返回并启动订阅 goroutine）
-	if err := svc.Start(syncFromBlock); err != nil {
+	if err := svc.Start(); err != nil {
 		return fmt.Errorf("start pool %s: %w", addr.Hex(), err)
 	}
 
@@ -213,8 +211,8 @@ func (m *MultiPoolService) GetPrice(poolAddr common.Address) (price0In1, price1I
 	if !exists {
 		return 0, 0, 0, false
 	}
-	price0In1, price1In0, tick = svc.GetPrice()
-	return price0In1, price1In0, tick, true
+
+	return price0In1, price1In0, svc.pool.Tick, true
 }
 
 // GetAllPoolInfo 获取所有池子的基本信息，用于调试与监控。
