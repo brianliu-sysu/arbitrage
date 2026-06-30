@@ -76,7 +76,13 @@ func (s *BlockSync) Run(ctx context.Context) error {
 			}
 			target := head.Number.Uint64()
 			for b := last + 1; b <= target; b++ {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				if err := s.processor.ProcessBlock(ctx, b); err != nil {
+					if ctxErr := ctx.Err(); ctxErr != nil {
+						return ctxErr
+					}
 					s.logger.Error("process block failed", "chain", s.chainName, "block", b, "error", err)
 					continue
 				}
@@ -101,7 +107,13 @@ func (s *BlockSync) CatchUpFrom(ctx context.Context, from, to uint64) error {
 		return nil
 	}
 	for b := from; b <= to; b++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := s.processor.ProcessBlock(ctx, b); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
 			return fmt.Errorf("catch up block %d: %w", b, err)
 		}
 	}
