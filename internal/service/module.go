@@ -3,7 +3,7 @@ package service
 import (
 	"context"
 
-	"github.com/brianliu-sysu/arbitrage/internal/httpapi"
+	"github.com/brianliu-sysu/arbitrage/internal/api"
 	"github.com/brianliu-sysu/arbitrage/internal/logx"
 	"go.uber.org/fx"
 )
@@ -14,8 +14,8 @@ var Module = fx.Module(
 	fx.Provide(newMultiChain),
 	fx.Provide(
 		fx.Annotate(
-			func(m *MultiChainService) httpapi.QuoteProvider { return m },
-			fx.As(new(httpapi.QuoteProvider)),
+			func(m *MultiChainService) api.QuoteProvider { return m },
+			fx.As(new(api.QuoteProvider)),
 		),
 	),
 	fx.Invoke(registerServiceLifecycle),

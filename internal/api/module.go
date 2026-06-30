@@ -1,4 +1,4 @@
-package httpapi
+package api
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 
 // Module 提供 HTTP API 服务及生命周期。
 var Module = fx.Module(
-	"httpapi",
+	"api",
 	fx.Provide(newServer),
 	fx.Invoke(registerHTTPServerLifecycle),
 )

@@ -21,7 +21,7 @@ func TestNewMultiChainService(t *testing.T) {
 
 func TestMultiChainAddChain(t *testing.T) {
 	mcs := NewMultiChainService(logx.Nop())
-	ms := NewMultiPoolService("", "", "", 2, nil, 100, common.Address{}, common.Address{}, common.Address{}, logx.Nop(), nil, nil, nil)
+	ms := NewMultiPoolService("", "", "", 2, nil, 100, common.Address{}, common.Address{}, common.Address{}, logx.Nop(), nil, nil, nil, nil)
 
 	err := mcs.AddChain("ethereum", ms)
 	if err != nil {
@@ -37,7 +37,7 @@ func TestMultiChainAddChain(t *testing.T) {
 
 func TestMultiChainGetChain(t *testing.T) {
 	mcs := NewMultiChainService(logx.Nop())
-	ms := NewMultiPoolService("", "", "", 2, nil, 100, common.Address{}, common.Address{}, common.Address{}, logx.Nop(), nil, nil, nil)
+	ms := NewMultiPoolService("", "", "", 2, nil, 100, common.Address{}, common.Address{}, common.Address{}, logx.Nop(), nil, nil, nil, nil)
 	_ = mcs.AddChain("polygon", ms)
 
 	svc, ok := mcs.GetChain("polygon")
@@ -56,9 +56,9 @@ func TestMultiChainGetChain(t *testing.T) {
 
 func TestMultiChainChainNames(t *testing.T) {
 	mcs := NewMultiChainService(logx.Nop())
-	_ = mcs.AddChain("ethereum", NewMultiPoolService("", "", "", 2, nil, 100, common.Address{}, common.Address{}, common.Address{}, logx.Nop(), nil, nil, nil))
-	_ = mcs.AddChain("polygon", NewMultiPoolService("", "", "", 2, nil, 100, common.Address{}, common.Address{}, common.Address{}, logx.Nop(), nil, nil, nil))
-	_ = mcs.AddChain("arbitrum", NewMultiPoolService("", "", "", 2, nil, 100, common.Address{}, common.Address{}, common.Address{}, logx.Nop(), nil, nil, nil))
+	_ = mcs.AddChain("ethereum", NewMultiPoolService("", "", "", 2, nil, 100, common.Address{}, common.Address{}, common.Address{}, logx.Nop(), nil, nil, nil, nil))
+	_ = mcs.AddChain("polygon", NewMultiPoolService("", "", "", 2, nil, 100, common.Address{}, common.Address{}, common.Address{}, logx.Nop(), nil, nil, nil, nil))
+	_ = mcs.AddChain("arbitrum", NewMultiPoolService("", "", "", 2, nil, 100, common.Address{}, common.Address{}, common.Address{}, logx.Nop(), nil, nil, nil, nil))
 
 	names := mcs.ChainNames()
 	if len(names) != 3 {
@@ -78,8 +78,8 @@ func TestMultiChainChainNames(t *testing.T) {
 
 func TestMultiChainStopAll(t *testing.T) {
 	mcs := NewMultiChainService(logx.Nop())
-	_ = mcs.AddChain("ethereum", NewMultiPoolService("", "", "", 2, nil, 100, common.Address{}, common.Address{}, common.Address{}, logx.Nop(), nil, nil, nil))
-	_ = mcs.AddChain("polygon", NewMultiPoolService("", "", "", 2, nil, 100, common.Address{}, common.Address{}, common.Address{}, logx.Nop(), nil, nil, nil))
+	_ = mcs.AddChain("ethereum", NewMultiPoolService("", "", "", 2, nil, 100, common.Address{}, common.Address{}, common.Address{}, logx.Nop(), nil, nil, nil, nil))
+	_ = mcs.AddChain("polygon", NewMultiPoolService("", "", "", 2, nil, 100, common.Address{}, common.Address{}, common.Address{}, logx.Nop(), nil, nil, nil, nil))
 
 	// Should not panic
 	mcs.StopAll()
@@ -88,7 +88,7 @@ func TestMultiChainStopAll(t *testing.T) {
 func TestMultiChainSetOnPriceUpdateAll(t *testing.T) {
 	mcs := NewMultiChainService(logx.Nop())
 
-	ms := NewMultiPoolService("ethereum", "", "", 2, nil, 100, common.Address{}, common.Address{}, common.Address{}, logx.Nop(), nil, nil, nil)
+	ms := NewMultiPoolService("ethereum", "", "", 2, nil, 100, common.Address{}, common.Address{}, common.Address{}, logx.Nop(), nil, nil, nil, nil)
 	_ = mcs.AddChain("ethereum", ms)
 
 	ch := make(chan string, 1)
@@ -109,7 +109,7 @@ func TestMultiChainGetAllPoolInfoFlat(t *testing.T) {
 	ps.UpdateFromSwap(testSQ96, 0, testLiq, 10)
 	mockPQS := &PoolQuoteService{pool: ps, logger: logx.Nop()}
 
-	ms := NewMultiPoolService("ethereum", "", "", 2, nil, 100, common.Address{}, common.Address{}, common.Address{}, logx.Nop(), nil, nil, nil)
+	ms := NewMultiPoolService("ethereum", "", "", 2, nil, 100, common.Address{}, common.Address{}, common.Address{}, logx.Nop(), nil, nil, nil, nil)
 	ms.mu.Lock()
 	ms.services[addr] = mockPQS
 	ms.mu.Unlock()
@@ -135,7 +135,7 @@ func TestMultiChainGetPrice(t *testing.T) {
 	ps.UpdateFromSwap(sqrtP, 100, testLiq, 20000)
 	mockPQS := &PoolQuoteService{pool: ps, logger: logx.Nop()}
 
-	ms := NewMultiPoolService("ethereum", "", "", 2, nil, 100, common.Address{}, common.Address{}, common.Address{}, logx.Nop(), nil, nil, nil)
+	ms := NewMultiPoolService("ethereum", "", "", 2, nil, 100, common.Address{}, common.Address{}, common.Address{}, logx.Nop(), nil, nil, nil, nil)
 	ms.mu.Lock()
 	ms.services[addr] = mockPQS
 	ms.mu.Unlock()
@@ -177,7 +177,7 @@ func TestMultiChainQuoteExactInput(t *testing.T) {
 	ps.UpdateFromSwap(testSQ96, 0, testLiq, 10)
 	mockPQS := &PoolQuoteService{pool: ps, logger: logx.Nop()}
 
-	ms := NewMultiPoolService("ethereum", "", "", 2, nil, 100, common.Address{}, common.Address{}, common.Address{}, logx.Nop(), nil, nil, nil)
+	ms := NewMultiPoolService("ethereum", "", "", 2, nil, 100, common.Address{}, common.Address{}, common.Address{}, logx.Nop(), nil, nil, nil, nil)
 	ms.mu.Lock()
 	ms.services[addr] = mockPQS
 	ms.mu.Unlock()
@@ -225,7 +225,7 @@ func TestMultiChainGetAllPoolInfo(t *testing.T) {
 	ps.UpdateFromSwap(testSQ96, 0, testLiq, 10)
 	mockPQS := &PoolQuoteService{pool: ps, logger: logx.Nop()}
 
-	ms := NewMultiPoolService("ethereum", "", "", 2, nil, 100, common.Address{}, common.Address{}, common.Address{}, logx.Nop(), nil, nil, nil)
+	ms := NewMultiPoolService("ethereum", "", "", 2, nil, 100, common.Address{}, common.Address{}, common.Address{}, logx.Nop(), nil, nil, nil, nil)
 	ms.mu.Lock()
 	ms.services[addr] = mockPQS
 	ms.mu.Unlock()

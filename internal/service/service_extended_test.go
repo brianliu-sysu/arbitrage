@@ -11,7 +11,7 @@ import (
 	"github.com/brianliu-sysu/arbitrage/internal/logx"
 	"github.com/brianliu-sysu/arbitrage/internal/pool"
 	"github.com/brianliu-sysu/arbitrage/internal/store"
-	"github.com/brianliu-sysu/arbitrage/internal/subscriber"
+	"github.com/brianliu-sysu/arbitrage/internal/blockchain"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 )
@@ -369,7 +369,7 @@ func TestFetchTicksConcurrentlyEmpty(t *testing.T) {
 func TestApplyTickData(t *testing.T) {
 	ps := pool.NewPoolState(addrPool1, tkUSDC, tkWETH, 3000)
 	svc := &PoolQuoteService{pool: ps, logger: logx.Nop()}
-	data := map[int32]*subscriber.TickData{
+	data := map[int32]*blockchain.TickData{
 		10:  {Initialized: true, LiquidityNet: big.NewInt(500)},
 		-10: {Initialized: true, LiquidityNet: big.NewInt(-500)},
 		20:  {Initialized: false, LiquidityNet: big.NewInt(100)}, // not initialized → skipped

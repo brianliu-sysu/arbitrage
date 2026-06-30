@@ -1,4 +1,4 @@
-package httpapi
+package api
 
 import (
 	"github.com/brianliu-sysu/arbitrage/internal/logx"

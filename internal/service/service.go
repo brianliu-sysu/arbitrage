@@ -14,8 +14,9 @@ import (
 	"github.com/brianliu-sysu/arbitrage/internal/logx"
 	"github.com/brianliu-sysu/arbitrage/internal/metrics"
 	"github.com/brianliu-sysu/arbitrage/internal/pool"
+	"github.com/brianliu-sysu/arbitrage/internal/pool/replay"
 	"github.com/brianliu-sysu/arbitrage/internal/store"
-	"github.com/brianliu-sysu/arbitrage/internal/subscriber"
+	"github.com/brianliu-sysu/arbitrage/internal/blockchain"
 	"github.com/brianliu-sysu/arbitrage/internal/tracing"
 	"github.com/brianliu-sysu/arbitrage/internal/utils"
 	"github.com/ethereum/go-ethereum/common"
@@ -27,18 +28,17 @@ import (
 )
 
 // PoolQuoteService 是 Uniswap V3 池子报价服务的顶层封装。
-// 它持有池子状态（pool.PoolState），实现 subscriber.EventHandler 接口
-// 以接收链上事件，并向上层暴露报价查询接口。
+// 增量同步由 BlockSync 负责；PoolClient 仅用于 RPC（health check / full sync）。
 type PoolQuoteService struct {
 	pool       *pool.State
-	subscriber *subscriber.Subscriber
+	poolClient *blockchain.PoolClient
 	logger     logx.Logger
 	store      store.Storer
 	tokenCache cache.TokenCache
 	logCache   cache.AppliedLogCache
 	chainName  string
 
-	fetchCurrentBlockNumber func() (uint64, error) // 测试注入；nil 时使用 subscriber
+	fetchCurrentBlockNumber func() (uint64, error) // 测试注入；nil 时使用 poolClient
 
 	mu            sync.RWMutex
 	onPriceUpdate func(poolAddr common.Address, price0In1, price1In0 float64, tick int32)
@@ -122,11 +122,11 @@ func NewPoolQuoteService(wsURL, rpcURL string, cfg Config, logger logx.Logger, s
 	}
 	svc.bgCtx, svc.bgCancel = context.WithCancel(context.Background())
 
-	sub, err := subscriber.NewSubscriber(wsURL, rpcURL, cfg.PoolAddress, svc, cfg.MulticallAddress, cfg.QuoterAddress, logger)
+	sub, err := blockchain.NewSubscriber(wsURL, rpcURL, cfg.PoolAddress, svc, cfg.MulticallAddress, cfg.QuoterAddress, logger)
 	if err != nil {
-		return nil, fmt.Errorf("create subscriber: %w", err)
+		return nil, fmt.Errorf("create pool client: %w", err)
 	}
-	svc.subscriber = sub
+	svc.poolClient = sub
 
 	return svc, nil
 }
@@ -135,8 +135,8 @@ func NewPoolQuoteService(wsURL, rpcURL string, cfg Config, logger logx.Logger, s
 //
 // 必须在 Start 之前调用（Start 中的 DoFullSync 会用到 fee 信息）。
 func (s *PoolQuoteService) ResolvePoolMetadata() error {
-	if s.subscriber == nil {
-		return fmt.Errorf("subscriber is nil")
+	if s.poolClient == nil {
+		return fmt.Errorf("poolClient is nil")
 	}
 	// 如果 DB 已有元数据，跳过 RPC 查询（从 LoadFromStore 已恢复）
 	if s.pool.Token0 != (common.Address{}) && s.pool.Token1 != (common.Address{}) && s.pool.Fee != 0 {
@@ -148,7 +148,7 @@ func (s *PoolQuoteService) ResolvePoolMetadata() error {
 		)
 		return nil
 	}
-	meta, err := s.subscriber.FetchPoolMetadata()
+	meta, err := s.poolClient.FetchPoolMetadata()
 	if err != nil {
 		return fmt.Errorf("fetch pool metadata for %s: %w", s.pool.Address.Hex(), err)
 	}
@@ -157,31 +157,21 @@ func (s *PoolQuoteService) ResolvePoolMetadata() error {
 	return nil
 }
 
-// Start 启动服务：
-//  1. 启动实时事件订阅
-//  2. 启动快照定时 flush（纯时间驱动）
-//  3. 启动定时健康检查（如已配置）
+// Start 启动池子服务。
 //
-// 注意：
-//   - 启动主流程不再执行全量同步，优先保证快速启动（DB 状态 + 配置即可上线）。
-//   - 全量/轻量修复由定时健康检查与重连流程触发。
+// 增量同步由 BlockSync 负责（SubscribeNewHead → eth_getLogs → replay.ApplyBlock）。
+// 此处不启动 WS 事件订阅，仅可选健康检查与快照兜底 flush。
 func (s *PoolQuoteService) Start(_ ...uint64) error {
-	if s.subscriber == nil {
-		return fmt.Errorf("subscriber is nil")
+	if s.poolClient == nil {
+		return fmt.Errorf("poolClient is nil")
 	}
 
-	// Step 1: 开启 WebSocket 监听（首连不触发 OnReconnected）。
-	if err := s.subscriber.Start(); err != nil {
-		return fmt.Errorf("start subscriber: %w", err)
+	if err := s.poolClient.Start(); err != nil {
+		return fmt.Errorf("start poolClient: %w", err)
 	}
 
-	// 立即发一次回调/指标，便于上层拿到当前（可能来自 DB）的初始状态。
 	s.emitPriceUpdate()
-
-	// Step 2: 启动快照定时 flush（无新事件时也能按时间落库）
 	s.startSnapshotFlushLoop()
-
-	// Step 3: 启动定时健康检查
 	s.startHealthCheck()
 	return nil
 }
@@ -196,14 +186,14 @@ func (s *PoolQuoteService) Stop() {
 		s.bgCancel()
 	}
 
-	if s.subscriber != nil {
-		s.subscriber.Stop()
+	if s.poolClient != nil {
+		s.poolClient.Stop()
 	}
 	s.bgWG.Wait()
 }
 
 // ---------------------------------------------------------------------------
-// subscriber.EventHandler 接口实现
+// poolClient.EventHandler 接口实现
 // ---------------------------------------------------------------------------
 
 func (s *PoolQuoteService) OnSwap(event *pool.SwapEvent) {
@@ -410,30 +400,33 @@ func (s *PoolQuoteService) applyBufferedEvent(ev bufferedEvent) {
 }
 
 func (s *PoolQuoteService) OnError(err error) {
-	s.logger.Error("subscriber error", "error", err)
+	s.logger.Error("poolClient error", "error", err)
 }
 
-// OnReconnected 在 WebSocket 断线重连成功后调用。
-//
-// 采用与 Start() 相同的快照 + 缓冲重放策略：
-//  1. 记录快照起点高度
-//  2. 启用缓冲模式（bufferingMode=true）
-//  3. 执行全量/轻量同步
-//  4. 延迟重放缓冲区事件（等待 runEventLoop 消费 logsCh 积压）
-//  5. 切换回实时模式
-func (s *PoolQuoteService) OnReconnected() {
-	if s.subscriber == nil {
-		return
+// OnReconnected WS 重连回调。池子增量同步由 BlockSync 负责，此处不做同步。
+func (s *PoolQuoteService) OnReconnected() {}
+
+// needsInitialFullSync 判断是否从未成功初始化（无 DB 快照 / 无 tick 地图）。
+func (s *PoolQuoteService) needsInitialFullSync() bool {
+	return s.pool.BlockNumber == 0 || s.pool.GetTickCount() == 0
+}
+
+// EnsureInitialState 仅在首次无数据时执行一次全量同步（链上 tick bitmap + slot0）。
+// 已有 DB 快照的池子跳过，后续由 BlockSync 从 lastBlock+1 增量补齐。
+func (s *PoolQuoteService) EnsureInitialState() error {
+	if !s.needsInitialFullSync() {
+		return nil
 	}
-
-	s.logger.Info("reconnected, syncing state", "pool", s.pool.Address.Hex(), "memBlock", s.pool.BlockNumber)
-
-	// Step 1: 执行轻量同步（串行化，避免与 full sync 并发覆盖）
-	s.runAsync(func(context.Context) {
-		if err := s.runBufferedLightSync(1 * time.Second); err != nil {
-			s.logger.Error("light sync failed after reconnect", "pool", s.pool.Address.Hex(), "error", err)
-		}
-	})
+	if s.poolClient == nil {
+		return fmt.Errorf("poolClient is nil")
+	}
+	s.logger.Info("initial full sync", "pool", s.pool.Address.Hex())
+	if err := s.DoFullSync(); err != nil {
+		return err
+	}
+	s.emitPriceUpdate()
+	s.saveSnapshot()
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -514,18 +507,18 @@ func (s *PoolQuoteService) GetPrice() (price0In1, price1In0 float64, tick int32)
 //
 // syncFromBlock 参数保留用于签名兼容，实际逻辑中不再使用。
 func (s *PoolQuoteService) DoFullSync(_ ...uint64) error {
-	if s.subscriber == nil {
-		return fmt.Errorf("subscriber is nil")
+	if s.poolClient == nil {
+		return fmt.Errorf("poolClient is nil")
 	}
 
 	// 1. 确定锚点区块（同步终点）
-	targetBlock, err := s.subscriber.FetchBlockNumber()
+	targetBlock, err := s.poolClient.FetchBlockNumber()
 	if err != nil {
 		return fmt.Errorf("fetch target block: %w", err)
 	}
 
 	// 2. 获取 targetBlock 时刻的 RPC 静态快照（slot0 + liquidity）
-	rpcState, err := s.subscriber.FetchStateViaRPCAtBlock(targetBlock)
+	rpcState, err := s.poolClient.FetchStateViaRPCAtBlock(targetBlock)
 	if err != nil {
 		return fmt.Errorf("fetch rpc state at block %d: %w", targetBlock, err)
 	}
@@ -555,8 +548,8 @@ func (s *PoolQuoteService) DoFullSync(_ ...uint64) error {
 //
 // 未提供 syncFromBlock 时，回退到当前块快照模式（兼容旧行为）。
 func (s *PoolQuoteService) DoLightSync() error {
-	if s.subscriber == nil {
-		return fmt.Errorf("subscriber is nil")
+	if s.poolClient == nil {
+		return fmt.Errorf("poolClient is nil")
 	}
 
 	fromBlock := s.pool.BlockNumber
@@ -565,12 +558,12 @@ func (s *PoolQuoteService) DoLightSync() error {
 		return fmt.Errorf("need a full sync")
 	}
 
-	tipBlock, err := s.subscriber.FetchBlockNumber()
+	tipBlock, err := s.poolClient.FetchBlockNumber()
 	if err != nil {
 		return fmt.Errorf("fetch tip block: %w", err)
 	}
 	if tipBlock >= fromBlock {
-		if err := s.subscriber.SyncHistoricalAll(
+		if err := s.poolClient.SyncHistoricalAll(
 			new(big.Int).SetUint64(fromBlock),
 			new(big.Int).SetUint64(tipBlock),
 		); err != nil {
@@ -592,14 +585,14 @@ func (s *PoolQuoteService) DoLightSync() error {
 
 // RebuildTickMapFromChain 通过 Tick Bitmap 直接从链上重建完整的 tick 流动性地图。
 func (s *PoolQuoteService) RebuildTickMapFromChain() error {
-	if s.subscriber == nil {
-		return fmt.Errorf("subscriber is nil")
+	if s.poolClient == nil {
+		return fmt.Errorf("poolClient is nil")
 	}
 
 	currentTick := s.pool.Tick
 	beforeCount := s.pool.GetTickCount()
 
-	tickSpacing, err := s.subscriber.FetchTickSpacing()
+	tickSpacing, err := s.poolClient.FetchTickSpacing()
 	if err != nil {
 		return fmt.Errorf("fetch tick spacing: %w", err)
 	}
@@ -696,7 +689,7 @@ func (s *PoolQuoteService) discoverActiveWords(startWord int16, wordRange int32,
 		}
 
 		// 批量查询本窗口所有 word
-		batchResults, err := s.subscriber.FetchTickBitmapBatch(windowCandidates)
+		batchResults, err := s.poolClient.FetchTickBitmapBatch(windowCandidates)
 		if err != nil {
 			return nil, nil, fmt.Errorf("batch fetch bitmaps: %w", err)
 		}
@@ -759,7 +752,7 @@ func (s *PoolQuoteService) collectTicksFromWordsCached(words []int16, wordRange,
 		bitmap, ok := bitmaps[wordPos]
 		if !ok {
 			var err error
-			bitmap, err = s.subscriber.FetchTickBitmap(wordPos)
+			bitmap, err = s.poolClient.FetchTickBitmap(wordPos)
 			if err != nil || bitmap.Sign() == 0 {
 				continue
 			}
@@ -783,12 +776,12 @@ func (s *PoolQuoteService) collectTicksFromWordsCached(words []int16, wordRange,
 // fetchTicksConcurrently 通过 Multicall3 批量获取所有 tick 的链上数据。
 // 一次 RPC 调用（内部自动分块）即可获取所有 tick，避免逐个查询。
 // ctx 取消时会提前退出，返回已获取的部分结果。
-func (s *PoolQuoteService) fetchTicksConcurrently(ticks []int32) map[int32]*subscriber.TickData {
+func (s *PoolQuoteService) fetchTicksConcurrently(ticks []int32) map[int32]*blockchain.TickData {
 	if len(ticks) == 0 {
 		return nil
 	}
 
-	data, err := s.subscriber.FetchTickInfoBatch(ticks)
+	data, err := s.poolClient.FetchTickInfoBatch(ticks)
 	if err != nil {
 		s.logger.Warn("tick rebuild: batch fetch failed, falling back to empty",
 			"total", len(ticks), "error", err)
@@ -800,7 +793,7 @@ func (s *PoolQuoteService) fetchTicksConcurrently(ticks []int32) map[int32]*subs
 
 // applyTickData 将从链上获取的 tick 数据原子替换到池子状态中。
 // 先构建临时 map，然后一次性替换，避免与并发的 Swap 事件产生竞态。
-func (s *PoolQuoteService) applyTickData(data map[int32]*subscriber.TickData) int {
+func (s *PoolQuoteService) applyTickData(data map[int32]*blockchain.TickData) int {
 	newTicks := make(map[int32]*pool.TickLiquidity, len(data))
 	count := 0
 	for tick, d := range data {
@@ -820,14 +813,14 @@ func (s *PoolQuoteService) applyTickData(data map[int32]*subscriber.TickData) in
 // RebuildTickMapFromChainAtBlock 在指定区块高度通过 Tick Bitmap 重建完整的 tick 流动性地图。
 // 与 RebuildTickMapFromChain 不同，所有 RPC 查询统一使用相同的 targetBlock，确保一致性快照。
 func (s *PoolQuoteService) RebuildTickMapFromChainAtBlock(targetBlock uint64) error {
-	if s.subscriber == nil {
-		return fmt.Errorf("subscriber is nil")
+	if s.poolClient == nil {
+		return fmt.Errorf("poolClient is nil")
 	}
 
 	currentTick := s.pool.Tick
 	beforeCount := s.pool.GetTickCount()
 
-	tickSpacing, err := s.subscriber.FetchTickSpacing()
+	tickSpacing, err := s.poolClient.FetchTickSpacing()
 	if err != nil {
 		return fmt.Errorf("fetch tick spacing: %w", err)
 	}
@@ -897,7 +890,7 @@ func (s *PoolQuoteService) discoverActiveWordsAtBlock(startWord int16, wordRange
 			break
 		}
 
-		batchResults, err := s.subscriber.FetchTickBitmapBatchAtBlock(windowCandidates, blockNumber)
+		batchResults, err := s.poolClient.FetchTickBitmapBatchAtBlock(windowCandidates, blockNumber)
 		if err != nil {
 			return nil, nil, fmt.Errorf("batch fetch bitmaps at block %d: %w", blockNumber, err)
 		}
@@ -958,7 +951,7 @@ func (s *PoolQuoteService) collectTicksFromWordsCachedAtBlock(words []int16, wor
 		bitmap, ok := bitmaps[wordPos]
 		if !ok {
 			var err error
-			bitmap, err = s.subscriber.FetchTickBitmapAtBlock(wordPos, blockNumber)
+			bitmap, err = s.poolClient.FetchTickBitmapAtBlock(wordPos, blockNumber)
 			if err != nil || bitmap.Sign() == 0 {
 				continue
 			}
@@ -980,12 +973,12 @@ func (s *PoolQuoteService) collectTicksFromWordsCachedAtBlock(words []int16, wor
 }
 
 // fetchTicksConcurrentlyAtBlock 在指定区块高度批量获取 tick 的链上数据。
-func (s *PoolQuoteService) fetchTicksConcurrentlyAtBlock(ticks []int32, blockNumber uint64) map[int32]*subscriber.TickData {
+func (s *PoolQuoteService) fetchTicksConcurrentlyAtBlock(ticks []int32, blockNumber uint64) map[int32]*blockchain.TickData {
 	if len(ticks) == 0 {
 		return nil
 	}
 
-	data, err := s.subscriber.FetchTickInfoBatchAtBlock(ticks, blockNumber)
+	data, err := s.poolClient.FetchTickInfoBatchAtBlock(ticks, blockNumber)
 	if err != nil {
 		s.logger.Warn("tick rebuild: batch fetch at block failed, falling back to empty",
 			"total", len(ticks), "block", blockNumber, "error", err)
@@ -1015,15 +1008,12 @@ func (s *PoolQuoteService) startHealthCheck() {
 	s.logger.Debug("health check started", "interval", s.healthCheckInterval)
 }
 
-// runHealthCheck 执行一次健康检查：
-//  1. 通过 RPC 获取链上最新状态快照
-//  2. 与内存中的 sqrtPriceX96 / liquidity / tick 逐一比对
-//  3. 任一字段不一致 → 触发全量同步（RPC 快照 + 历史事件重放）
+// runHealthCheck 对比链上 slot0 与内存；仅首次无数据时触发全量同步，否则由 BlockSync 增量修复。
 func (s *PoolQuoteService) runHealthCheck() {
-	if s.subscriber == nil {
+	if s.poolClient == nil {
 		return
 	}
-	rpcState, err := s.subscriber.FetchStateViaRPC()
+	rpcState, err := s.poolClient.FetchStateViaRPC()
 	if err != nil {
 		s.logger.Warn("health check: RPC fetch failed", "error", err)
 		return
@@ -1038,31 +1028,35 @@ func (s *PoolQuoteService) runHealthCheck() {
 		return
 	}
 
-	s.logger.Info("pool state is difference",
+	if s.needsInitialFullSync() {
+		s.logger.Info("health check: pool not initialized, running initial full sync",
+			"pool", s.pool.Address.Hex())
+		metrics.HealthRepairsTotal.WithLabelValues(s.pool.Address.Hex()).Inc()
+		if err := s.EnsureInitialState(); err != nil {
+			s.logger.Error("health check: initial full sync failed", "error", err)
+		}
+		return
+	}
+
+	s.logger.Warn("pool state drift detected; block sync should repair via incremental logs",
+		"pool", s.pool.Address.Hex(),
+		"memBlock", s.pool.BlockNumber,
 		"tick", fmt.Sprintf("[%v:%v]", rpcState.Tick, memTick),
 		"liquidity", fmt.Sprintf("[%v:%v]", rpcState.Liquidity, memLiquidity),
 		"price", fmt.Sprintf("[%v:%v]", rpcState.SqrtPriceX96, memSqrtPrice),
-		"tick count", s.pool.GetTickCount())
-
-	metrics.HealthRepairsTotal.WithLabelValues(s.pool.Address.Hex()).Inc()
-
-	// 传入内存中的当前块号作为重放下界，补齐断线期间的缺失事件。
-	// 健康修复与启动/重连路径保持一致，统一走「缓冲 + 全量 + 重放」流程。
-	if err := s.runBufferedFullSync(0); err != nil {
-		s.logger.Error("health check: full sync failed", "error", err)
-	}
+		"tickCount", s.pool.GetTickCount())
 }
 
 // beginBufferingWindow 进入缓冲窗口：记录快照起点块高并开启 buffering 模式。
 func (s *PoolQuoteService) beginBufferingWindow(reason string) {
-	if s.subscriber == nil {
-		s.logger.Warn("subscriber is nil, buffering from block 0", "reason", reason)
+	if s.poolClient == nil {
+		s.logger.Warn("poolClient is nil, buffering from block 0", "reason", reason)
 		s.snapshotStartBlock = 0
 		s.bufferingMode.Store(true)
 		return
 	}
 
-	startBlock, err := s.subscriber.FetchBlockNumber()
+	startBlock, err := s.poolClient.FetchBlockNumber()
 	if err != nil {
 		s.logger.Warn("failed to fetch snapshot start block, using 0", "reason", reason, "error", err)
 	}
@@ -1200,10 +1194,10 @@ func (s *PoolQuoteService) currentBlockNumber() (uint64, error) {
 	if s.fetchCurrentBlockNumber != nil {
 		return s.fetchCurrentBlockNumber()
 	}
-	if s.subscriber == nil {
-		return 0, fmt.Errorf("subscriber is nil")
+	if s.poolClient == nil {
+		return 0, fmt.Errorf("poolClient is nil")
 	}
-	return s.subscriber.FetchBlockNumber()
+	return s.poolClient.FetchBlockNumber()
 }
 
 // startSnapshotFlushLoop 启动后台时间驱动 flush 任务。
@@ -1275,16 +1269,11 @@ func applyBufferedEventToState(state *pool.State, ev bufferedEvent) {
 	}
 	switch {
 	case ev.swap != nil:
-		state.UpdateFromSwap(
-			ev.swap.SqrtPriceX96,
-			ev.swap.Tick,
-			ev.swap.Liquidity,
-			ev.swap.Raw.BlockNumber,
-		)
+		replay.ApplySwap(state, ev.swap)
 	case ev.mint != nil:
-		state.UpdateTickFromMint(ev.mint.TickLower, ev.mint.TickUpper, ev.mint.Amount, ev.mint.Raw.BlockNumber)
+		replay.ApplyMint(state, ev.mint)
 	case ev.burn != nil:
-		state.UpdateTickFromBurn(ev.burn.TickLower, ev.burn.TickUpper, ev.burn.Amount, ev.burn.Raw.BlockNumber)
+		replay.ApplyBurn(state, ev.burn)
 	}
 }
 

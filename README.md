@@ -1,75 +1,125 @@
 # Uniswap V3 Multi-Chain Quote Service
 
-基于 Go 的 Uniswap V3 多链实时报价服务。支持同时监控多条链上的多个池子，通过 WebSocket 订阅链上事件实时更新状态，对外提供 HTTP API 报价。
+基于 Go 的生产级 Uniswap V3 多链报价引擎。采用**领域驱动分层**与 **Uber Fx 依赖注入**，池子状态长期保存在 PostgreSQL，启动时从 Snapshot 恢复，后续通过 **BlockSync** 按区块增量同步，对外提供 HTTP API 报价与跨池路由。
 
 ## 特性
 
-- **多链支持** — 一条链一个配置节，独立 RPC 端点 + 池子列表，同时监控 Ethereum / Arbitrum / Base / Optimism 等
-- **实时状态** — WebSocket 订阅 Swap / Mint / Burn 事件，秒级价格更新
-- **WebSocket 断线重连** — 指数退避自动重连，全量或轻量 RPC 快照快速恢复
-- **Tick Bitmap 全量重建** — 直接从链上读取 tick bitmap 重建流动性地图，使用 Multicall3 批量查询
-- **锚点区块模式** — 全量同步基于固定区块高度获取一致性快照，缓冲重放避免事件丢失
-- **跨池报价** — BFS 路径搜索 + 本地模拟报价，支持多跳 routing
-- **动态池子发现** — 通过 Uniswap V3 Factory 自动发现 token 的池子并添加到监控
-- **Subgraph 自动发现** — 启动时从 Uniswap V3 Subgraph 拉取 Top N 池子，按 TVL/交易量排序自动添加
-- **PostgreSQL 持久化** — 池子状态和代币元信息自动保存，启动时从 DB 恢复
-- **Redis 缓存** — 代币元信息（symbol / decimals）Redis 缓存，1 小时 TTL，减少 RPC 调用
-- **Multicall3 批量查询** — tick bitmap 和 tick 数据批量获取，O(活跃 tick 数) 成本，单次 RPC 最多 800 条
-- **Cron 定时健康检查** — 定时对比链上/内存状态，不一致时自动触发全量修复
-- **HTTP API** — Gin 框架，RESTful 接口，支持 API Key 鉴权和令牌桶限流
-- **Prometheus 指标** — 事件数 / 重连次数 / 报价次数 / 健康修复次数 / API 耗时 / 实时价格
-- **OpenTelemetry 链路追踪** — OTLP 导出到 Jaeger / Tempo
-- **结构化日志** — JSON 格式（slog），自动包含文件名和行号
-- **{{ENV_VAR}} 模板** — 配置文件中敏感信息通过环境变量注入
+- **多链支持** — 每条链独立 RPC、BlockSync、池子列表，可同时监控 Ethereum / Arbitrum / Base / Optimism 等
+- **BlockSync 增量同步** — `newHeads → eth_getLogs → ApplyBlock → PostgreSQL`，按区块顺序更新，无 per-pool WS 重复应用
+- **Snapshot 冷启动** — 启动时从 PostgreSQL 恢复池子状态，CatchUp 补块至链头后进入实时同步
+- **Pool 状态机** — `pool/replay` 统一处理 Swap / Mint / Burn，历史补块与实时同步共用同一套逻辑
+- **Tick Bitmap 全量重建** — 健康检查 / 全量修复时从链上读取 tick bitmap，Multicall3 批量查询
+- **跨池报价** — `router` BFS 路径搜索 + `arbitrage` 最优路径选择 + 本地模拟报价
+- **多 DEX 扩展** — `ProcessorRegistry` 按协议注册 BlockProcessor（当前内置 Uniswap V3）
+- **动态池子发现** — Factory 自动发现 token 池子；Subgraph 启动时拉取 Top N 池子
+- **PostgreSQL 持久化** — Repository 模式（PoolRepo / SyncRepo），池子快照 + 链级同步进度
+- **Redis 缓存** — 代币元信息（symbol / decimals）与已应用日志 dedup
+- **Cron 健康检查** — 对比链上/内存状态，不一致时触发全量/轻量修复
+- **HTTP API** — Gin RESTful 接口，API Key 鉴权 + 令牌桶限流
+- **Prometheus / OpenTelemetry** — 指标与 OTLP 链路追踪
+- **Uber Fx DI** — 基础设施模块自动装配，领域服务在 bootstrap 中按链初始化
 
 ## 项目结构
+
+按**领域（Domain）**组织，而非 RPC / DB / Pool 横向拆分：
 
 ```
 arbitrage/
 ├── cmd/
-│   ├── arbitrage/
-│   │   └── main.go                         # 主入口：加载配置、初始化多链服务、启动 HTTP
-│   └── migrate/
-│       └── main.go                         # 数据库迁移 CLI 工具
+│   ├── arbitrage/main.go                   # 入口：app.New().Run()
+│   └── migrate/main.go                     # 数据库迁移 CLI
 ├── internal/
-│   ├── cache/
-│   │   └── redis.go                        # Redis 代币元信息缓存（1h TTL）
-│   ├── config/
-│   │   └── config.go                       # YAML 配置加载，{{VAR}} 模板解析
-│   ├── httpapi/
-│   │   ├── server.go                       # Gin HTTP 服务器（限流/鉴权/指标中间件）
-│   │   ├── routes.go                       # API 处理器 + 请求/响应类型
-│   │   └── types.go                        # QuoteProvider 接口定义
-│   ├── logx/
-│   │   └── logx.go                         # 结构化日志接口（slog 实现）
-│   ├── metrics/
-│   │   └── metrics.go                      # Prometheus 指标定义
-│   ├── pool/
-│   │   ├── pool.go                         # PoolState — 池子状态 + tick 流动性地图 + 本地报价
-│   │   ├── events.go                       # 事件 ABI 解析（Swap / Mint / Burn）
-│   │   └── constants.go                    # TickMin / TickMax 常量
-│   ├── service/
-│   │   ├── service.go                      # PoolQuoteService — 单池编排（缓冲/同步/报价/持久化）
-│   │   ├── multi_pool.go                   # MultiPoolService — 多池管理 + 动态发现
-│   │   ├── multichain.go                   # MultiChainService — 多链管理
-│   │   └── path_finder.go                  # BFS 跨池路径搜索
-│   ├── store/
-│   │   ├── store.go                        # Storer 接口 + PoolSnapshot + 自动迁移
-│   │   └── postgres.go                     # PostgreSQL 实现（pgx）
-│   ├── subgraph/
-│   │   └── client.go                       # Uniswap V3 Subgraph 查询客户端
-│   ├── subscriber/
-│   │   └── subscriber.go                   # WebSocket 订阅 + RPC 查询 + Multicall3 + Factory
-│   ├── tracing/
-│   │   └── tracing.go                      # OpenTelemetry 初始化
-│   └── utils/
-│       └── safego.go                       # SafeGo — 带 recover 的 goroutine 启动
+│   ├── app/
+│   │   ├── app.go                          # Fx 根模块装配
+│   │   └── bootstrap/chains.go             # 启动：Snapshot 恢复 + BlockSync
+│   ├── api/                                # HTTP 层
+│   │   ├── server.go                       # Gin 服务器（限流/鉴权/指标）
+│   │   ├── routes.go                       # REST 处理器
+│   │   └── types.go                        # QuoteProvider 接口
+│   ├── blockchain/                         # 区块链访问层
+│   │   ├── client.go                       # HTTP RPC ethclient
+│   │   ├── subscriber.go                   # WS SubscribeNewHead
+│   │   ├── log_fetcher.go                  # eth_getLogs
+│   │   ├── block_sync.go                   # BlockSync 协调器
+│   │   ├── processor.go                    # BlockProcessor 接口
+│   │   ├── uniswap_v3_processor.go         # V3 区块处理器
+│   │   ├── processor_registry.go           # 多 DEX Processor 注册表
+│   │   └── pool_client.go                  # RPC + Multicall3 + Factory + Quoter
+│   ├── pool/                               # 池子领域
+│   │   ├── pool.go / state.go              # 运行时 State + 本地报价
+│   │   ├── cache.go                        # sync.Map 池子缓存
+│   │   ├── events.go                       # Swap / Mint / Burn 解析
+│   │   ├── snapshot/                       # loader（DB 恢复）+ scanner（链上 bitmap）
+│   │   └── replay/                         # ApplyBlock / ApplySwap / Mint / Burn
+│   ├── storage/
+│   │   ├── repo.go                         # PoolRepo / SyncRepo 接口
+│   │   └── postgres/                       # pool_repo / sync_repo / tick_repo
+│   ├── router/                             # 跨池路径 BFS 搜索
+│   ├── arbitrage/                          # 跨池最优报价
+│   ├── quote/                              # 报价类型 + Quoter
+│   ├── service/                            # 编排层（MultiChain / MultiPool / 单池服务）
+│   ├── store/                              # legacy Storer 适配 storage
+│   ├── cache/                              # Redis 代币元信息 + applied-log dedup
+│   ├── config/ / logx/ / metrics/ / tracing/
+│   ├── subgraph/                           # Subgraph 自动发现
+│   └── subscriber/                         # deprecated 别名 → blockchain
 ├── migrations/
-│   ├── 001_init.sql                        # 池子状态表 + 历史记录表
-│   └── 002_token_metadata.sql              # 代币元信息缓存表
-├── config.yaml                             # 配置文件
-├── go.mod / go.sum
+│   ├── 001_init.sql                        # pool_states + history
+│   ├── 002_token_metadata.sql              # 代币元信息
+│   └── 003_chain_sync_state.sql            # LastProcessedBlock
+├── config.yaml
 └── README.md
+```
+
+## 架构概览
+
+```
+                    Uber Fx
+                       │
+         bootstrap.RegisterChains
+                       │
+    ┌──────────────────┼──────────────────┐
+    │                  │                  │
+ Snapshot          BlockSync          MultiPoolService
+ (DB 恢复)      (CatchUp + Run)         (报价 / 健康检查)
+    │                  │                  │
+    └────────► pool.Cache ◄────────────────┘
+                       │
+              UniswapV3BlockProcessor
+                       │
+         eth_getLogs → replay.ApplyBlock
+                       │
+              PostgreSQL (PoolRepo + SyncRepo)
+                       │
+         router.PathFinder → arbitrage.CrossQuoter → api (HTTP)
+```
+
+### BlockSync 流水线
+
+```
+SubscribeNewHead
+      ↓
+LastBlock + 1 .. head
+      ↓
+eth_getLogs (按区块)
+      ↓
+按 Pool 分组
+      ↓
+replay.ApplyBlock
+      ↓
+PostgreSQL 事务提交
+      ↓
+更新 LastProcessedBlock
+```
+
+`BlockProcessor` 接口使后续增加 Uniswap V4、Aerodrome 等协议时只需新增实现，`BlockSync` 本身无需修改。
+
+### Fx 模块依赖
+
+```
+config → storage.postgres → store(adapter) → cache → pool.Cache
+  → service → api
+  → bootstrap.RegisterChains（BlockSync + 链服务）
 ```
 
 ## 快速开始
@@ -78,9 +128,9 @@ arbitrage/
 
 - Go 1.21+
 - 以太坊 RPC 端点（WebSocket + HTTP，如 Alchemy / Infura）
-- （可选）PostgreSQL（持久化）
-- （可选）Redis（代币元信息缓存）
-- （可选）Jaeger / Grafana Tempo（链路追踪）
+- （推荐）PostgreSQL — 池子状态与同步进度持久化
+- （可选）Redis — 代币元信息缓存与 applied-log dedup
+- （可选）Jaeger / Grafana Tempo — 链路追踪
 
 ### 配置
 
@@ -89,23 +139,23 @@ arbitrage/
 http_port: 8080
 health_check_interval_sec: 30
 log_file: "arbitrage.log"
-log_level: "info"                             # debug / info / warn / error，默认 info
-max_block_gap_for_full_sync: 100              # 全量同步最大区块间隔，默认 100
-max_hops: 2                                   # 跨池报价最大跳数（链级可覆盖）
-http_rate_limit: 100                          # API 每秒最大请求数，0 不限，默认 100
-api_key: ""                                   # API Key（X-API-Key header），空表示不鉴权
+log_level: "info"
+max_block_gap_for_full_sync: 100
+max_hops: 2
+http_rate_limit: 100
+api_key: ""
 db_url: "postgres://user:pass@localhost:5432/arbitrage?sslmode=disable"
-redis_url: "redis://localhost:6379/0"         # Redis 连接串，空则禁用缓存
-tracing_endpoint: ""                          # OTLP endpoint，空禁用 tracing
+redis_url: "redis://localhost:6379/0"
+tracing_endpoint: ""
 
 chains:
   - name: "ethereum"
     ws_endpoint: "wss://eth-mainnet.g.alchemy.com/v2/{{ALCHEMY_API_KEY}}"
     factory_address: "0x1F98431c8aD98523631AE4a59f267346ea31F984"
-    multicall_address: ""                     # Multicall3 地址，空使用标准部署地址
-    quoter_address: ""                        # QuoterV2 地址，空使用默认地址
+    multicall_address: ""
+    quoter_address: ""
     max_hops: 2
-    base_tokens:                              # 基础代币白名单（跨池报价中间代币 + 自动发现基础代币）
+    base_tokens:
       - "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"   # WETH
       - "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"   # USDC
       - "0xdAC17F958D2ee523a2206206994597C13D831ec7"   # USDT
@@ -113,6 +163,8 @@ chains:
       - pool_address: "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"
         sync_from_block: 25393441
 ```
+
+`ws_endpoint` 用于 BlockSync 的 `SubscribeNewHead`；HTTP RPC 用于 `eth_getLogs`、健康检查、全量修复等（可从 ws 地址推导）。
 
 ### 运行
 
@@ -135,40 +187,21 @@ go run ./cmd/arbitrage/ -config config.yaml
 | `POST` | `/api/v1/:chain/pools/:address/quote` | 单池报价 |
 | `POST` | `/api/v1/:chain/quote` | 跨池报价 |
 
-认证：如配置了 `api_key`，需传 `X-API-Key` header。
-限流：令牌桶算法，默认 100 req/s，返回 429 时请稍后重试。
+认证：配置了 `api_key` 时需传 `X-API-Key` header。  
+限流：令牌桶，默认 100 req/s。
 
 ### 示例
 
 ```bash
-# 查询 ethereum 链上所有池子
 curl http://localhost:8080/api/v1/ethereum/pools
 
-# 单池报价：1000000 USDC → WETH
 curl -X POST http://localhost:8080/api/v1/ethereum/pools/0x8ad599.../quote \
   -H "Content-Type: application/json" \
   -d '{"amountIn":"1000000","tokenIn":"0xA0b869..."}'
 
-# 跨池报价：USDC → WBTC
 curl -X POST http://localhost:8080/api/v1/ethereum/quote \
   -H "Content-Type: application/json" \
   -d '{"amountIn":"1000000","tokenIn":"0xA0b869...","tokenOut":"0x2260FAC..."}'
-```
-
-响应示例：
-
-```json
-{
-  "amountIn": "1000000",
-  "amountOut": "1581234567",
-  "chain": "ethereum",
-  "tokenIn": "0xA0b869...",
-  "tokenOut": "0xC02aaA...",
-  "hops": 1,
-  "path": [
-    {"pool": "0x8ad599...", "tokenIn": "0xA0b869...", "tokenOut": "0xC02aaA..."}
-  ]
-}
 ```
 
 ## 配置说明
@@ -177,158 +210,110 @@ curl -X POST http://localhost:8080/api/v1/ethereum/quote \
 
 | 字段 | 类型 | 默认 | 说明 |
 |------|------|------|------|
-| `http_port` | int | 8080 | HTTP API 监听端口，0 禁用 |
+| `http_port` | int | 8080 | HTTP 监听端口，0 禁用 |
 | `health_check_interval_sec` | int | 30 | 健康检查间隔，0 禁用 |
-| `log_file` | string | `""` | 日志文件路径，空输出到 stderr |
-| `log_level` | string | `info` | 日志级别：debug / info / warn / error |
-| `max_block_gap_for_full_sync` | int | 100 | 全量同步最大区块间隔 |
-| `max_hops` | int | 2 | 跨池报价最大跳数（链级 max_hops=0 时使用此值） |
-| `http_rate_limit` | int | 100 | API 每秒最大请求数，0 不限 |
-| `api_key` | string | `""` | API Key（X-API-Key header），空不鉴权 |
-| `db_url` | string | `""` | PostgreSQL 连接串，空禁用持久化 |
-| `redis_url` | string | `""` | Redis 连接串，空禁用代币元信息缓存 |
-| `tracing_endpoint` | string | `""` | OTLP endpoint，空禁用 tracing |
+| `log_file` | string | `""` | 日志文件，空则 stderr |
+| `log_level` | string | `info` | debug / info / warn / error |
+| `max_block_gap_for_full_sync` | int | 100 | 全量 tick 重建区块间隔阈值 |
+| `max_hops` | int | 2 | 跨池最大跳数 |
+| `http_rate_limit` | int | 100 | API 限流，0 不限 |
+| `api_key` | string | `""` | X-API-Key，空不鉴权 |
+| `db_url` | string | `""` | PostgreSQL，空禁用 |
+| `redis_url` | string | `""` | Redis，空禁用 |
+| `tracing_endpoint` | string | `""` | OTLP endpoint，空禁用 |
 
 ### 链级配置 (`chains[]`)
 
-| 字段 | 类型 | 默认 | 说明 |
-|------|------|------|------|
-| `name` | string | 必填 | 链标识，用于 HTTP 路由 |
-| `ws_endpoint` | string | 必填 | WebSocket RPC（事件订阅） |
-| `rpc_endpoint` | string | 从 ws 推导 | HTTP RPC（eth_call），空则 wss→https / ws→http |
-| `rpc_failover` | []string | `[]` | RPC 故障转移列表 |
-| `factory_address` | string | 必填 | Uniswap V3 Factory 地址（0x 格式） |
-| `multicall_address` | string | `0xcA11...CA11` | Multicall3 合约地址，空使用标准部署地址 |
-| `quoter_address` | string | `0x61fF...B21e` | QuoterV2 合约地址，空使用默认地址 |
-| `base_tokens` | []string | 必填 | 基础代币白名单（跨池报价中间代币 + 自动发现基础代币） |
-| `max_hops` | int | 全局值 | 跨池报价跳数，0 使用全局 max_hops |
-| `pools` | []object | 必填 | 该链的池子列表 |
-| `auto_discover` | object | - | Subgraph 自动发现配置 |
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `name` | string | 链标识，HTTP 路由与 DB key |
+| `ws_endpoint` | string | WebSocket（BlockSync newHeads） |
+| `rpc_endpoint` | string | HTTP RPC，空则从 ws 推导 |
+| `factory_address` | string | Uniswap V3 Factory |
+| `multicall_address` | string | Multicall3，空用标准地址 |
+| `quoter_address` | string | QuoterV2，空用默认 |
+| `base_tokens` | []string | 跨池中间代币白名单 |
+| `max_hops` | int | 跨池跳数，0 用全局值 |
+| `pools` | []object | 监控池子列表 |
+| `auto_discover` | object | Subgraph 自动发现 |
 
 ### 池子配置 (`pools[]`)
 
-| 字段 | 类型 | 默认 | 说明 |
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `pool_address` | string | Pool 合约地址 |
+| `sync_from_block` | int | 历史起始区块（配合 Snapshot / CatchUp） |
+
+配置中 `{{ENV_VAR}}` 会替换为环境变量值。
+
+## 状态同步策略
+
+| 阶段 | 触发 | 方法 | 说明 |
 |------|------|------|------|
-| `pool_address` | string | 必填 | Uniswap V3 Pool 地址（0x 格式） |
-| `sync_from_block` | int | 0 | 历史同步起始区块，0 跳过历史同步 |
+| 首次无数据 | 添加池子 | `EnsureInitialState` → `DoFullSync` | 链上 tick bitmap + slot0，**仅执行一次** |
+| 已有 DB 快照 | 启动 | `snapshot.Loader` 恢复 | 跳过全量，直接进入增量 |
+| CatchUp | 启动后 | `BlockSync.CatchUpFrom(last+1, head)` | eth_getLogs 按区块 replay |
+| 实时增量 | newHeads | `BlockSync.Run` → `ProcessBlock` | SubscribeNewHead → eth_getLogs(block) → ApplyBlock |
+| 健康检查 | Cron | 对比 slot0 | 仅未初始化时补全量；已初始化只告警，由 BlockSync 修复 |
 
-### `{{ENV_VAR}}` 模板
+增量路径（常态）：
 
-配置中任何 `{{变量名}}` 会被替换为对应环境变量的值。缺失的变量保留原文本不报错。
-
-```yaml
-ws_endpoint: "wss://eth-mainnet.g.alchemy.com/v2/{{ALCHEMY_API_KEY}}"
+```
+SubscribeNewHead
+      ↓
+eth_getLogs(block, block)
+      ↓
+replay.ApplyBlock()
+      ↓
+PostgreSQL + LastProcessedBlock
 ```
 
-## Subgraph 自动发现
+全量同步**不会**在健康检查、WS 重连时重复触发；只有 `BlockNumber==0` 或 `tick 地图为空` 时才会执行。
 
-配置 `auto_discover` 后，启动时自动从 Uniswap V3 Subgraph 查询热门池子并添加到监控：
+## Subgraph 自动发现
 
 ```yaml
 chains:
   - name: "ethereum"
     auto_discover:
       enabled: true
-      subgraph_url: "https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3"  # 可选
-      min_tvl_usd: 500000       # 最低 TVL $500K
-      min_volume_usd: 10000000  # 最低 24h 交易量 $10M
-      max_pools: 20             # 最多 20 个池子
-      order_by: "volumeUSD"     # 按交易量排序
+      min_tvl_usd: 500000
+      min_volume_usd: 10000000
+      max_pools: 20
+      order_by: "volumeUSD"
 ```
 
-| 字段 | 类型 | 默认 | 说明 |
-|------|------|------|------|
-| `enabled` | bool | false | 是否启用 |
-| `subgraph_url` | string | Uniswap 官方 | 子图 API 端点 |
-| `min_tvl_usd` | int | 500,000 | 最低 TVL（美元） |
-| `min_volume_usd` | int | 10,000,000 | 最低 24h 交易量（美元） |
-| `max_pools` | int | 20 | 最多添加池子数 |
-| `order_by` | string | volumeUSD | 排序方式: volumeUSD / totalValueLockedUSD / txCount |
+手动 `pools` 与自动发现池子合并，已存在地址跳过。新增池子后自动更新 BlockProcessor 跟踪列表。
 
-内置过滤条件：`liquidity_gt: "0"`（排除零流动性池子）。
+## 数据库迁移
 
-手动配置的 `pools` 与自动发现的池子**合并**，已存在的池子不会被覆盖。
+```bash
+export DB_URL="postgres://user:pass@localhost:5432/arbitrage?sslmode=disable"
+go run ./cmd/migrate/ -db "$DB_URL" up
+go run ./cmd/migrate/ -db "$DB_URL" down
+```
 
-所有主流链都有对应的子图：
+| 文件 | 说明 |
+|------|------|
+| `001_init.sql` | `pool_states` 快照 + `pool_states_history` 历史 |
+| `002_token_metadata.sql` | 代币 symbol / decimals 缓存 |
+| `003_chain_sync_state.sql` | 链级 `last_processed_block`（BlockSync checkpoint） |
 
-| 链 | Subgraph URL |
-|------|-------------|
-| Ethereum | `https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3` |
-| Arbitrum | `https://api.thegraph.com/subgraphs/name/ianlapham/arbitrum-minimal` |
-| Optimism | `https://api.thegraph.com/subgraphs/name/ianlapham/optimism-post-regenesis` |
-| Polygon | `https://api.thegraph.com/subgraphs/name/ianlapham/uniswap-v3-polygon` |
-| Base | `https://api.studio.thegraph.com/query/48211/uniswap-v3-base/version/latest` |
-| Celo | `https://api.thegraph.com/subgraphs/name/jesse-sawa/uniswap-celo` |
-| BSC | `https://api.thegraph.com/subgraphs/name/ianlapham/uniswap-v3-bsc` |
-| Avalanche | `https://api.thegraph.com/subgraphs/name/lynnshaoyu/uniswap-v3-avax` |
+启动时 `storage/postgres` 模块自动执行未应用的迁移（幂等安全网）。
 
 ## 监控指标
 
-所有指标通过 `GET /metrics` 暴露（Prometheus 格式）。
+`GET /metrics` 暴露 Prometheus 指标：
 
-| 指标名 | 类型 | 标签 | 说明 |
-|--------|------|------|------|
-| `arbitrage_events_total` | Counter | `pool`, `event` | 收到的事件数 (swap/mint/burn) |
-| `arbitrage_ws_reconnects_total` | Counter | `pool` | WebSocket 重连次数 |
-| `arbitrage_quotes_total` | Counter | `pool`, `method` | 报价请求数 (local/rpc_simulate) |
-| `arbitrage_health_repairs_total` | Counter | `pool` | 健康检查修复次数 |
-| `arbitrage_price` | Gauge | `pool` | 现货价格（已调整小数位） |
-| `arbitrage_block_number` | Gauge | `pool` | 当前区块高度 |
-| `arbitrage_event_latency_seconds` | Histogram | `pool`, `event` | 事件处理延迟 |
-| `arbitrage_http_request_duration_seconds` | Histogram | `method`, `path`, `status` | API 请求耗时 |
-
-## 架构概览
-
-```
-MultiChainService
-├── chain["ethereum"] → MultiPoolService
-│   ├── PoolQuoteService(0x8ad5...)  ← WebSocket → RPC
-│   ├── PoolQuoteService(0x88e6...)
-│   └── PathFinder (BFS routing)
-└── chain["arbitrum"] → MultiPoolService
-    ├── PoolQuoteService(0xC696...)
-    └── PathFinder
-
-                    ┌─ Gin HTTP API ──┐
-                    │  /api/v1/:chain │
-                    │  + 限流 + 鉴权   │
-                    └────────────────┘
-
-                    ┌─ 持久化 ────────┐
-                    │  PostgreSQL     │ → 池子状态 + 历史
-                    │  Redis          │ → Token 元信息缓存
-                    └────────────────┘
-```
-
-每条链独立拥有自己的 WebSocket 连接、事件订阅、健康检查定时任务、持久 RPC 客户端连接池。
-
-## 状态同步策略
-
-| 阶段 | 触发条件 | 方法 | RPC 成本 |
-|------|---------|------|------|
-| 冷启动 | 首次启动 / DB 无数据 | `DoFullSync` — 锚点区块一致性快照 + Tick Bitmap 全量重建 | ~15 次 |
-| 热启动 | DB 有数据 | `LoadFromStore` 恢复状态 + `ResolvePoolMetadata` 获取元信息 | ~2 次 |
-| WebSocket 重连 | 断线后自动重连 | `DoLightSync`（距上次全量<5min）或 `DoFullSync`（>5min） | 1~15 次 |
-| 健康检查 | cron 定时触发 | 对比 sqrtPriceX96 / tick / liquidity → 不一致则 `DoFullSync` | 1~15 次 |
-| Swap 事件 | WebSocket 实时推送 | `OnSwap` → 直接更新内存状态 | 0 |
-| Mint/Burn 事件 | WebSocket 实时推送 | `UpdateTickFromMint` / `UpdateTickFromBurn` → 更新 tick 流动性地图 | 0 |
-
-### 缓冲重放机制
-
-全量同步期间 WebSocket 事件进入缓冲区，同步完成后按区块高度过滤回放，确保不丢失、不重复。
-
-```
-bufferingMode=true → 事件入 eventBuffer
-       │
-       ▼
-  DoFullSync (锚点区块快照)
-       │
-       ▼
-  drainAndReplay (回放 ≥ snapshotStartBlock 的事件)
-       │
-       ▼
-bufferingMode=false → 恢复实时模式
-```
+| 指标名 | 类型 | 说明 |
+|--------|------|------|
+| `arbitrage_events_total` | Counter | 事件数 (swap/mint/burn) |
+| `arbitrage_ws_reconnects_total` | Counter | WS 重连（BlockSync / 遗留客户端） |
+| `arbitrage_quotes_total` | Counter | 报价请求数 |
+| `arbitrage_health_repairs_total` | Counter | 健康检查修复次数 |
+| `arbitrage_price` | Gauge | 现货价格 |
+| `arbitrage_block_number` | Gauge | 池子当前区块 |
+| `arbitrage_http_request_duration_seconds` | Histogram | API 耗时 |
 
 ## 多链示例
 
@@ -338,63 +323,32 @@ chains:
     ws_endpoint: "wss://eth-mainnet.g.alchemy.com/v2/{{KEY}}"
     factory_address: "0x1F98431c8aD98523631AE4a59f267346ea31F984"
     base_tokens:
-      - "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"   # WETH
-      - "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"   # USDC
-      - "0xdAC17F958D2ee523a2206206994597C13D831ec7"   # USDT
+      - "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+      - "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
     pools:
       - pool_address: "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"
 
   - name: "arbitrum"
     ws_endpoint: "wss://arb-mainnet.g.alchemy.com/v2/{{KEY}}"
     factory_address: "0x1F98431c8aD98523631AE4a59f267346ea31F984"
-    base_tokens:
-      - "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"   # WETH
-      - "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"   # USDC
-      - "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9"   # USDT
     pools:
       - pool_address: "0xC6962004f452bE9203591991D15f6b388e09E8D0"
-
-  - name: "base"
-    ws_endpoint: "wss://base-mainnet.g.alchemy.com/v2/{{KEY}}"
-    factory_address: "0x33128a8fC17869897dcE68Ed026d694621f6FDfD"
-    base_tokens:
-      - "0x4200000000000000000000000000000000000006"   # WETH
-      - "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"   # USDC
-    pools:
-      - pool_address: "0xd0b53D9277642d899DF5C87A3966A349A798F224"
 ```
-
-## 数据库迁移
-
-使用内置的迁移工具管理数据库 schema：
-
-```bash
-# 执行迁移
-export DB_URL="postgres://user:pass@localhost:5432/arbitrage?sslmode=disable"
-go run ./cmd/migrate/ -db "$DB_URL" up
-
-# 回滚迁移
-go run ./cmd/migrate/ -db "$DB_URL" down
-```
-
-迁移文件放在 `migrations/` 目录，使用 goose 格式的 SQL 文件：
-
-| 文件 | 说明 |
-|------|------|
-| `001_init.sql` | 池子状态快照表（upsert）+ 价格历史时序表 |
-| `002_token_metadata.sql` | 代币元信息缓存表（chain + token_address 联合主键） |
-
-启动时 `RunMigrations` 自动确保基础表存在（安全网，幂等执行），正式部署应使用 `migrate` 命令。
 
 ## 代币元信息缓存
 
-代币的 symbol 和 decimals 通过三级缓存获取：
+1. **Redis**（1h TTL）
+2. **PostgreSQL** `token_metadata`
+3. **RPC** ERC20 查询，结果回写 DB + Redis
 
-1. **Redis**（1 小时 TTL）— 最快，命中后直接返回
-2. **PostgreSQL** — Redis 未命中时查询 DB，命中后异步回写 Redis
-3. **RPC 链上查询** — DB 也未命中时通过 ERC20 接口查询，结果同时写入 DB 和 Redis
+## 扩展指南
 
-该机制避免每次启动对同一代币重复发起 RPC 查询，大幅降低 RPC 调用量。
+| 目标 | 做法 |
+|------|------|
+| 新增 DEX 协议 | 实现 `BlockProcessor` + `ProcessorRegistry.Register` |
+| 新增链 | 在 `config.yaml` 增加 `chains[]` 条目 |
+| 自定义 HTTP | 扩展 `internal/api/routes.go` |
+| 套利检测 | 在 `internal/arbitrage/` 扩展逻辑，复用 `pool.Cache` + `router` |
 
 ## 许可
 

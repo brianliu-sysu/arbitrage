@@ -1,24 +1,27 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"math/big"
 	"sync"
+	"time"
 
 	"github.com/brianliu-sysu/arbitrage/internal/cache"
 	"github.com/brianliu-sysu/arbitrage/internal/logx"
 	"github.com/brianliu-sysu/arbitrage/internal/pool"
 	"github.com/brianliu-sysu/arbitrage/internal/quote"
+	"github.com/brianliu-sysu/arbitrage/internal/router"
 	"github.com/brianliu-sysu/arbitrage/internal/store"
 	"github.com/brianliu-sysu/arbitrage/internal/subgraph"
-	"github.com/brianliu-sysu/arbitrage/internal/subscriber"
+	"github.com/brianliu-sysu/arbitrage/internal/arbitrage"
+	"github.com/brianliu-sysu/arbitrage/internal/blockchain"
 	"github.com/ethereum/go-ethereum/common"
 )
 
 // MultiPoolService 管理多个 Uniswap V3 池子的报价服务。
 //
-// 每个池子拥有独立的 WebSocket 连接和事件订阅，互不影响。
-// 池子的 token0 / token1 / fee 会在添加时自动通过 RPC 查询，无需手动配置。
+// 增量同步由 BlockSync 负责；池子 RPC 客户端不启用 WS。
 type MultiPoolService struct {
 	chainName              string
 	wsEndpoint             string
@@ -26,7 +29,11 @@ type MultiPoolService struct {
 	multicallAddr          common.Address
 	quoterAddr             common.Address
 	services               map[common.Address]*PoolQuoteService
-	pathFinder             *PathFinder
+	poolCache              *pool.Cache
+	pathFinder             *router.PathFinder
+	crossQuoter            *arbitrage.CrossQuoter
+	poolUpdater            blockchain.PoolAddressUpdater
+	poolBackfiller         blockchain.PoolBackfiller
 	maxHops                int
 	baseTokens             []common.Address // 基础代币列表（跨池报价中间代币 + 自动发现基础代币）
 	store                  store.Storer
@@ -45,7 +52,10 @@ type MultiPoolService struct {
 // wsEndpoint 为 WebSocket 端点地址，将被所有池子的事件订阅共享。
 // rpcEndpoint 为 HTTP RPC 端点，用于 eth_call / eth_getLogs 等只读调用。
 // maxHops 为跨池报价最大跳数，baseTokens 为基础代币白名单。
-func NewMultiPoolService(chainName, wsEndpoint, rpcEndpoint string, maxHops int, baseTokens []common.Address, maxBlockGapForFullSync uint64, factoryAddr, multicallAddr, quoterAddr common.Address, logger logx.Logger, st store.Storer, tokenCache cache.TokenCache, logCache cache.AppliedLogCache) *MultiPoolService {
+func NewMultiPoolService(chainName, wsEndpoint, rpcEndpoint string, maxHops int, baseTokens []common.Address, maxBlockGapForFullSync uint64, factoryAddr, multicallAddr, quoterAddr common.Address, logger logx.Logger, st store.Storer, tokenCache cache.TokenCache, logCache cache.AppliedLogCache, poolCache *pool.Cache) *MultiPoolService {
+	if poolCache == nil {
+		poolCache = pool.NewCache()
+	}
 	return &MultiPoolService{
 		chainName:              chainName,
 		wsEndpoint:             wsEndpoint,
@@ -53,6 +63,7 @@ func NewMultiPoolService(chainName, wsEndpoint, rpcEndpoint string, maxHops int,
 		multicallAddr:          multicallAddr,
 		quoterAddr:             quoterAddr,
 		services:               make(map[common.Address]*PoolQuoteService),
+		poolCache:              poolCache,
 		maxHops:                maxHops,
 		baseTokens:             baseTokens,
 		maxBlockGapForFullSync: maxBlockGapForFullSync,
@@ -87,12 +98,13 @@ func (m *MultiPoolService) AddPoolsBatch(entries []PoolEntry) error {
 
 	if added > 0 {
 		m.rebuildPathFinder()
+		m.notifyPoolAddresses()
 	}
 	return nil
 }
 
 // addPool 核心逻辑：创建/恢复/启动一个池子，不重建路径搜索器（由调用方负责）。
-// preloaded 可为 nil；skipStoreLoad=true 时不会回退逐个查询数据库。
+// preloaded 可为 nil。
 func (m *MultiPoolService) addPool(poolAddress common.Address, healthCheckIntervalSec int, syncFromBlock uint64, preloaded *store.PoolSnapshot) error {
 	addr := poolAddress
 	cfg := Config{
@@ -149,6 +161,11 @@ func (m *MultiPoolService) addPool(poolAddress common.Address, healthCheckInterv
 		return fmt.Errorf("resolve pool metadata for %s: %w", addr.Hex(), err)
 	}
 
+	// 仅首次无任何持久化状态时全量同步；之后由 BlockSync 按区块增量补齐。
+	if err := svc.EnsureInitialState(); err != nil {
+		return fmt.Errorf("initial state for %s: %w", addr.Hex(), err)
+	}
+
 	// 注册价格更新回调
 	m.mu.RLock()
 	fn := m.onPriceUpdate
@@ -170,9 +187,85 @@ func (m *MultiPoolService) addPool(poolAddress common.Address, healthCheckInterv
 		return fmt.Errorf("pool %s already added", addr.Hex())
 	}
 	m.services[addr] = svc
+	m.poolCache.Set(addr, svc.pool)
+	poolBlock := svc.pool.BlockNumber
 	m.mu.Unlock()
 
+	// 在加入 getLogs 过滤列表前回填，避免链游标已超前导致历史事件遗漏。
+	m.catchUpPool(addr, poolBlock)
+	m.notifyPoolAddresses()
+
 	return nil
+}
+
+// SetPoolUpdater 设置 BlockProcessor 池子地址更新器（BlockSync 注册后调用）。
+func (m *MultiPoolService) SetPoolUpdater(u blockchain.PoolAddressUpdater) {
+	m.mu.Lock()
+	m.poolUpdater = u
+	if bf, ok := u.(blockchain.PoolBackfiller); ok {
+		m.poolBackfiller = bf
+	}
+	m.mu.Unlock()
+	m.notifyPoolAddresses()
+}
+
+// catchUpPool 将单池从 poolBlock+1 追到链级游标（动态加池 / DB 快照落后时）。
+func (m *MultiPoolService) catchUpPool(addr common.Address, poolBlock uint64) {
+	m.mu.RLock()
+	bf := m.poolBackfiller
+	m.mu.RUnlock()
+	if bf == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	for {
+		chainLast, err := bf.ChainLastProcessedBlock(ctx)
+		if err != nil {
+			m.logger.Warn("pool catch-up: read chain cursor", "pool", addr.Hex(), "error", err)
+			return
+		}
+		m.mu.RLock()
+		if st, ok := m.poolCache.Get(addr); ok {
+			poolBlock = st.BlockNumber
+		}
+		m.mu.RUnlock()
+		if poolBlock >= chainLast {
+			return
+		}
+		m.logger.Info("pool catch-up backfill", "pool", addr.Hex(), "from", poolBlock+1, "to", chainLast)
+		if err := bf.BackfillPool(ctx, addr, poolBlock+1, chainLast); err != nil {
+			m.logger.Warn("pool catch-up backfill failed", "pool", addr.Hex(), "error", err)
+			return
+		}
+	}
+}
+
+func (m *MultiPoolService) notifyPoolAddresses() {
+	m.mu.RLock()
+	u := m.poolUpdater
+	m.mu.RUnlock()
+	if u != nil {
+		u.SetPoolAddresses(m.TrackedPoolAddresses())
+	}
+}
+
+// PoolCache 返回链级池子缓存（Quote / BlockProcessor 共享）。
+func (m *MultiPoolService) PoolCache() *pool.Cache {
+	return m.poolCache
+}
+
+// TrackedPoolAddresses 返回当前跟踪的池子地址。
+func (m *MultiPoolService) TrackedPoolAddresses() []common.Address {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	addrs := make([]common.Address, 0, len(m.services))
+	for addr := range m.services {
+		addrs = append(addrs, addr)
+	}
+	return addrs
 }
 
 // StopAll 停止所有池子。
@@ -242,83 +335,22 @@ func (m *MultiPoolService) GetAllPoolInfo() []map[string]interface{} {
 // 跨池报价
 // ---------------------------------------------------------------------------
 
-// CrossQuote 执行跨池报价：搜索从 tokenIn 到 tokenOut 的最优路径并报价。
-//
-// 返回 QuoteResult（包含路径和输出量），如果没有有效路径则返回 nil。
+// CrossQuote 执行跨池报价（arbitrage 层）。
 func (m *MultiPoolService) CrossQuote(amountIn *big.Int, tokenIn, tokenOut common.Address) (*quote.Result, error) {
 	m.mu.RLock()
-	pf := m.pathFinder
+	cq := m.crossQuoter
 	m.mu.RUnlock()
-
-	if pf == nil {
-		return nil, fmt.Errorf("path finder not initialized (no pools added)")
+	if cq == nil {
+		return nil, fmt.Errorf("cross quoter not initialized (no pools added)")
 	}
-
-	paths := pf.FindPaths(tokenIn, tokenOut)
-	if len(paths) == 0 {
-		return nil, fmt.Errorf("no swap path found from %s to %s", tokenIn.Hex(), tokenOut.Hex())
-	}
-
-	// 对每条路径报价，选最优
-	var bestResult *quote.Result
-	for _, path := range paths {
-		currentAmount := new(big.Int).Set(amountIn)
-		valid := true
-
-		for _, hop := range path.Hops {
-			out, err := hop.Pool.QuoteExactInput(currentAmount, hop.TokenIn)
-			if err != nil {
-				m.logger.Error("cross-quote hop failed",
-					"pool", hop.Pool.pool.Address.Hex(),
-					"tokenIn", hop.TokenIn.Hex(),
-					"tokenOut", hop.TokenOut.Hex(),
-					"err", err)
-				valid = false
-				break
-			}
-			currentAmount = out
-		}
-
-		if !valid {
-			continue
-		}
-
-		// 转换为可序列化的 QuoteHop 列表
-		hops := make([]quote.Hop, len(path.Hops))
-		for i, h := range path.Hops {
-			hops[i] = quote.Hop{
-				Pool:     h.Pool.pool.Address,
-				TokenIn:  h.TokenIn,
-				TokenOut: h.TokenOut,
-			}
-		}
-
-		if bestResult == nil || currentAmount.Cmp(bestResult.AmountOut) > 0 {
-			bestResult = &quote.Result{
-				Hops:      hops,
-				AmountIn:  new(big.Int).Set(amountIn),
-				AmountOut: currentAmount,
-				TokenIn:   tokenIn,
-				TokenOut:  tokenOut,
-			}
-		}
-	}
-
-	if bestResult == nil {
-		return nil, fmt.Errorf("all paths failed to produce a quote")
-	}
-
-	m.logger.Info("cross-quote best path",
-		"hops", len(bestResult.Hops),
-		"amountIn", amountIn.String(),
-		"amountOut", bestResult.AmountOut.String())
-
-	return bestResult, nil
+	return cq.Quote(amountIn, tokenIn, tokenOut)
 }
 
-// rebuildPathFinder 根据当前已注册的池子重建路径搜索器。
+// rebuildPathFinder 根据 pool cache 重建路径搜索器。
 func (m *MultiPoolService) rebuildPathFinder() {
-	m.pathFinder = NewPathFinder(m.services, m.maxHops, m.baseTokens)
+	pf := router.NewPathFinder(m.poolCache, m.maxHops, m.baseTokens)
+	m.pathFinder = pf
+	m.crossQuoter = arbitrage.NewCrossQuoter(m.poolCache, pf, m.logger)
 }
 
 // AutoDiscoverPools 通过 Subgraph 查询 Top N 池子并自动添加到监控。
@@ -352,6 +384,7 @@ func (m *MultiPoolService) AutoDiscoverPools(subgraphURL string, orderBy string,
 
 	if added > 0 {
 		m.rebuildPathFinder()
+		m.notifyPoolAddresses()
 	}
 	m.logger.Info("auto-discover complete", "total", len(pools), "added", added)
 	return added
@@ -375,19 +408,19 @@ func (m *MultiPoolService) discoverAndAddPools(tokenAddr common.Address) {
 		return
 	}
 
-	var sub *subscriber.Subscriber
+	var client *blockchain.PoolClient
 	m.mu.RLock()
 	for _, svc := range m.services {
-		if svc.subscriber != nil {
-			sub = svc.subscriber
+		if svc.poolClient != nil {
+			client = svc.poolClient
 			break
 		}
 	}
 	m.mu.RUnlock()
 
-	if sub == nil {
+	if client == nil {
 		var err error
-		sub, err = subscriber.NewSubscriber(m.wsEndpoint, m.rpcEndpoint, common.Address{}, nil, common.Address{}, m.quoterAddr, m.logger)
+		client, err = blockchain.NewSubscriber(m.wsEndpoint, m.rpcEndpoint, common.Address{}, nil, common.Address{}, m.quoterAddr, m.logger)
 		if err != nil {
 			m.logger.Warn("cannot create temporary subscriber for pool discovery", "error", err)
 			return
@@ -400,7 +433,7 @@ func (m *MultiPoolService) discoverAndAddPools(tokenAddr common.Address) {
 			continue
 		}
 		for _, fee := range commonFeeTiers {
-			poolAddr, err := sub.FetchPoolFromFactory(m.factoryAddr, tokenAddr, base, fee)
+			poolAddr, err := client.FetchPoolFromFactory(m.factoryAddr, tokenAddr, base, fee)
 			if err != nil || poolAddr == (common.Address{}) {
 				continue
 			}
@@ -421,6 +454,7 @@ func (m *MultiPoolService) discoverAndAddPools(tokenAddr common.Address) {
 
 	if added > 0 {
 		m.rebuildPathFinder()
+		m.notifyPoolAddresses()
 	}
 	if added == 0 {
 		m.logger.Info("no new pools discovered for token", "token", tokenAddr.Hex())

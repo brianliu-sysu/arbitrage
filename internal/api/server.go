@@ -1,5 +1,5 @@
-// Package httpapi 提供 HTTP 报价 API 服务。
-package httpapi
+// Package api 提供 HTTP 报价 API 服务。
+package api
 
 import (
 	"context"
@@ -116,7 +116,7 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 
 // Start 启动 HTTP 服务器（阻塞）。
 func (s *Server) Start() error {
-	s.logger.Info("httpapi listening", "addr", s.addr)
+	s.logger.Info("api listening", "addr", s.addr)
 	return s.srv.ListenAndServe()
 }
 

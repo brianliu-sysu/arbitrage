@@ -1,4 +1,4 @@
-package subscriber
+package blockchain
 
 import (
 	"fmt"
@@ -36,11 +36,11 @@ func TestNewSubscriber(t *testing.T) {
 	addr := common.HexToAddress("0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8")
 	sub, err := NewSubscriber("http://127.0.0.1:1", "http://127.0.0.1:1", addr, nil, common.Address{}, common.Address{}, logx.Nop())
 	if err != nil {
-		t.Logf("NewSubscriber failed (expected with bad URL): %v", err)
+		t.Logf("NewPoolClient failed (expected with bad URL): %v", err)
 		return
 	}
 	if sub == nil {
-		t.Fatal("NewSubscriber returned nil")
+		t.Fatal("NewPoolClient returned nil")
 	}
 	if sub.poolAddr != addr {
 		t.Errorf("poolAddr mismatch")
@@ -120,7 +120,7 @@ func TestMaskAPIKey(t *testing.T) {
 func TestIsDuplicateLogUsesLogIndex(t *testing.T) {
 	sub, err := NewSubscriber("http://127.0.0.1:1", "http://127.0.0.1:1", common.Address{}, nil, common.Address{}, common.Address{}, logx.Nop())
 	if err != nil {
-		t.Fatalf("NewSubscriber: %v", err)
+		t.Fatalf("NewPoolClient: %v", err)
 	}
 
 	tx := common.HexToHash("0x01")
@@ -142,7 +142,7 @@ func TestIsDuplicateLogUsesLogIndex(t *testing.T) {
 func TestMarkConnectedFirstThenReconnect(t *testing.T) {
 	sub, err := NewSubscriber("http://127.0.0.1:1", "http://127.0.0.1:1", common.Address{}, nil, common.Address{}, common.Address{}, logx.Nop())
 	if err != nil {
-		t.Fatalf("NewSubscriber: %v", err)
+		t.Fatalf("NewPoolClient: %v", err)
 	}
 
 	if sub.markConnected() {
@@ -246,7 +246,7 @@ func TestTokenMetadataTypes(t *testing.T) {
 func TestIsDuplicateLogEdgeCases(t *testing.T) {
 	sub, err := NewSubscriber("http://127.0.0.1:1", "http://127.0.0.1:1", common.Address{}, nil, common.Address{}, common.Address{}, logx.Nop())
 	if err != nil {
-		t.Fatalf("NewSubscriber: %v", err)
+		t.Fatalf("NewPoolClient: %v", err)
 	}
 	// Log with empty txHash and blockHash should pass through
 	emptyLog := types.Log{}
@@ -255,14 +255,14 @@ func TestIsDuplicateLogEdgeCases(t *testing.T) {
 	}
 }
 
-func TestNewSubscriberWithAPIKeyMasking(t *testing.T) {
+func TestNewPoolClientWithAPIKeyMasking(t *testing.T) {
 	addr := common.HexToAddress("0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8")
 	sub, err := NewSubscriber(
 		"https://eth-mainnet.g.alchemy.com/v2/secret1234567890abcdef",
 		"https://eth-mainnet.g.alchemy.com/v2/secret1234567890abcdef",
 		addr, nil, common.Address{}, common.Address{}, logx.Nop())
 	if err != nil {
-		t.Fatalf("NewSubscriber: %v", err)
+		t.Fatalf("NewPoolClient: %v", err)
 	}
 	// wsURL and rpcURL should be masked
 	if sub.wsURL != "https://eth-mainnet.g.alchemy.com/v2/***" {
@@ -284,7 +284,7 @@ func TestNewSubscriberWithAPIKeyMasking(t *testing.T) {
 func TestStartNilHandler(t *testing.T) {
 	sub, err := NewSubscriber("http://127.0.0.1:1", "http://127.0.0.1:1", common.Address{}, nil, common.Address{}, common.Address{}, logx.Nop())
 	if err != nil {
-		t.Fatalf("NewSubscriber: %v", err)
+		t.Fatalf("NewPoolClient: %v", err)
 	}
 	err = sub.Start()
 	if err != nil {
@@ -297,7 +297,7 @@ func TestSleepOrCancel(t *testing.T) {
 	// Create subscriber and cancel it
 	sub, err := NewSubscriber("http://127.0.0.1:1", "http://127.0.0.1:1", common.Address{}, nil, common.Address{}, common.Address{}, logx.Nop())
 	if err != nil {
-		t.Fatalf("NewSubscriber: %v", err)
+		t.Fatalf("NewPoolClient: %v", err)
 	}
 
 	// Cancel the context to make sleepOrCancel return -1
@@ -312,7 +312,7 @@ func TestSleepOrCancel(t *testing.T) {
 func TestSleepOrCancelBackoffDoubles(t *testing.T) {
 	sub, err := NewSubscriber("http://127.0.0.1:1", "http://127.0.0.1:1", common.Address{}, nil, common.Address{}, common.Address{}, logx.Nop())
 	if err != nil {
-		t.Fatalf("NewSubscriber: %v", err)
+		t.Fatalf("NewPoolClient: %v", err)
 	}
 	defer sub.Stop()
 
@@ -327,7 +327,7 @@ func TestSleepOrCancelBackoffDoubles(t *testing.T) {
 func TestSleepOrCancelCapsAtMax(t *testing.T) {
 	sub, err := NewSubscriber("http://127.0.0.1:1", "http://127.0.0.1:1", common.Address{}, nil, common.Address{}, common.Address{}, logx.Nop())
 	if err != nil {
-		t.Fatalf("NewSubscriber: %v", err)
+		t.Fatalf("NewPoolClient: %v", err)
 	}
 	defer sub.Stop()
 
@@ -364,7 +364,7 @@ func TestProcessLogSwapEvent(t *testing.T) {
 	handler := &mockHandler{}
 	sub, err := NewSubscriber("http://127.0.0.1:1", "http://127.0.0.1:1", common.Address{}, handler, common.Address{}, common.Address{}, logx.Nop())
 	if err != nil {
-		t.Fatalf("NewSubscriber: %v", err)
+		t.Fatalf("NewPoolClient: %v", err)
 	}
 	defer sub.Stop()
 
@@ -406,7 +406,7 @@ func TestProcessLogMintEvent(t *testing.T) {
 	handler := &mockHandler{}
 	sub, err := NewSubscriber("http://127.0.0.1:1", "http://127.0.0.1:1", common.Address{}, handler, common.Address{}, common.Address{}, logx.Nop())
 	if err != nil {
-		t.Fatalf("NewSubscriber: %v", err)
+		t.Fatalf("NewPoolClient: %v", err)
 	}
 	defer sub.Stop()
 
@@ -453,7 +453,7 @@ func TestProcessLogBurnEvent(t *testing.T) {
 	handler := &mockHandler{}
 	sub, err := NewSubscriber("http://127.0.0.1:1", "http://127.0.0.1:1", common.Address{}, handler, common.Address{}, common.Address{}, logx.Nop())
 	if err != nil {
-		t.Fatalf("NewSubscriber: %v", err)
+		t.Fatalf("NewPoolClient: %v", err)
 	}
 	defer sub.Stop()
 
@@ -496,7 +496,7 @@ func TestProcessLogEmptyTopics(t *testing.T) {
 	handler := &mockHandler{}
 	sub, err := NewSubscriber("http://127.0.0.1:1", "http://127.0.0.1:1", common.Address{}, handler, common.Address{}, common.Address{}, logx.Nop())
 	if err != nil {
-		t.Fatalf("NewSubscriber: %v", err)
+		t.Fatalf("NewPoolClient: %v", err)
 	}
 	defer sub.Stop()
 
@@ -512,7 +512,7 @@ func TestProcessLogDuplicateSwap(t *testing.T) {
 	handler := &mockHandler{}
 	sub, err := NewSubscriber("http://127.0.0.1:1", "http://127.0.0.1:1", common.Address{}, handler, common.Address{}, common.Address{}, logx.Nop())
 	if err != nil {
-		t.Fatalf("NewSubscriber: %v", err)
+		t.Fatalf("NewPoolClient: %v", err)
 	}
 	defer sub.Stop()
 
@@ -555,7 +555,7 @@ func TestProcessLogDuplicateSkipsDedup(t *testing.T) {
 	handler := &mockHandler{}
 	sub, err := NewSubscriber("http://127.0.0.1:1", "http://127.0.0.1:1", common.Address{}, handler, common.Address{}, common.Address{}, logx.Nop())
 	if err != nil {
-		t.Fatalf("NewSubscriber: %v", err)
+		t.Fatalf("NewPoolClient: %v", err)
 	}
 	defer sub.Stop()
 
