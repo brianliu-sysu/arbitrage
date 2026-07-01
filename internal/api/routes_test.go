@@ -1,15 +1,17 @@
 package api
 
 import (
-	"github.com/brianliu-sysu/arbitrage/internal/logx"
-	"github.com/brianliu-sysu/arbitrage/internal/quote"
 	"encoding/json"
 	"fmt"
+	"github.com/brianliu-sysu/arbitrage/internal/arbitrage"
+	"github.com/brianliu-sysu/arbitrage/internal/logx"
+	"github.com/brianliu-sysu/arbitrage/internal/quote"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -23,6 +25,8 @@ type mockQuoteProvider struct {
 	quoteErr    error
 	crossResult *quote.Result
 	crossErr    error
+	triangles   []arbitrage.TriangleOpportunity
+	triangleErr error
 }
 
 func (m *mockQuoteProvider) GetAllPoolInfo() []map[string]interface{} {
@@ -51,6 +55,13 @@ func (m *mockQuoteProvider) CrossQuote(chain string, amountIn *big.Int, tokenIn,
 	return m.crossResult, nil
 }
 
+func (m *mockQuoteProvider) TriangleOpportunities(chain string) ([]arbitrage.TriangleOpportunity, error) {
+	if m.triangleErr != nil {
+		return nil, m.triangleErr
+	}
+	return m.triangles, nil
+}
+
 // ---- Helpers ----
 
 func newTestServer(mock *mockQuoteProvider) *httptest.Server {
@@ -69,7 +80,7 @@ func readJSON(t *testing.T, resp *http.Response, v interface{}) {
 func mockPools() []map[string]interface{} {
 	return []map[string]interface{}{
 		{
-			"chain": "ethereum",
+			"chain":        "ethereum",
 			"address":      "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8",
 			"token0":       "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
 			"token1":       "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
@@ -426,6 +437,54 @@ func TestCrossQuoteInvalidAmount(t *testing.T) {
 	}
 }
 
+func TestTriangleOpportunities(t *testing.T) {
+	base := common.HexToAddress("0x1000000000000000000000000000000000000001")
+	tkB := common.HexToAddress("0x2000000000000000000000000000000000000002")
+	tkC := common.HexToAddress("0x3000000000000000000000000000000000000003")
+	poolAB := common.HexToAddress("0xa000000000000000000000000000000000000001")
+	poolBC := common.HexToAddress("0xb000000000000000000000000000000000000002")
+	poolCA := common.HexToAddress("0xc000000000000000000000000000000000000003")
+	mock := &mockQuoteProvider{
+		triangles: []arbitrage.TriangleOpportunity{{
+			Path: arbitrage.TrianglePath{
+				BaseToken: base,
+				Hops: [3]arbitrage.TriangleHop{
+					{Pool: poolAB, TokenIn: base, TokenOut: tkB},
+					{Pool: poolBC, TokenIn: tkB, TokenOut: tkC},
+					{Pool: poolCA, TokenIn: tkC, TokenOut: base},
+				},
+			},
+			AmountIn:    big.NewInt(1000),
+			AmountOut:   big.NewInt(1100),
+			Profit:      big.NewInt(100),
+			ProfitBps:   1000,
+			BlockNumber: 123,
+			DetectedAt:  time.Unix(10, 0).UTC(),
+		}},
+	}
+	ts := newTestServer(mock)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/v1/ethereum/arbitrage/triangles")
+	if err != nil {
+		t.Fatalf("GET triangles: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	var body map[string][]triangleOpportunityResponse
+	readJSON(t, resp, &body)
+	if len(body["opportunities"]) != 1 {
+		t.Fatalf("opportunities=%d want 1", len(body["opportunities"]))
+	}
+	got := body["opportunities"][0]
+	if got.Profit != "100" || got.ProfitBps != 1000 || len(got.Path) != 3 {
+		t.Fatalf("unexpected opportunity: %+v", got)
+	}
+}
+
 func TestQuoteExactInputMissingFields(t *testing.T) {
 	mock := &mockQuoteProvider{pools: mockPools()}
 	ts := newTestServer(mock)
@@ -592,4 +651,3 @@ func TestUint32ValAllTypes(t *testing.T) {
 		})
 	}
 }
-

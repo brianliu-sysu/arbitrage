@@ -10,6 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/fx"
 
+	"github.com/brianliu-sysu/arbitrage/internal/arbitrage"
 	"github.com/brianliu-sysu/arbitrage/internal/blockchain"
 	"github.com/brianliu-sysu/arbitrage/internal/cache"
 	"github.com/brianliu-sysu/arbitrage/internal/config"
@@ -111,6 +112,7 @@ func (b *chainBootstrapper) setupSingleChain(ch config.ChainConfig) error {
 	if err := b.multiChain.AddChain(ch.Name, svc); err != nil {
 		return err
 	}
+	b.configureTriangleScanner(ch, svc, baseTokens)
 
 	processor, err := b.buildBlockProcessor(ch, svc)
 	if err != nil {
@@ -173,7 +175,38 @@ func (b *chainBootstrapper) buildBlockProcessor(ch config.ChainConfig, svc *serv
 		PoolRepo:  b.repos.Pool,
 		SyncRepo:  b.repos.Sync,
 		Logger:    b.logger,
+		OnPoolApplied: func(chainName string, poolAddr common.Address, blockNumber uint64) {
+			svc.OnPoolApplied(poolAddr, blockNumber)
+		},
 	})
+}
+
+func (b *chainBootstrapper) configureTriangleScanner(ch config.ChainConfig, svc *service.MultiPoolService, baseTokens []common.Address) {
+	cfg := b.cfg.TriangleArbitrage
+	if !cfg.Enabled {
+		return
+	}
+	amounts := make([]*big.Int, 0, len(cfg.AmountCandidates))
+	for _, raw := range cfg.AmountCandidates {
+		amount, ok := new(big.Int).SetString(raw, 10)
+		if !ok || amount.Sign() <= 0 {
+			b.logger.Warn("triangle arbitrage: invalid amount candidate", "chain", ch.Name, "amount", raw)
+			continue
+		}
+		amounts = append(amounts, amount)
+	}
+	if len(amounts) == 0 {
+		b.logger.Warn("triangle arbitrage enabled without valid amount candidates", "chain", ch.Name)
+		return
+	}
+	interval := time.Duration(cfg.ScanThrottleIntervalSec) * time.Second
+	svc.ConfigureTriangleScanner(arbitrage.TriangleConfig{
+		BaseTokens:       baseTokens,
+		AmountCandidates: amounts,
+		MinProfitBps:     cfg.MinProfitBps,
+		MaxResults:       cfg.MaxOpportunities,
+	}, interval)
+	b.logger.Info("triangle arbitrage scanner enabled", "chain", ch.Name, "amounts", len(amounts), "minProfitBps", cfg.MinProfitBps)
 }
 
 func toStoreSnapshot(s *storage.PoolSnapshot) *store.PoolSnapshot {

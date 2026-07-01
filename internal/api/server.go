@@ -96,6 +96,7 @@ func (s *Server) registerRoutes(r *gin.Engine) {
 		chain.GET("/pools/:address/price", s.handleGetPrice)
 		chain.POST("/pools/:address/quote", s.handleQuote)
 		chain.POST("/quote", s.handleCrossQuote)
+		chain.GET("/arbitrage/triangles", s.handleTriangleOpportunities)
 	}
 }
 

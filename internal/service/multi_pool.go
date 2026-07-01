@@ -45,9 +45,87 @@ type MultiPoolService struct {
 	maxBlockGapForFullSync uint64
 	factoryAddr            common.Address
 	logger                 logx.Logger
+	triangleScanner        *arbitrage.TriangleScanner
+	triangleScanInterval   time.Duration
+	lastTriangleScan       time.Time
+	triangleOpportunities  []arbitrage.TriangleOpportunity
 
 	mu            sync.RWMutex
 	onPriceUpdate func(poolAddr common.Address, price0In1, price1In0 float64, tick int32)
+}
+
+// ConfigureTriangleScanner enables in-memory triangular arbitrage detection.
+func (m *MultiPoolService) ConfigureTriangleScanner(cfg arbitrage.TriangleConfig, scanInterval time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(cfg.AmountCandidates) == 0 || len(cfg.BaseTokens) == 0 {
+		m.triangleScanner = nil
+		m.triangleOpportunities = nil
+		return
+	}
+	if scanInterval <= 0 {
+		scanInterval = time.Second
+	}
+	m.triangleScanner = arbitrage.NewTriangleScanner(m.poolCache, cfg)
+	m.triangleScanInterval = scanInterval
+}
+
+// OnPoolApplied is called by BlockSync after a pool state is applied and persisted.
+func (m *MultiPoolService) OnPoolApplied(poolAddr common.Address, blockNumber uint64) {
+	m.mu.Lock()
+	scanner := m.triangleScanner
+	if scanner == nil {
+		m.mu.Unlock()
+		return
+	}
+	if !m.lastTriangleScan.IsZero() && time.Since(m.lastTriangleScan) < m.triangleScanInterval {
+		m.mu.Unlock()
+		return
+	}
+	m.lastTriangleScan = time.Now()
+	m.mu.Unlock()
+
+	opps := scanner.Scan()
+	m.mu.Lock()
+	m.triangleOpportunities = copyTriangleOpportunities(opps)
+	m.mu.Unlock()
+
+	if len(opps) > 0 {
+		best := opps[0]
+		m.logger.Info("triangle arbitrage opportunity",
+			"chain", m.chainName,
+			"triggerPool", poolAddr.Hex(),
+			"triggerBlock", blockNumber,
+			"baseToken", best.Path.BaseToken.Hex(),
+			"amountIn", best.AmountIn.String(),
+			"amountOut", best.AmountOut.String(),
+			"profit", best.Profit.String(),
+			"profitBps", best.ProfitBps)
+	}
+}
+
+// TriangleOpportunities returns the latest detected opportunities.
+func (m *MultiPoolService) TriangleOpportunities() []arbitrage.TriangleOpportunity {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return copyTriangleOpportunities(m.triangleOpportunities)
+}
+
+func copyTriangleOpportunities(in []arbitrage.TriangleOpportunity) []arbitrage.TriangleOpportunity {
+	out := make([]arbitrage.TriangleOpportunity, len(in))
+	for i, opp := range in {
+		out[i] = opp
+		if opp.AmountIn != nil {
+			out[i].AmountIn = new(big.Int).Set(opp.AmountIn)
+		}
+		if opp.AmountOut != nil {
+			out[i].AmountOut = new(big.Int).Set(opp.AmountOut)
+		}
+		if opp.Profit != nil {
+			out[i].Profit = new(big.Int).Set(opp.Profit)
+		}
+	}
+	return out
 }
 
 // NewMultiPoolService 创建一个多池子报价服务。

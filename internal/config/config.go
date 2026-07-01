@@ -1,4 +1,4 @@
-// Package config 提供 YAML 配置文件加载。
+// Package config 鎻愪緵 YAML 閰嶇疆鏂囦欢鍔犺浇銆?
 package config
 
 import (
@@ -10,32 +10,32 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// PoolConfig 单个 Uniswap V3 池子的配置。
+// PoolConfig 鍗曚釜 Uniswap V3 姹犲瓙鐨勯厤缃€?
 type PoolConfig struct {
-	PoolAddress   string `yaml:"pool_address"`    // Uniswap V3 Pool 地址
-	SyncFromBlock uint64 `yaml:"sync_from_block"` // 从哪个区块开始同步历史事件，0 表示跳过
+	PoolAddress   string `yaml:"pool_address"`    // Uniswap V3 Pool 鍦板潃
+	SyncFromBlock uint64 `yaml:"sync_from_block"` // 浠庡摢涓尯鍧楀紑濮嬪悓姝ュ巻鍙蹭簨浠讹紝0 琛ㄧず璺宠繃
 }
 
-// ChainConfig 单条链的完整配置。
+// ChainConfig 鍗曟潯閾剧殑瀹屾暣閰嶇疆銆?
 type ChainConfig struct {
-	Name            string            `yaml:"name"`             // 链名称标识
-	RPCFailover     []string          `yaml:"rpc_failover"`     // RPC 故障转移列表
-	WSEndpoint      string            `yaml:"ws_endpoint"`      // WebSocket 事件订阅地址
-	RPCEndpoint     string            `yaml:"rpc_endpoint"`     // HTTP RPC 地址，空则从 ws_endpoint 推导
-	FactoryAddress  string            `yaml:"factory_address"`  // Uniswap V3 Factory 合约地址
-	BaseTokens      []string          `yaml:"base_tokens"`      // 基础代币白名单（跨池报价中间代币 + 自动发现基础代币）
-	MaxHops         int               `yaml:"max_hops"`         // 跨池报价最大跳数，0 使用全局默认值
-	Pools           []PoolConfig      `yaml:"pools"`            // 该链的池子列表（手动指定）
-	AutoDiscover    AutoDiscoverConfig `yaml:"auto_discover"`    // Subgraph 自动发现配置
-	MulticallAddress string           `yaml:"multicall_address"` // Multicall3 合约地址，空使用标准部署地址
-	QuoterAddress    string           `yaml:"quoter_address"`    // Uniswap V3 QuoterV2 合约地址，空使用默认地址
+	Name             string             `yaml:"name"`              // 閾惧悕绉版爣璇?
+	RPCFailover      []string           `yaml:"rpc_failover"`      // RPC 鏁呴殰杞Щ鍒楄〃
+	WSEndpoint       string             `yaml:"ws_endpoint"`       // WebSocket 浜嬩欢璁㈤槄鍦板潃
+	RPCEndpoint      string             `yaml:"rpc_endpoint"`      // HTTP RPC 鍦板潃锛岀┖鍒欎粠 ws_endpoint 鎺ㄥ
+	FactoryAddress   string             `yaml:"factory_address"`   // Uniswap V3 Factory 鍚堢害鍦板潃
+	BaseTokens       []string           `yaml:"base_tokens"`       // 鍩虹浠ｅ竵鐧藉悕鍗曪紙璺ㄦ睜鎶ヤ环涓棿浠ｅ竵 + 鑷姩鍙戠幇鍩虹浠ｅ竵锛?
+	MaxHops          int                `yaml:"max_hops"`          // 璺ㄦ睜鎶ヤ环鏈€澶ц烦鏁帮紝0 浣跨敤鍏ㄥ眬榛樿鍊?
+	Pools            []PoolConfig       `yaml:"pools"`             // 璇ラ摼鐨勬睜瀛愬垪琛紙鎵嬪姩鎸囧畾锛?
+	AutoDiscover     AutoDiscoverConfig `yaml:"auto_discover"`     // Subgraph 鑷姩鍙戠幇閰嶇疆
+	MulticallAddress string             `yaml:"multicall_address"` // Multicall3 鍚堢害鍦板潃锛岀┖浣跨敤鏍囧噯閮ㄧ讲鍦板潃
+	QuoterAddress    string             `yaml:"quoter_address"`    // Uniswap V3 QuoterV2 鍚堢害鍦板潃锛岀┖浣跨敤榛樿鍦板潃
 }
 
-// DefaultMulticall3Address Multicall3 在所有主流 EVM 链上的标准部署地址。
+// DefaultMulticall3Address Multicall3 鍦ㄦ墍鏈変富娴?EVM 閾句笂鐨勬爣鍑嗛儴缃插湴鍧€銆?
 const DefaultMulticall3Address = "0xcA11bde05977b3631167028862bE2a173976CA11"
 const DefaultQuoterV2Address = "0x61fFE014bA17989E743c5F6cB21bF9697530B21e"
 
-// GetMulticallAddress 返回 Multicall3 合约地址，未配置时返回标准部署地址。
+// GetMulticallAddress 杩斿洖 Multicall3 鍚堢害鍦板潃锛屾湭閰嶇疆鏃惰繑鍥炴爣鍑嗛儴缃插湴鍧€銆?
 func (c *ChainConfig) GetMulticallAddress() string {
 	if c.MulticallAddress != "" {
 		return c.MulticallAddress
@@ -43,7 +43,7 @@ func (c *ChainConfig) GetMulticallAddress() string {
 	return DefaultMulticall3Address
 }
 
-// GetQuoterAddress 返回 QuoterV2 合约地址，未配置时返回默认地址。
+// GetQuoterAddress 杩斿洖 QuoterV2 鍚堢害鍦板潃锛屾湭閰嶇疆鏃惰繑鍥為粯璁ゅ湴鍧€銆?
 func (c *ChainConfig) GetQuoterAddress() string {
 	if c.QuoterAddress != "" {
 		return c.QuoterAddress
@@ -51,17 +51,26 @@ func (c *ChainConfig) GetQuoterAddress() string {
 	return DefaultQuoterV2Address
 }
 
-// AutoDiscoverConfig Uniswap V3 Subgraph 自动池子发现配置。
+// AutoDiscoverConfig Uniswap V3 Subgraph 鑷姩姹犲瓙鍙戠幇閰嶇疆銆?
 type AutoDiscoverConfig struct {
-	Enabled      bool   `yaml:"enabled"`       // 是否启用自动发现
-	SubgraphURL  string `yaml:"subgraph_url"`   // 子图 API 端点，默认使用 Uniswap 官方
-	MinTVLUSD    int    `yaml:"min_tvl_usd"`    // 最低 TVL（美元），默认 500,000
-	MinVolumeUSD int    `yaml:"min_volume_usd"` // 最低 24h 交易量（美元），默认 10,000,000
-	MaxPools     int    `yaml:"max_pools"`      // 最多添加池子数，默认 20
-	OrderBy      string `yaml:"order_by"`       // 排序字段: volumeUSD / totalValueLockedUSD / txCount，默认 volumeUSD
+	Enabled      bool   `yaml:"enabled"`        // 鏄惁鍚敤鑷姩鍙戠幇
+	SubgraphURL  string `yaml:"subgraph_url"`   // 瀛愬浘 API 绔偣锛岄粯璁や娇鐢?Uniswap 瀹樻柟
+	MinTVLUSD    int    `yaml:"min_tvl_usd"`    // 鏈€浣?TVL锛堢編鍏冿級锛岄粯璁?500,000
+	MinVolumeUSD int    `yaml:"min_volume_usd"` // 鏈€浣?24h 浜ゆ槗閲忥紙缇庡厓锛夛紝榛樿 10,000,000
+	MaxPools     int    `yaml:"max_pools"`      // 鏈€澶氭坊鍔犳睜瀛愭暟锛岄粯璁?20
+	OrderBy      string `yaml:"order_by"`       // 鎺掑簭瀛楁: volumeUSD / totalValueLockedUSD / txCount锛岄粯璁?volumeUSD
 }
 
-// GetAutoDiscover 返回自动发现配置（带默认值）。
+// GetAutoDiscover 杩斿洖鑷姩鍙戠幇閰嶇疆锛堝甫榛樿鍊硷級銆?
+// TriangleArbitrageConfig controls in-memory triangular arbitrage detection.
+type TriangleArbitrageConfig struct {
+	Enabled                 bool     `yaml:"enabled"`
+	AmountCandidates        []string `yaml:"amount_candidates"`
+	MinProfitBps            float64  `yaml:"min_profit_bps"`
+	MaxOpportunities        int      `yaml:"max_opportunities"`
+	ScanThrottleIntervalSec int      `yaml:"scan_throttle_interval_sec"`
+}
+
 func (c *ChainConfig) GetAutoDiscover() AutoDiscoverConfig {
 	cfg := c.AutoDiscover
 	if cfg.SubgraphURL == "" {
@@ -82,29 +91,30 @@ func (c *ChainConfig) GetAutoDiscover() AutoDiscoverConfig {
 	return cfg
 }
 
-// AppConfig 应用顶层配置。
+// AppConfig 搴旂敤椤跺眰閰嶇疆銆?
 type AppConfig struct {
-	HTTPPort               int           `yaml:"http_port"`                 // HTTP 端口，0 禁用，默认 8080
-	HealthCheckIntervalSec int           `yaml:"health_check_interval_sec"` // 健康检查间隔，0 禁用
-	PoolStatusPollIntervalSec int        `yaml:"pool_status_poll_interval_sec"` // READY 状态轮询间隔，0 默认 30 秒
-	LogFile                string        `yaml:"log_file"`                  // 日志文件路径
-	LogLevel               string        `yaml:"log_level"`                 // 日志级别: debug/info/warn/error，默认 info
-	TracingEndpoint        string        `yaml:"tracing_endpoint"`          // OTLP 端点，空禁用
-	DBURL                  string        `yaml:"db_url"`                    // PostgreSQL 连接串
-	RedisURL               string        `yaml:"redis_url"`                 // Redis 连接串（token 元信息缓存），空则禁用
-	MaxBlockGapForFullSync uint64        `yaml:"max_block_gap_for_full_sync"` // 全量同步最大区块间隔
-	MaxHops                int           `yaml:"max_hops"`                  // 跨池报价最大跳数
-	HTTPRateLimit          int           `yaml:"http_rate_limit"`           // HTTP API 每秒最大请求数，0 不限，默认 100
-	APIKey                 string        `yaml:"api_key"`                    // API 鉴权 key（X-API-Key），空表示不鉴权
-	Chains                 []ChainConfig `yaml:"chains"`                    // 多链配置
+	HTTPPort                  int                     `yaml:"http_port"`                     // HTTP 绔彛锛? 绂佺敤锛岄粯璁?8080
+	HealthCheckIntervalSec    int                     `yaml:"health_check_interval_sec"`     // 鍋ュ悍妫€鏌ラ棿闅旓紝0 绂佺敤
+	PoolStatusPollIntervalSec int                     `yaml:"pool_status_poll_interval_sec"` // READY 鐘舵€佽疆璇㈤棿闅旓紝0 榛樿 30 绉?
+	LogFile                   string                  `yaml:"log_file"`                      // 鏃ュ織鏂囦欢璺緞
+	LogLevel                  string                  `yaml:"log_level"`                     // 鏃ュ織绾у埆: debug/info/warn/error锛岄粯璁?info
+	TracingEndpoint           string                  `yaml:"tracing_endpoint"`              // OTLP 绔偣锛岀┖绂佺敤
+	DBURL                     string                  `yaml:"db_url"`                        // PostgreSQL 杩炴帴涓?
+	RedisURL                  string                  `yaml:"redis_url"`                     // Redis 杩炴帴涓诧紙token 鍏冧俊鎭紦瀛橈級锛岀┖鍒欑鐢?
+	MaxBlockGapForFullSync    uint64                  `yaml:"max_block_gap_for_full_sync"`   // 鍏ㄩ噺鍚屾鏈€澶у尯鍧楅棿闅?
+	MaxHops                   int                     `yaml:"max_hops"`                      // 璺ㄦ睜鎶ヤ环鏈€澶ц烦鏁?
+	HTTPRateLimit             int                     `yaml:"http_rate_limit"`               // HTTP API 姣忕鏈€澶ц姹傛暟锛? 涓嶉檺锛岄粯璁?100
+	APIKey                    string                  `yaml:"api_key"`                       // API 閴存潈 key锛圶-API-Key锛夛紝绌鸿〃绀轰笉閴存潈
+	TriangleArbitrage         TriangleArbitrageConfig `yaml:"triangle_arbitrage"`
+	Chains                    []ChainConfig           `yaml:"chains"` // 澶氶摼閰嶇疆
 }
 
-// GetChains 返回多链配置列表。
+// GetChains 杩斿洖澶氶摼閰嶇疆鍒楄〃銆?
 func (c *AppConfig) GetChains() []ChainConfig {
 	return c.Chains
 }
 
-// Validate 校验配置合法性。
+// Validate 鏍￠獙閰嶇疆鍚堟硶鎬с€?
 func (c *AppConfig) Validate() error {
 	if c.HTTPPort != 0 && (c.HTTPPort < 1 || c.HTTPPort > 65535) {
 		return fmt.Errorf("http_port must be 1-65535 or 0, got %d", c.HTTPPort)
@@ -165,9 +175,9 @@ func isValidAddress(addr string) bool {
 	return addrRegex.MatchString(addr)
 }
 
-// Load 从 YAML 文件加载配置。
+// Load 浠?YAML 鏂囦欢鍔犺浇閰嶇疆銆?
 //
-// 支持 {{ENV_VAR}} 模板语法：文件中所有 {{变量名}} 会被替换为对应环境变量的值。
+// 鏀寔 {{ENV_VAR}} 妯℃澘璇硶锛氭枃浠朵腑鎵€鏈?{{鍙橀噺鍚峿} 浼氳鏇挎崲涓哄搴旂幆澧冨彉閲忕殑鍊笺€?
 func Load(path string) (*AppConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -195,7 +205,7 @@ func Load(path string) (*AppConfig, error) {
 		return nil, fmt.Errorf("no chains configured: set chains in config.yaml")
 	}
 
-	// 补全每链的默认值和 RPC 推导
+	// 琛ュ叏姣忛摼鐨勯粯璁ゅ€煎拰 RPC 鎺ㄥ
 	for i := range cfg.Chains {
 		if cfg.Chains[i].RPCEndpoint == "" && cfg.Chains[i].WSEndpoint != "" {
 			cfg.Chains[i].RPCEndpoint = deriveRPCEndpoint(cfg.Chains[i].WSEndpoint)
@@ -208,10 +218,10 @@ func Load(path string) (*AppConfig, error) {
 	return cfg, nil
 }
 
-// deriveRPCEndpoint 从 WebSocket URL 推导 HTTP RPC URL。
+// deriveRPCEndpoint 浠?WebSocket URL 鎺ㄥ HTTP RPC URL銆?
 //
-//	wss://eth-mainnet.g.alchemy.com/v2/KEY → https://eth-mainnet.g.alchemy.com/v2/KEY
-//	ws://localhost:8546 → http://localhost:8546
+//	wss://eth-mainnet.g.alchemy.com/v2/KEY 鈫?https://eth-mainnet.g.alchemy.com/v2/KEY
+//	ws://localhost:8546 鈫?http://localhost:8546
 func deriveRPCEndpoint(wsURL string) string {
 	rpcURL := wsURL
 	if strings.HasPrefix(rpcURL, "wss://") {
@@ -222,11 +232,11 @@ func deriveRPCEndpoint(wsURL string) string {
 	return rpcURL
 }
 
-// templateVarPattern 匹配 {{VAR_NAME}} 模板变量。
+// templateVarPattern 鍖归厤 {{VAR_NAME}} 妯℃澘鍙橀噺銆?
 var templateVarPattern = regexp.MustCompile(`\{\{(\w[\w\-]*)\}\}`)
 
-// resolveTemplateVars 将 data 中的 {{VAR}} 替换为环境变量值。
-// 注释中的 {{VAR}} 也会被处理，但缺失的变量不会报错——保留原文本并输出警告。
+// resolveTemplateVars 灏?data 涓殑 {{VAR}} 鏇挎崲涓虹幆澧冨彉閲忓€笺€?
+// 娉ㄩ噴涓殑 {{VAR}} 涔熶細琚鐞嗭紝浣嗙己澶辩殑鍙橀噺涓嶄細鎶ラ敊鈥斺€斾繚鐣欏師鏂囨湰骞惰緭鍑鸿鍛娿€?
 func resolveTemplateVars(data []byte) ([]byte, error) {
 	stderr := func(msg string) { fmt.Fprintf(os.Stderr, "[config] WARNING: %s\n", msg) }
 
@@ -242,7 +252,7 @@ func resolveTemplateVars(data []byte) ([]byte, error) {
 		if !ok {
 			stderr(fmt.Sprintf("environment variable %q is not set (template %s left as-is)",
 				varName, match))
-			return match // 保留原文本，不报错
+			return match // 淇濈暀鍘熸枃鏈紝涓嶆姤閿?
 		}
 		return []byte(val)
 	})

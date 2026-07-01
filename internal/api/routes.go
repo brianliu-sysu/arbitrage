@@ -4,6 +4,7 @@ import (
 	"math/big"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
@@ -38,6 +39,18 @@ type quoteHop struct {
 	Pool     string `json:"pool"`
 	TokenIn  string `json:"tokenIn"`
 	TokenOut string `json:"tokenOut"`
+}
+
+type triangleOpportunityResponse struct {
+	Chain       string     `json:"chain"`
+	BaseToken   string     `json:"baseToken"`
+	AmountIn    string     `json:"amountIn"`
+	AmountOut   string     `json:"amountOut"`
+	Profit      string     `json:"profit"`
+	ProfitBps   float64    `json:"profitBps"`
+	BlockNumber uint64     `json:"blockNumber"`
+	DetectedAt  string     `json:"detectedAt"`
+	Path        []quoteHop `json:"path"`
 }
 
 type poolInfo struct {
@@ -239,6 +252,38 @@ func (s *Server) handleCrossQuote(c *gin.Context) {
 	})
 }
 
+func (s *Server) handleTriangleOpportunities(c *gin.Context) {
+	chain := c.Param("chain")
+	opps, err := s.svc.TriangleOpportunities(chain)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error(), "chain": chain})
+		return
+	}
+	resp := make([]triangleOpportunityResponse, 0, len(opps))
+	for _, opp := range opps {
+		path := make([]quoteHop, 0, len(opp.Path.Hops))
+		for _, h := range opp.Path.Hops {
+			path = append(path, quoteHop{
+				Pool:     h.Pool.Hex(),
+				TokenIn:  h.TokenIn.Hex(),
+				TokenOut: h.TokenOut.Hex(),
+			})
+		}
+		resp = append(resp, triangleOpportunityResponse{
+			Chain:       chain,
+			BaseToken:   opp.Path.BaseToken.Hex(),
+			AmountIn:    bigString(opp.AmountIn),
+			AmountOut:   bigString(opp.AmountOut),
+			Profit:      bigString(opp.Profit),
+			ProfitBps:   opp.ProfitBps,
+			BlockNumber: opp.BlockNumber,
+			DetectedAt:  opp.DetectedAt.Format(time.RFC3339Nano),
+			Path:        path,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"opportunities": resp})
+}
+
 // ---------------------------------------------------------------------------
 // 内部工具
 // ---------------------------------------------------------------------------
@@ -320,4 +365,11 @@ func uint32Val(m map[string]interface{}, key string) uint32 {
 func float64Val(m map[string]interface{}, key string) float64 {
 	v, _ := m[key].(float64)
 	return v
+}
+
+func bigString(v *big.Int) string {
+	if v == nil {
+		return "0"
+	}
+	return v.String()
 }

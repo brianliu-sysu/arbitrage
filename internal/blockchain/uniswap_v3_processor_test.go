@@ -90,6 +90,7 @@ func TestProcessBlockAppliesLoadedPoolSynchronously(t *testing.T) {
 		poolRepo,
 		syncRepo,
 		logx.Nop(),
+		nil,
 	)
 	processor.SetPoolAddresses([]common.Address{addr})
 
@@ -132,6 +133,7 @@ func TestProcessBlockQueuesLoadingPoolEvents(t *testing.T) {
 		poolRepo,
 		syncRepo,
 		logx.Nop(),
+		nil,
 	)
 	processor.SetPoolAddresses([]common.Address{addr})
 
@@ -175,6 +177,7 @@ func TestProcessBlockQueuesWhilePendingEventsDrain(t *testing.T) {
 		&fakePoolRepo{},
 		syncRepo,
 		logx.Nop(),
+		nil,
 	)
 	processor.SetPoolAddresses([]common.Address{addr})
 
@@ -214,6 +217,7 @@ func TestFinishPoolLoadingDrainsPendingEventsSynchronously(t *testing.T) {
 		poolRepo,
 		&fakeSyncRepo{},
 		logx.Nop(),
+		nil,
 	)
 
 	if err := processor.FinishPoolLoading(context.Background(), addr); err != nil {

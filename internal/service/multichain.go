@@ -5,6 +5,7 @@ import (
 	"math/big"
 	"sync"
 
+	"github.com/brianliu-sysu/arbitrage/internal/arbitrage"
 	"github.com/brianliu-sysu/arbitrage/internal/logx"
 	"github.com/brianliu-sysu/arbitrage/internal/quote"
 	"github.com/ethereum/go-ethereum/common"
@@ -124,4 +125,13 @@ func (m *MultiChainService) CrossQuote(chain string, amountIn *big.Int, tokenIn,
 		return nil, fmt.Errorf("chain %q not found", chain)
 	}
 	return svc.CrossQuote(amountIn, tokenIn, tokenOut)
+}
+
+// TriangleOpportunities returns the latest detected triangular arbitrage opportunities for a chain.
+func (m *MultiChainService) TriangleOpportunities(chain string) ([]arbitrage.TriangleOpportunity, error) {
+	svc, ok := m.GetChain(chain)
+	if !ok {
+		return nil, fmt.Errorf("chain %q not found", chain)
+	}
+	return svc.TriangleOpportunities(), nil
 }

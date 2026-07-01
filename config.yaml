@@ -31,6 +31,16 @@ max_block_gap_for_full_sync: 100
 # 跨池报价最大跳数（全局默认，链级可覆盖）。
 max_hops: 2
 
+# Triangular arbitrage detection (discovery only, no execution).
+# amount_candidates are raw integer token units.
+triangle_arbitrage:
+  enabled: false
+  amount_candidates:
+    - "100000000000000000"
+  min_profit_bps: 5
+  max_opportunities: 20
+  scan_throttle_interval_sec: 2
+
 # 持久化存储（PostgreSQL）。空字符串表示禁用。
 # 状态在每次 Swap 事件时自动保存，启动时自动加载。
 db_url: "postgres://{{ARBITRAGE_DB_USER}}:{{ARBITRAGE_DB_PASSWORD}}@localhost:5432/arbitrage?sslmode=disable"

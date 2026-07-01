@@ -39,13 +39,14 @@ type PoolLoader interface {
 
 // ProcessorBuildParams 构建 BlockProcessor 所需依赖。
 type ProcessorBuildParams struct {
-	ChainName string
-	Protocol  ProtocolID
-	Cache     *pool.Cache
-	Fetcher   BlockLogFetcher
-	PoolRepo  storage.PoolRepo
-	SyncRepo  storage.SyncRepo
-	Logger    logx.Logger
+	ChainName     string
+	Protocol      ProtocolID
+	Cache         *pool.Cache
+	Fetcher       BlockLogFetcher
+	PoolRepo      storage.PoolRepo
+	SyncRepo      storage.SyncRepo
+	Logger        logx.Logger
+	OnPoolApplied func(chainName string, poolAddr common.Address, blockNumber uint64)
 }
 
 // ProcessorFactory 按协议创建 BlockProcessor。
@@ -61,7 +62,7 @@ func NewProcessorRegistry() *ProcessorRegistry {
 	r := &ProcessorRegistry{factories: make(map[ProtocolID]ProcessorFactory)}
 	r.Register(ProtocolUniswapV3, func(p ProcessorBuildParams) (BlockProcessor, error) {
 		return NewUniswapV3BlockProcessor(
-			p.ChainName, p.Cache, p.Fetcher, replay.NewDefaultApplier(), p.PoolRepo, p.SyncRepo, p.Logger,
+			p.ChainName, p.Cache, p.Fetcher, replay.NewDefaultApplier(), p.PoolRepo, p.SyncRepo, p.Logger, p.OnPoolApplied,
 		), nil
 	})
 	return r

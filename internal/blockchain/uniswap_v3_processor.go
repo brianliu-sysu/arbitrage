@@ -17,13 +17,14 @@ import (
 
 // UniswapV3BlockProcessor 按区块增量同步 Uniswap V3 池子状态。
 type UniswapV3BlockProcessor struct {
-	chainName string
-	cache     *pool.Cache
-	fetcher   BlockLogFetcher
-	applier   replay.Applier
-	poolRepo  storage.PoolRepo
-	syncRepo  storage.SyncRepo
-	logger    logx.Logger
+	chainName        string
+	cache            *pool.Cache
+	fetcher          BlockLogFetcher
+	applier          replay.Applier
+	poolRepo         storage.PoolRepo
+	syncRepo         storage.SyncRepo
+	logger           logx.Logger
+	afterPoolApplied func(chainName string, poolAddr common.Address, blockNumber uint64)
 
 	mu        sync.RWMutex
 	poolAddrs []common.Address
@@ -38,18 +39,20 @@ func NewUniswapV3BlockProcessor(
 	poolRepo storage.PoolRepo,
 	syncRepo storage.SyncRepo,
 	logger logx.Logger,
+	afterPoolApplied func(chainName string, poolAddr common.Address, blockNumber uint64),
 ) *UniswapV3BlockProcessor {
 	if applier == nil {
 		applier = replay.NewDefaultApplier()
 	}
 	return &UniswapV3BlockProcessor{
-		chainName: chainName,
-		cache:     cache,
-		fetcher:   fetcher,
-		applier:   applier,
-		poolRepo:  poolRepo,
-		syncRepo:  syncRepo,
-		logger:    logger,
+		chainName:        chainName,
+		cache:            cache,
+		fetcher:          fetcher,
+		applier:          applier,
+		poolRepo:         poolRepo,
+		syncRepo:         syncRepo,
+		logger:           logger,
+		afterPoolApplied: afterPoolApplied,
 	}
 }
 
@@ -79,6 +82,9 @@ func (p *UniswapV3BlockProcessor) onApplied(state *pool.State) {
 	defer cancel()
 	if err := p.persistPool(ctx, state); err != nil {
 		p.logger.Warn("persist pool after apply", "pool", state.Address.Hex(), "error", err)
+	}
+	if p.afterPoolApplied != nil {
+		p.afterPoolApplied(p.chainName, state.Address, state.BlockNumber)
 	}
 }
 
