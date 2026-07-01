@@ -411,22 +411,17 @@ func (s *PoolQuoteService) needsInitialFullSync() bool {
 	return s.pool.BlockNumber == 0 || s.pool.GetTickCount() == 0
 }
 
-// EnsureInitialState 仅在首次无数据时执行一次全量同步（链上 tick bitmap + slot0）。
-// 已有 DB 快照的池子跳过，后续由 BlockSync 从 lastBlock+1 增量补齐。
+// EnsureInitialState 要求池子已由 cmd/snapshot 写入 READY 快照；arbitrage 不再执行链上全量同步。
 func (s *PoolQuoteService) EnsureInitialState() error {
 	if !s.needsInitialFullSync() {
 		return nil
 	}
-	if s.poolClient == nil {
-		return fmt.Errorf("poolClient is nil")
-	}
-	s.logger.Info("initial full sync", "pool", s.pool.Address.Hex())
-	if err := s.DoFullSync(); err != nil {
-		return err
-	}
-	s.emitPriceUpdate()
-	s.saveSnapshot()
-	return nil
+	return fmt.Errorf("pool %s has no tick snapshot: run cmd/snapshot first", s.pool.Address.Hex())
+}
+
+// PoolState 返回池子运行时状态（快照工具使用）。
+func (s *PoolQuoteService) PoolState() *pool.State {
+	return s.pool
 }
 
 // ---------------------------------------------------------------------------
@@ -1029,12 +1024,8 @@ func (s *PoolQuoteService) runHealthCheck() {
 	}
 
 	if s.needsInitialFullSync() {
-		s.logger.Info("health check: pool not initialized, running initial full sync",
+		s.logger.Warn("health check: pool missing snapshot, run cmd/snapshot",
 			"pool", s.pool.Address.Hex())
-		metrics.HealthRepairsTotal.WithLabelValues(s.pool.Address.Hex()).Inc()
-		if err := s.EnsureInitialState(); err != nil {
-			s.logger.Error("health check: initial full sync failed", "error", err)
-		}
 		return
 	}
 

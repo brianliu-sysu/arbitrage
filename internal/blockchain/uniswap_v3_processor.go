@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"sync"
+	"time"
 
 	"github.com/brianliu-sysu/arbitrage/internal/logx"
 	"github.com/brianliu-sysu/arbitrage/internal/pool"
@@ -18,21 +19,21 @@ import (
 type UniswapV3BlockProcessor struct {
 	chainName string
 	cache     *pool.Cache
-	fetcher   *LogFetcher
+	fetcher   BlockLogFetcher
 	applier   replay.Applier
 	poolRepo  storage.PoolRepo
 	syncRepo  storage.SyncRepo
 	logger    logx.Logger
 
-	mu          sync.RWMutex
-	poolAddrs   []common.Address
+	mu        sync.RWMutex
+	poolAddrs []common.Address
 }
 
 // NewUniswapV3BlockProcessor 创建 V3 区块处理器。
 func NewUniswapV3BlockProcessor(
 	chainName string,
 	cache *pool.Cache,
-	fetcher *LogFetcher,
+	fetcher BlockLogFetcher,
 	applier replay.Applier,
 	poolRepo storage.PoolRepo,
 	syncRepo storage.SyncRepo,
@@ -52,11 +53,33 @@ func NewUniswapV3BlockProcessor(
 	}
 }
 
+func (p *UniswapV3BlockProcessor) blockApplier() pool.BlockLogApplier {
+	return func(st *pool.State, logs []types.Log) error {
+		return p.applier.ApplyBlock(st, logs)
+	}
+}
+
 // SetPoolAddresses 更新跟踪的池子地址列表。
 func (p *UniswapV3BlockProcessor) SetPoolAddresses(addrs []common.Address) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.poolAddrs = append([]common.Address(nil), addrs...)
+	for _, addr := range addrs {
+		if state, ok := p.cache.Get(addr); ok {
+			state.SetOnApplied(p.onApplied)
+		}
+	}
+}
+
+func (p *UniswapV3BlockProcessor) onApplied(state *pool.State) {
+	if p.poolRepo == nil || state == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := p.persistPool(ctx, state); err != nil {
+		p.logger.Warn("persist pool after apply", "pool", state.Address.Hex(), "error", err)
+	}
 }
 
 // ChainLastProcessedBlock 返回链级扫块游标（BlockSync 协调用）。
@@ -67,8 +90,7 @@ func (p *UniswapV3BlockProcessor) ChainLastProcessedBlock(ctx context.Context) (
 	return p.syncRepo.GetLastProcessedBlock(ctx, p.chainName)
 }
 
-// BackfillPool 回放 [from, to] 内单池日志并持久化，不推进链级游标。
-// 动态加池时在加入 getLogs 过滤列表之前调用，避免与 ProcessBlock 并发写同一状态。
+// BackfillPool 拉取 [from, to] 日志：Loading 时 ApplyBlockEventsDirect 同步 apply。
 func (p *UniswapV3BlockProcessor) BackfillPool(ctx context.Context, addr common.Address, from, to uint64) error {
 	if from > to {
 		return nil
@@ -77,6 +99,7 @@ func (p *UniswapV3BlockProcessor) BackfillPool(ctx context.Context, addr common.
 	if !ok {
 		return fmt.Errorf("pool %s not in cache", addr.Hex())
 	}
+	apply := p.blockApplier()
 	for b := from; b <= to; b++ {
 		logs, err := p.fetcher.FetchBlockLogs(ctx, b, []common.Address{addr})
 		if err != nil {
@@ -85,17 +108,30 @@ func (p *UniswapV3BlockProcessor) BackfillPool(ctx context.Context, addr common.
 		if len(logs) == 0 {
 			continue
 		}
-		if err := p.applier.ApplyBlock(state, logs); err != nil {
+		if err := state.ApplyBlockEventsDirect(b, logs, apply); err != nil {
 			return fmt.Errorf("backfill apply block %d pool %s: %w", b, addr.Hex(), err)
-		}
-		if err := p.persistPool(ctx, state); err != nil {
-			p.logger.Warn("backfill persist pool", "pool", addr.Hex(), "block", b, "error", err)
 		}
 	}
 	return nil
 }
 
-// ProcessBlock 拉取日志、回放状态、持久化并推进链级扫块游标。
+// FinishPoolLoading 回补结束：同步 drain pending buffer。
+func (p *UniswapV3BlockProcessor) FinishPoolLoading(ctx context.Context, addr common.Address) error {
+	state, ok := p.cache.Get(addr)
+	if !ok {
+		return fmt.Errorf("pool %s not in cache", addr.Hex())
+	}
+
+	if err := state.DrainPendingBlockEvents(ctx, p.blockApplier()); err != nil {
+		return fmt.Errorf("drain pending pool %s: %w", addr.Hex(), err)
+	}
+	if err := p.persistPool(ctx, state); err != nil {
+		p.logger.Warn("persist pool after loading complete", "pool", addr.Hex(), "error", err)
+	}
+	return nil
+}
+
+// ProcessBlock 拉取日志并按池子加载状态应用；已加载池同步 apply，加载中池进入 handoff 队列。
 func (p *UniswapV3BlockProcessor) ProcessBlock(ctx context.Context, block uint64) error {
 	p.mu.RLock()
 	addrs := append([]common.Address(nil), p.poolAddrs...)
@@ -109,21 +145,19 @@ func (p *UniswapV3BlockProcessor) ProcessBlock(ctx context.Context, block uint64
 	if err != nil {
 		return err
 	}
-	if len(logs) == 0 {
-		return p.commitBlock(ctx, block)
-	}
-
-	grouped := GroupLogsByPool(logs)
-	for addr, poolLogs := range grouped {
-		state, ok := p.cache.Get(addr)
-		if !ok {
-			continue
-		}
-		if err := p.applier.ApplyBlock(state, poolLogs); err != nil {
-			return fmt.Errorf("apply block %d pool %s: %w", block, addr.Hex(), err)
-		}
-		if err := p.persistPool(ctx, state); err != nil {
-			p.logger.Warn("persist pool after block", "pool", addr.Hex(), "block", block, "error", err)
+	if len(logs) > 0 {
+		grouped := GroupLogsByPool(logs)
+		for addr, poolLogs := range grouped {
+			state, ok := p.cache.Get(addr)
+			if !ok {
+				continue
+			}
+			if state.ApplyBlockEvents(block, poolLogs) {
+				continue
+			}
+			if err := state.ApplyBlockEventsDirect(block, poolLogs, p.blockApplier()); err != nil {
+				return fmt.Errorf("apply block %d pool %s: %w", block, addr.Hex(), err)
+			}
 		}
 	}
 	return p.commitBlock(ctx, block)

@@ -45,6 +45,14 @@ func (l *Loader) RestoreAll(ctx context.Context, chainName string) (map[string]*
 	return l.repo.LoadAll(ctx, chainName)
 }
 
+// RestoreAllReady 加载 snapshot_status = READY 的池子快照。
+func (l *Loader) RestoreAllReady(ctx context.Context, chainName string) (map[string]*storage.PoolSnapshot, error) {
+	if l.repo == nil {
+		return nil, nil
+	}
+	return l.repo.LoadAllByStatus(ctx, chainName, storage.SnapshotReady)
+}
+
 func applySnapshot(p *pool.State, snap *storage.PoolSnapshot) {
 	p.UpdateFromSwap(snap.SqrtPriceX96, snap.Tick, snap.Liquidity, snap.BlockNumber)
 	if snap.Fee != 0 {

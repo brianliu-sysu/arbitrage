@@ -43,6 +43,14 @@ type State struct {
 	Bitmap map[uint16]utils.Word256
 
 	BlockNumber uint64
+
+	// Loaded=true 时处于动态加池加载阶段；回补用 ApplyBlockEventsDirect 同步 apply。
+	// 增量事件经 ApplyBlockEvents 进入 pendingEvents，FinishPoolLoading 同步 drain。
+	Loaded        bool
+	Draining      bool
+	pendingEvents []BlockEvent
+	onApplied     func(*State) // apply 完成后回调（持久化等）
+	eventMu       sync.Mutex
 }
 
 // PoolState 兼容历史命名，避免外部调用方一次性改动。
@@ -354,10 +362,10 @@ func (p *State) GetTicksCopy() map[int32]*TickLiquidity {
 
 // GetRawState 线程安全地读取原始链上状态字段，用于健康检查比价。
 // 返回 sqrtPriceX96 的副本、tick、liquidity 的副本、blockNumber。
-func (p *State) GetRawState() (sqrtPriceX96 *big.Int, tick int32, liquidity *big.Int, blockNumber int64) {
+func (p *State) GetRawState() (sqrtPriceX96 *big.Int, tick int32, liquidity *big.Int, blockNumber uint64) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return new(big.Int).Set(p.SqrtPriceX96), p.Tick, new(big.Int).Set(p.Liquidity), blockNumber
+	return new(big.Int).Set(p.SqrtPriceX96), p.Tick, new(big.Int).Set(p.Liquidity), p.BlockNumber
 }
 
 // GetStateCopy 获取状态的深拷贝，避免外部后续修改影响内部状态。

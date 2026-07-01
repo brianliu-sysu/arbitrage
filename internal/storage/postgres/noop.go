@@ -19,6 +19,15 @@ func (NoopPoolRepo) Load(context.Context, string, string) (*storage.PoolSnapshot
 func (NoopPoolRepo) LoadAll(context.Context, string) (map[string]*storage.PoolSnapshot, error) {
 	return nil, nil
 }
+func (NoopPoolRepo) LoadAllByStatus(context.Context, string, storage.SnapshotStatus) (map[string]*storage.PoolSnapshot, error) {
+	return nil, nil
+}
+func (NoopPoolRepo) ListSnapshotStatuses(context.Context, string) (map[string]storage.SnapshotStatus, error) {
+	return nil, nil
+}
+func (NoopPoolRepo) SetSnapshotStatus(context.Context, string, string, storage.SnapshotStatus) error {
+	return nil
+}
 func (NoopPoolRepo) LoadTokenMetadata(context.Context, string, string) (*storage.TokenMetadata, error) {
 	return nil, nil
 }

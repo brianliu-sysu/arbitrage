@@ -44,10 +44,12 @@ func (s *Store) Save(ctx context.Context, snap *storage.PoolSnapshot) error {
 		return fmt.Errorf("marshal tick data: %w", err)
 	}
 
+	status := string(snap.SnapshotStatus)
+
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO pool_states
-			(pool_address, chain_name, block_number, tick, sqrt_price_x96, liquidity, price0_in_1, tick_data, token0_symbol, token1_symbol, fee, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+			(pool_address, chain_name, block_number, tick, sqrt_price_x96, liquidity, price0_in_1, tick_data, token0_symbol, token1_symbol, fee, snapshot_status, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		ON CONFLICT (pool_address, chain_name) DO UPDATE SET
 			block_number   = EXCLUDED.block_number,
 			tick           = EXCLUDED.tick,
@@ -58,6 +60,10 @@ func (s *Store) Save(ctx context.Context, snap *storage.PoolSnapshot) error {
 			token0_symbol  = EXCLUDED.token0_symbol,
 			token1_symbol  = EXCLUDED.token1_symbol,
 			fee            = EXCLUDED.fee,
+			snapshot_status = CASE
+				WHEN EXCLUDED.snapshot_status <> '' THEN EXCLUDED.snapshot_status
+				ELSE pool_states.snapshot_status
+			END,
 			updated_at     = EXCLUDED.updated_at`,
 		snap.PoolAddress,
 		snap.ChainName,
@@ -70,6 +76,7 @@ func (s *Store) Save(ctx context.Context, snap *storage.PoolSnapshot) error {
 		snap.Token0Symbol,
 		snap.Token1Symbol,
 		snap.Fee,
+		status,
 		time.Now(),
 	)
 	if err != nil {
@@ -98,7 +105,7 @@ func (s *Store) SaveHistory(ctx context.Context, snap *storage.PoolSnapshot) err
 
 func (s *Store) Load(ctx context.Context, chainName, poolAddress string) (*storage.PoolSnapshot, error) {
 	row := s.pool.QueryRow(ctx, `
-		SELECT block_number, tick, sqrt_price_x96, liquidity, price0_in_1, tick_data, token0_symbol, token1_symbol, fee
+		SELECT block_number, tick, sqrt_price_x96, liquidity, price0_in_1, tick_data, token0_symbol, token1_symbol, fee, snapshot_status
 		FROM pool_states WHERE pool_address = $1 AND chain_name = $2`,
 		poolAddress, chainName,
 	)
@@ -113,9 +120,10 @@ func (s *Store) Load(ctx context.Context, chainName, poolAddress string) (*stora
 		token0Sym string
 		token1Sym string
 		fee       uint32
+		status    string
 	)
 
-	err := row.Scan(&blockNum, &tick, &sqrtPrice, &liquidity, &price0, &tickJSON, &token0Sym, &token1Sym, &fee)
+	err := row.Scan(&blockNum, &tick, &sqrtPrice, &liquidity, &price0, &tickJSON, &token0Sym, &token1Sym, &fee, &status)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -138,27 +146,41 @@ func (s *Store) Load(ctx context.Context, chainName, poolAddress string) (*stora
 	}
 
 	return &storage.PoolSnapshot{
-		ChainName:    chainName,
-		PoolAddress:  poolAddress,
-		BlockNumber:  blockNum,
-		Tick:         tick,
-		SqrtPriceX96: sqrtPriceX96,
-		Liquidity:    liq,
-		Price0In1:    price0,
-		Token0Symbol: token0Sym,
-		Token1Symbol: token1Sym,
-		Fee:          fee,
-		TickData:     tickData,
+		ChainName:      chainName,
+		PoolAddress:    poolAddress,
+		BlockNumber:    blockNum,
+		Tick:           tick,
+		SqrtPriceX96:   sqrtPriceX96,
+		Liquidity:      liq,
+		Price0In1:      price0,
+		Token0Symbol:   token0Sym,
+		Token1Symbol:   token1Sym,
+		Fee:            fee,
+		TickData:       tickData,
+		SnapshotStatus: storage.ParseSnapshotStatus(status),
 	}, nil
 }
 
 func (s *Store) LoadAll(ctx context.Context, chainName string) (map[string]*storage.PoolSnapshot, error) {
-	rows, err := s.pool.Query(ctx, `
+	return s.loadAllQuery(ctx, chainName, "")
+}
+
+func (s *Store) LoadAllByStatus(ctx context.Context, chainName string, status storage.SnapshotStatus) (map[string]*storage.PoolSnapshot, error) {
+	return s.loadAllQuery(ctx, chainName, string(status))
+}
+
+func (s *Store) loadAllQuery(ctx context.Context, chainName, statusFilter string) (map[string]*storage.PoolSnapshot, error) {
+	query := `
 		SELECT pool_address, block_number, tick, sqrt_price_x96, liquidity,
-		       price0_in_1, tick_data, token0_symbol, token1_symbol, fee
-		FROM pool_states WHERE chain_name = $1`,
-		chainName,
-	)
+		       price0_in_1, tick_data, token0_symbol, token1_symbol, fee, snapshot_status
+		FROM pool_states WHERE chain_name = $1`
+	args := []any{chainName}
+	if statusFilter != "" {
+		query += ` AND snapshot_status = $2`
+		args = append(args, statusFilter)
+	}
+
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query pool states for chain %s: %w", chainName, err)
 	}
@@ -177,9 +199,10 @@ func (s *Store) LoadAll(ctx context.Context, chainName string) (map[string]*stor
 			token0Sym string
 			token1Sym string
 			fee       uint32
+			status    string
 		)
 		if err := rows.Scan(&poolAddr, &blockNum, &tick, &sqrtPrice, &liquidity,
-			&price0, &tickJSON, &token0Sym, &token1Sym, &fee); err != nil {
+			&price0, &tickJSON, &token0Sym, &token1Sym, &fee, &status); err != nil {
 			return nil, fmt.Errorf("scan pool state: %w", err)
 		}
 
@@ -198,23 +221,67 @@ func (s *Store) LoadAll(ctx context.Context, chainName string) (map[string]*stor
 		}
 
 		result[poolAddr] = &storage.PoolSnapshot{
-			ChainName:    chainName,
-			PoolAddress:  poolAddr,
-			BlockNumber:  blockNum,
-			Tick:         tick,
-			SqrtPriceX96: sqrtPriceX96,
-			Liquidity:    liq,
-			Price0In1:    price0,
-			Token0Symbol: token0Sym,
-			Token1Symbol: token1Sym,
-			Fee:          fee,
-			TickData:     tickData,
+			ChainName:      chainName,
+			PoolAddress:    poolAddr,
+			BlockNumber:    blockNum,
+			Tick:           tick,
+			SqrtPriceX96:   sqrtPriceX96,
+			Liquidity:      liq,
+			Price0In1:      price0,
+			Token0Symbol:   token0Sym,
+			Token1Symbol:   token1Sym,
+			Fee:            fee,
+			TickData:       tickData,
+			SnapshotStatus: storage.ParseSnapshotStatus(status),
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate pool states: %w", err)
 	}
 	return result, nil
+}
+
+func (s *Store) ListSnapshotStatuses(ctx context.Context, chainName string) (map[string]storage.SnapshotStatus, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT pool_address, snapshot_status
+		FROM pool_states WHERE chain_name = $1`,
+		chainName,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query pool statuses for chain %s: %w", chainName, err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]storage.SnapshotStatus)
+	for rows.Next() {
+		var addr, status string
+		if err := rows.Scan(&addr, &status); err != nil {
+			return nil, fmt.Errorf("scan pool status: %w", err)
+		}
+		out[strings.ToLower(addr)] = storage.ParseSnapshotStatus(status)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pool statuses: %w", err)
+	}
+	return out, nil
+}
+
+func (s *Store) SetSnapshotStatus(ctx context.Context, chainName, poolAddress string, status storage.SnapshotStatus) error {
+	poolAddress = strings.ToLower(poolAddress)
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO pool_states
+			(pool_address, chain_name, block_number, tick, sqrt_price_x96, liquidity, snapshot_status, updated_at)
+		VALUES ($1, $2, 0, 0, '0', '0', $3, $4)
+		ON CONFLICT (pool_address, chain_name) DO UPDATE SET
+			snapshot_status = EXCLUDED.snapshot_status,
+			updated_at = EXCLUDED.updated_at
+		WHERE pool_states.snapshot_status IS DISTINCT FROM 'DISABLED'`,
+		poolAddress, chainName, string(status), time.Now(),
+	)
+	if err != nil {
+		return fmt.Errorf("set snapshot status: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) LoadTokenMetadata(ctx context.Context, chainName, tokenAddress string) (*storage.TokenMetadata, error) {

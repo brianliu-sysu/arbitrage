@@ -10,6 +10,9 @@ http_port: 8080
 # 健康检查间隔（秒）。0 表示禁用。推荐值: 30-60
 health_check_interval_sec: 30
 
+# pool_states.snapshot_status 轮询间隔（秒）。arbitrage 据此增删 READY 池子。0 默认 30
+pool_status_poll_interval_sec: 30
+
 # 日志文件路径。空字符串表示仅输出到 stderr。
 log_file: "arbitrage.log"
 

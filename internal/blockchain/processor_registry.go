@@ -31,12 +31,18 @@ type PoolBackfiller interface {
 	ChainLastProcessedBlock(ctx context.Context) (uint64, error)
 }
 
+// PoolLoader 完成池子加载 handoff：回填历史 + 消费缓冲事件。
+type PoolLoader interface {
+	PoolBackfiller
+	FinishPoolLoading(ctx context.Context, addr common.Address) error
+}
+
 // ProcessorBuildParams 构建 BlockProcessor 所需依赖。
 type ProcessorBuildParams struct {
 	ChainName string
 	Protocol  ProtocolID
 	Cache     *pool.Cache
-	Fetcher   *LogFetcher
+	Fetcher   BlockLogFetcher
 	PoolRepo  storage.PoolRepo
 	SyncRepo  storage.SyncRepo
 	Logger    logx.Logger
@@ -137,4 +143,14 @@ func (c *CompositeBlockProcessor) ChainLastProcessedBlock(ctx context.Context) (
 		}
 	}
 	return 0, fmt.Errorf("no pool backfiller registered")
+}
+
+// FinishPoolLoading 委托给首个支持加载完成的 Processor。
+func (c *CompositeBlockProcessor) FinishPoolLoading(ctx context.Context, addr common.Address) error {
+	for _, p := range c.processors {
+		if loader, ok := p.(PoolLoader); ok {
+			return loader.FinishPoolLoading(ctx, addr)
+		}
+	}
+	return fmt.Errorf("no pool loader registered")
 }

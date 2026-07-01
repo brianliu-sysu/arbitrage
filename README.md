@@ -1,20 +1,21 @@
 # Uniswap V3 Multi-Chain Quote Service
 
-基于 Go 的生产级 Uniswap V3 多链报价引擎。采用**领域驱动分层**与 **Uber Fx 依赖注入**，池子状态长期保存在 PostgreSQL，启动时从 Snapshot 恢复，后续通过 **BlockSync** 按区块增量同步，对外提供 HTTP API 报价与跨池路由。
+基于 Go 的生产级 Uniswap V3 多链报价引擎。采用**领域驱动分层**与 **Uber Fx 依赖注入**，池子 tick 快照由独立工具 `cmd/snapshot` 一次性写入 PostgreSQL，`cmd/arbitrage` 仅加载 **READY** 池子并通过 **BlockSync** 按区块增量同步，对外提供 HTTP API 报价与跨池路由。
 
 ## 特性
 
 - **多链支持** — 每条链独立 RPC、BlockSync、池子列表，可同时监控 Ethereum / Arbitrum / Base / Optimism 等
-- **BlockSync 增量同步** — `newHeads → eth_getLogs → ApplyBlock → PostgreSQL`，按区块顺序更新，无 per-pool WS 重复应用
-- **Snapshot 冷启动** — 启动时从 PostgreSQL 恢复池子状态，CatchUp 补块至链头后进入实时同步
-- **Pool 状态机** — `pool/replay` 统一处理 Swap / Mint / Burn，历史补块与实时同步共用同一套逻辑
-- **Tick Bitmap 全量重建** — 健康检查 / 全量修复时从链上读取 tick bitmap，Multicall3 批量查询
+- **Snapshot 与增量分离** — `cmd/snapshot` 链上全量同步 tick 地图；`cmd/arbitrage` 只做增量，不在运行时全量重建
+- **`snapshot_status` 生命周期** — `INITIALIZING` / `READY` / `FAILED` / `DISABLED`，arbitrage 只跟踪 READY，并定期轮询 DB 动态增删池子
+- **BlockSync 增量同步** — `newHeads → eth_getLogs → eventCh → replay.ApplyBlock → PostgreSQL`
+- **Per-pool Event Consumer** — 每个池子独立 `chan BlockEvent`（容量 100）+ 后台协程顺序消费；动态加池回补期间 `Loaded=true` 暂停消费，回补用 `ApplyBlockEventsDirect` 同步 apply
+- **Pool 状态机** — `pool/replay` 统一处理 Swap / Mint / Burn，历史回补与实时增量共用同一套逻辑
 - **跨池报价** — `router` BFS 路径搜索 + `arbitrage` 最优路径选择 + 本地模拟报价
 - **多 DEX 扩展** — `ProcessorRegistry` 按协议注册 BlockProcessor（当前内置 Uniswap V3）
-- **动态池子发现** — Factory 自动发现 token 池子；Subgraph 启动时拉取 Top N 池子
+- **动态池子发现** — Factory 自动发现 token 池子；Subgraph 用于 snapshot / 配置收集池子列表
 - **PostgreSQL 持久化** — Repository 模式（PoolRepo / SyncRepo），池子快照 + 链级同步进度
 - **Redis 缓存** — 代币元信息（symbol / decimals）与已应用日志 dedup
-- **Cron 健康检查** — 对比链上/内存状态，不一致时触发全量/轻量修复
+- **Cron 健康检查** — 对比链上 slot0 与内存状态，不一致时告警（由 BlockSync 增量修复，不触发运行时全量同步）
 - **HTTP API** — Gin RESTful 接口，API Key 鉴权 + 令牌桶限流
 - **Prometheus / OpenTelemetry** — 指标与 OTLP 链路追踪
 - **Uber Fx DI** — 基础设施模块自动装配，领域服务在 bootstrap 中按链初始化
@@ -26,47 +27,40 @@
 ```
 arbitrage/
 ├── cmd/
-│   ├── arbitrage/main.go                   # 入口：app.New().Run()
+│   ├── arbitrage/main.go                   # 长期运行：报价 + BlockSync 增量
+│   ├── snapshot/main.go                    # 一次性：链上全量快照 → pool_states
 │   └── migrate/main.go                     # 数据库迁移 CLI
 ├── internal/
 │   ├── app/
-│   │   ├── app.go                          # Fx 根模块装配
-│   │   └── bootstrap/chains.go             # 启动：Snapshot 恢复 + BlockSync
+│   │   ├── app.go                          # Fx 根模块（arbitrage）
+│   │   ├── bootstrap/chains.go             # 启动：READY 快照恢复 + BlockSync
+│   │   └── snapshot/                       # Fx 模块（snapshot 工具）
 │   ├── api/                                # HTTP 层
-│   │   ├── server.go                       # Gin 服务器（限流/鉴权/指标）
-│   │   ├── routes.go                       # REST 处理器
-│   │   └── types.go                        # QuoteProvider 接口
-│   ├── blockchain/                         # 区块链访问层
-│   │   ├── client.go                       # HTTP RPC ethclient
-│   │   ├── subscriber.go                   # WS SubscribeNewHead
-│   │   ├── log_fetcher.go                  # eth_getLogs
-│   │   ├── block_sync.go                   # BlockSync 协调器
-│   │   ├── processor.go                    # BlockProcessor 接口
-│   │   ├── uniswap_v3_processor.go         # V3 区块处理器
-│   │   ├── processor_registry.go           # 多 DEX Processor 注册表
-│   │   └── pool_client.go                  # RPC + Multicall3 + Factory + Quoter
-│   ├── pool/                               # 池子领域
+│   ├── blockchain/                         # BlockSync、eth_getLogs、Processor
+│   ├── pool/
 │   │   ├── pool.go / state.go              # 运行时 State + 本地报价
-│   │   ├── cache.go                        # sync.Map 池子缓存
-│   │   ├── events.go                       # Swap / Mint / Burn 解析
-│   │   ├── snapshot/                       # loader（DB 恢复）+ scanner（链上 bitmap）
-│   │   └── replay/                         # ApplyBlock / ApplySwap / Mint / Burn
+│   │   ├── loading.go                      # eventCh 缓冲、ApplyBlockEventsDirect、Event Consumer
+│   │   ├── cache.go
+│   │   ├── events.go
+│   │   ├── snapshot/
+│   │   │   ├── loader.go                   # DB 恢复（READY 池子）
+│   │   │   ├── runner.go                   # snapshot 任务编排
+│   │   │   └── scanner.go                  # 链上 tick bitmap 扫描
+│   │   └── replay/                         # ApplyBlock / Swap / Mint / Burn
 │   ├── storage/
 │   │   ├── repo.go                         # PoolRepo / SyncRepo 接口
-│   │   └── postgres/                       # pool_repo / sync_repo / tick_repo
-│   ├── router/                             # 跨池路径 BFS 搜索
-│   ├── arbitrage/                          # 跨池最优报价
-│   ├── quote/                              # 报价类型 + Quoter
-│   ├── service/                            # 编排层（MultiChain / MultiPool / 单池服务）
+│   │   ├── snapshot_status.go              # INITIALIZING / READY / FAILED / DISABLED
+│   │   └── postgres/
+│   ├── router/ / arbitrage/ / quote/
+│   ├── service/                            # MultiChain / MultiPool / 单池服务
 │   ├── store/                              # legacy Storer 适配 storage
-│   ├── cache/                              # Redis 代币元信息 + applied-log dedup
-│   ├── config/ / logx/ / metrics/ / tracing/
-│   ├── subgraph/                           # Subgraph 自动发现
-│   └── subscriber/                         # deprecated 别名 → blockchain
+│   ├── cache/ / config/ / logx/ / metrics/ / tracing/
+│   └── subgraph/
 ├── migrations/
 │   ├── 001_init.sql                        # pool_states + history
-│   ├── 002_token_metadata.sql              # 代币元信息
-│   └── 003_chain_sync_state.sql            # LastProcessedBlock
+│   ├── 002_token_metadata.sql
+│   ├── 003_chain_sync_state.sql            # LastProcessedBlock
+│   └── 004_snapshot_status.sql             # snapshot_status 列
 ├── config.yaml
 └── README.md
 ```
@@ -80,21 +74,30 @@ arbitrage/
                        │
     ┌──────────────────┼──────────────────┐
     │                  │                  │
- Snapshot          BlockSync          MultiPoolService
- (DB 恢复)      (CatchUp + Run)         (报价 / 健康检查)
+ READY 快照        BlockSync          MultiPoolService
+ (Loader)       (CatchUp + Run)    (报价 / 状态轮询 / 健康检查)
     │                  │                  │
     └────────► pool.Cache ◄────────────────┘
                        │
               UniswapV3BlockProcessor
                        │
-         eth_getLogs → replay.ApplyBlock
+    ProcessBlock → ApplyBlockEvents → eventCh
+                       │                    │
+              BackfillPool → ApplyBlockEventsDirect（回补）
                        │
-              PostgreSQL (PoolRepo + SyncRepo)
+              Event Consumer → replay.ApplyBlock → onApplied → PostgreSQL
                        │
          router.PathFinder → arbitrage.CrossQuoter → api (HTTP)
 ```
 
-### BlockSync 流水线
+### 两阶段部署
+
+| 阶段 | 命令 | 职责 |
+|------|------|------|
+| 1. 快照 | `cmd/snapshot` | 读取 `pools` + `auto_discover`，链上 `DoFullSync`，写入 `pool_states`，标记 `snapshot_status=READY` |
+| 2. 运行 | `cmd/arbitrage` | 只加载 `READY` 池子，BlockSync 增量同步，HTTP 报价 |
+
+### BlockSync 流水线（常态）
 
 ```
 SubscribeNewHead
@@ -103,23 +106,39 @@ LastBlock + 1 .. head
       ↓
 eth_getLogs (按区块)
       ↓
-按 Pool 分组
+按 Pool 分组 → ApplyBlockEvents → eventCh
       ↓
-replay.ApplyBlock
+Event Consumer（Loaded=false 时）→ replay.ApplyBlock
       ↓
-PostgreSQL 事务提交
+onApplied → PostgreSQL（pool_states + history）
       ↓
-更新 LastProcessedBlock
+更新 LastProcessedBlock（链级游标）
 ```
 
 `BlockProcessor` 接口使后续增加 Uniswap V4、Aerodrome 等协议时只需新增实现，`BlockSync` 本身无需修改。
+
+### 动态加池 handoff
+
+新池加入或 `snapshot_status` 变为 READY 时：
+
+```
+BeginLoading (Loaded=true, consumer 暂停)
+      ↓
+notifyPoolAddresses → BlockSync 开始 getLogs（live 事件进 eventCh）
+      ↓
+BackfillPool → ApplyBlockEventsDirect（同步回补 + 持久化）
+      ↓
+CompleteLoading (Loaded=false) → consumer 消费 eventCh 积压（旧 block 丢弃）
+      ↓
+WaitEventQueueEmpty
+```
 
 ### Fx 模块依赖
 
 ```
 config → storage.postgres → store(adapter) → cache → pool.Cache
   → service → api
-  → bootstrap.RegisterChains（BlockSync + 链服务）
+  → bootstrap.RegisterChains（BlockSync + 链服务 + 状态轮询）
 ```
 
 ## 快速开始
@@ -128,16 +147,17 @@ config → storage.postgres → store(adapter) → cache → pool.Cache
 
 - Go 1.21+
 - 以太坊 RPC 端点（WebSocket + HTTP，如 Alchemy / Infura）
-- （推荐）PostgreSQL — 池子状态与同步进度持久化
+- **PostgreSQL**（必需）— 池子快照、同步进度、`snapshot_status`
 - （可选）Redis — 代币元信息缓存与 applied-log dedup
 - （可选）Jaeger / Grafana Tempo — 链路追踪
 
-### 配置
+### 1. 配置
 
 ```yaml
 # config.yaml
 http_port: 8080
 health_check_interval_sec: 30
+pool_status_poll_interval_sec: 30   # arbitrage 轮询 snapshot_status 增删池子
 log_file: "arbitrage.log"
 log_level: "info"
 max_block_gap_for_full_sync: 100
@@ -151,27 +171,49 @@ tracing_endpoint: ""
 chains:
   - name: "ethereum"
     ws_endpoint: "wss://eth-mainnet.g.alchemy.com/v2/{{ALCHEMY_API_KEY}}"
+    rpc_endpoint: "https://eth-mainnet.g.alchemy.com/v2/{{ALCHEMY_API_KEY}}"
     factory_address: "0x1F98431c8aD98523631AE4a59f267346ea31F984"
-    multicall_address: ""
-    quoter_address: ""
-    max_hops: 2
     base_tokens:
       - "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"   # WETH
       - "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"   # USDC
-      - "0xdAC17F958D2ee523a2206206994597C13D831ec7"   # USDT
     pools:
       - pool_address: "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"
         sync_from_block: 25393441
+    auto_discover:
+      enabled: true
+      min_tvl_usd: 500000
+      max_pools: 20
 ```
 
-`ws_endpoint` 用于 BlockSync 的 `SubscribeNewHead`；HTTP RPC 用于 `eth_getLogs`、健康检查、全量修复等（可从 ws 地址推导）。
+`ws_endpoint` 用于 BlockSync 的 `SubscribeNewHead`；HTTP RPC 用于 `eth_getLogs`、snapshot 全量同步、健康检查等。
 
-### 运行
+配置中 `{{ENV_VAR}}` 会替换为环境变量值。
+
+### 2. 数据库迁移
+
+```bash
+export ARBITRAGE_DB_URL="postgres://user:pass@localhost:5432/arbitrage?sslmode=disable"
+go run ./cmd/migrate/ -db "$ARBITRAGE_DB_URL" up
+```
+
+### 3. 运行 Snapshot（首次或新增池子）
 
 ```bash
 export ALCHEMY_API_KEY="your-key"
+go run ./cmd/snapshot/ -config config.yaml
+# 仅指定链：
+go run ./cmd/snapshot/ -config config.yaml -chain ethereum
+```
+
+Snapshot 会跳过 `READY` / `DISABLED` 池子，对其余池子执行链上全量同步并写入 `pool_states`。
+
+### 4. 运行 Arbitrage
+
+```bash
 go run ./cmd/arbitrage/ -config config.yaml
 ```
+
+arbitrage 启动时从 DB 加载 `snapshot_status=READY` 的池子，CatchUp 至链头后进入实时 BlockSync；后台轮询 DB，READY 新增则加池，非 READY 则移除。
 
 ## HTTP API
 
@@ -212,13 +254,14 @@ curl -X POST http://localhost:8080/api/v1/ethereum/quote \
 |------|------|------|------|
 | `http_port` | int | 8080 | HTTP 监听端口，0 禁用 |
 | `health_check_interval_sec` | int | 30 | 健康检查间隔，0 禁用 |
+| `pool_status_poll_interval_sec` | int | 30 | `snapshot_status` 轮询间隔，0 默认 30 |
 | `log_file` | string | `""` | 日志文件，空则 stderr |
 | `log_level` | string | `info` | debug / info / warn / error |
-| `max_block_gap_for_full_sync` | int | 100 | 全量 tick 重建区块间隔阈值 |
+| `max_block_gap_for_full_sync` | int | 100 | snapshot 全量同步区块间隔阈值（snapshot 工具使用） |
 | `max_hops` | int | 2 | 跨池最大跳数 |
 | `http_rate_limit` | int | 100 | API 限流，0 不限 |
 | `api_key` | string | `""` | X-API-Key，空不鉴权 |
-| `db_url` | string | `""` | PostgreSQL，空禁用 |
+| `db_url` | string | `""` | PostgreSQL，snapshot / arbitrage 均需要 |
 | `redis_url` | string | `""` | Redis，空禁用 |
 | `tracing_endpoint` | string | `""` | OTLP endpoint，空禁用 |
 
@@ -234,41 +277,69 @@ curl -X POST http://localhost:8080/api/v1/ethereum/quote \
 | `quoter_address` | string | QuoterV2，空用默认 |
 | `base_tokens` | []string | 跨池中间代币白名单 |
 | `max_hops` | int | 跨池跳数，0 用全局值 |
-| `pools` | []object | 监控池子列表 |
-| `auto_discover` | object | Subgraph 自动发现 |
+| `pools` | []object | 监控池子列表（snapshot + arbitrage 共用） |
+| `auto_discover` | object | Subgraph 自动发现（snapshot 收集 + 可选运行时发现） |
 
 ### 池子配置 (`pools[]`)
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `pool_address` | string | Pool 合约地址 |
-| `sync_from_block` | int | 历史起始区块（配合 Snapshot / CatchUp） |
-
-配置中 `{{ENV_VAR}}` 会替换为环境变量值。
+| `sync_from_block` | int | 历史起始区块（snapshot 全量同步起点） |
 
 ## 状态同步策略
 
-| 阶段 | 触发 | 方法 | 说明 |
-|------|------|------|------|
-| 首次无数据 | 添加池子 | `EnsureInitialState` → `DoFullSync` | 链上 tick bitmap + slot0，**仅执行一次** |
-| 已有 DB 快照 | 启动 | `snapshot.Loader` 恢复 | 跳过全量，直接进入增量 |
-| CatchUp | 启动后 | `BlockSync.CatchUpFrom(last+1, head)` | eth_getLogs 按区块 replay |
-| 实时增量 | newHeads | `BlockSync.Run` → `ProcessBlock` | SubscribeNewHead → eth_getLogs(block) → ApplyBlock |
-| 健康检查 | Cron | 对比 slot0 | 仅未初始化时补全量；已初始化只告警，由 BlockSync 修复 |
+### `snapshot_status` 状态机
 
-增量路径（常态）：
+| 状态 | 含义 | arbitrage 行为 |
+|------|------|----------------|
+| `INITIALIZING` | snapshot 进行中 | 不加载 |
+| `READY` | 快照完成 | 加载并 BlockSync 增量 |
+| `FAILED` | snapshot 失败 | 不加载 |
+| `DISABLED` | 人工禁用 | 不加载；snapshot 跳过 |
 
-```
-SubscribeNewHead
-      ↓
-eth_getLogs(block, block)
-      ↓
-replay.ApplyBlock()
-      ↓
-PostgreSQL + LastProcessedBlock
+手动禁用示例：
+
+```sql
+UPDATE pool_states SET snapshot_status = 'DISABLED'
+WHERE chain_name = 'ethereum' AND pool_address = '0x8ad599...';
 ```
 
-全量同步**不会**在健康检查、WS 重连时重复触发；只有 `BlockNumber==0` 或 `tick 地图为空` 时才会执行。
+### 各阶段职责
+
+| 阶段 | 触发 | 执行方 | 说明 |
+|------|------|--------|------|
+| 全量 tick 快照 | 首次 / 新增池 | `cmd/snapshot` | `DoFullSync` → `pool_states`，`snapshot_status=READY` |
+| 冷启动恢复 | arbitrage 启动 | `snapshot.Loader.RestoreAllReady` | 只加载 READY 快照到内存 |
+| 链级 CatchUp | arbitrage 启动后 | `BlockSync.CatchUpFrom` | eth_getLogs 按区块 replay（链级游标） |
+| 实时增量 | newHeads | `BlockSync.Run` → `ProcessBlock` | 写入 eventCh，consumer 顺序 apply + 持久化 |
+| 动态加池回补 | READY 新增 / 手动 AddPool | `BackfillPool` + handoff | Direct apply 回补 + consumer 消费积压 |
+| 健康检查 | Cron | `runHealthCheck` | 对比 slot0，仅告警；无快照时提示运行 snapshot |
+
+**arbitrage 不在运行时执行链上全量同步。** 若池子无 tick 快照，会报错并要求先运行 `cmd/snapshot`。
+
+### 两级游标
+
+| 游标 | 存储 | 含义 |
+|------|------|------|
+| 链级 `last_processed_block` | `chain_sync_state` | BlockSync 已扫过的最高区块（getLogs 协调用） |
+| 池级 `block_number` | `pool_states` | 该池子状态真实高度（报价真相） |
+
+## Snapshot 工具
+
+```bash
+# 全部链
+go run ./cmd/snapshot/ -config config.yaml
+
+# 指定链
+go run ./cmd/snapshot/ -config config.yaml -chain ethereum
+```
+
+流程：
+
+1. 合并配置 `pools` 与 `auto_discover` 得到目标池子列表
+2. 每条链一次查询 `ListSnapshotStatuses`，跳过 `READY` / `DISABLED`
+3. 标记 `INITIALIZING` → 链上 `DoFullSync` → 写入 `pool_states` → 标记 `READY`（失败则 `FAILED`）
 
 ## Subgraph 自动发现
 
@@ -277,18 +348,19 @@ chains:
   - name: "ethereum"
     auto_discover:
       enabled: true
+      subgraph_url: "https://gateway.thegraph.com/api/{{KEY}}/subgraphs/id/..."
       min_tvl_usd: 500000
       min_volume_usd: 10000000
       max_pools: 20
-      order_by: "volumeUSD"
+      order_by: "totalValueLockedUSD"
 ```
 
-手动 `pools` 与自动发现池子合并，已存在地址跳过。新增池子后自动更新 BlockProcessor 跟踪列表。
+- **snapshot**：收集待快照池子列表
+- **arbitrage**：启动时只加载 DB 中 READY 池；运行时通过 `pool_status_poll_interval_sec` 轮询 DB 增删
 
 ## 数据库迁移
 
 ```bash
-export DB_URL="postgres://user:pass@localhost:5432/arbitrage?sslmode=disable"
 go run ./cmd/migrate/ -db "$DB_URL" up
 go run ./cmd/migrate/ -db "$DB_URL" down
 ```
@@ -298,6 +370,7 @@ go run ./cmd/migrate/ -db "$DB_URL" down
 | `001_init.sql` | `pool_states` 快照 + `pool_states_history` 历史 |
 | `002_token_metadata.sql` | 代币 symbol / decimals 缓存 |
 | `003_chain_sync_state.sql` | 链级 `last_processed_block`（BlockSync checkpoint） |
+| `004_snapshot_status.sql` | `snapshot_status` 列 + 索引 |
 
 启动时 `storage/postgres` 模块自动执行未应用的迁移（幂等安全网）。
 
@@ -308,7 +381,7 @@ go run ./cmd/migrate/ -db "$DB_URL" down
 | 指标名 | 类型 | 说明 |
 |--------|------|------|
 | `arbitrage_events_total` | Counter | 事件数 (swap/mint/burn) |
-| `arbitrage_ws_reconnects_total` | Counter | WS 重连（BlockSync / 遗留客户端） |
+| `arbitrage_ws_reconnects_total` | Counter | WS 重连 |
 | `arbitrage_quotes_total` | Counter | 报价请求数 |
 | `arbitrage_health_repairs_total` | Counter | 健康检查修复次数 |
 | `arbitrage_price` | Gauge | 现货价格 |
@@ -322,9 +395,6 @@ chains:
   - name: "ethereum"
     ws_endpoint: "wss://eth-mainnet.g.alchemy.com/v2/{{KEY}}"
     factory_address: "0x1F98431c8aD98523631AE4a59f267346ea31F984"
-    base_tokens:
-      - "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
-      - "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
     pools:
       - pool_address: "0x8ad599c3A0ff1De082011EFDDc58f1908eb6e6D8"
 
@@ -334,6 +404,8 @@ chains:
     pools:
       - pool_address: "0xC6962004f452bE9203591991D15f6b388e09E8D0"
 ```
+
+每条链需分别运行 snapshot，再启动 arbitrage。
 
 ## 代币元信息缓存
 
@@ -346,7 +418,8 @@ chains:
 | 目标 | 做法 |
 |------|------|
 | 新增 DEX 协议 | 实现 `BlockProcessor` + `ProcessorRegistry.Register` |
-| 新增链 | 在 `config.yaml` 增加 `chains[]` 条目 |
+| 新增链 | 在 `config.yaml` 增加 `chains[]`，运行 snapshot 后启动 arbitrage |
+| 禁用池子 | DB 设置 `snapshot_status=DISABLED` |
 | 自定义 HTTP | 扩展 `internal/api/routes.go` |
 | 套利检测 | 在 `internal/arbitrage/` 扩展逻辑，复用 `pool.Cache` + `router` |
 

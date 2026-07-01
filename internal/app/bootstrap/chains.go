@@ -112,70 +112,68 @@ func (b *chainBootstrapper) setupSingleChain(ch config.ChainConfig) error {
 		return err
 	}
 
+	processor, err := b.buildBlockProcessor(ch, svc)
+	if err != nil {
+		return fmt.Errorf("build block processor for chain %s: %w", ch.Name, err)
+	}
+
+	if u, ok := processor.(blockchain.PoolAddressUpdater); ok {
+		svc.SetPoolUpdater(u)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	loader := snapshot.NewLoader(b.repos.Pool)
-	preloaded, err := loader.RestoreAll(ctx, ch.Name)
+	preloaded, err := loader.RestoreAllReady(ctx, ch.Name)
 	if err != nil {
-		b.logger.Warn("failed to load chain pools from DB, continue with config pools",
+		b.logger.Warn("failed to load READY pools from DB",
 			"chain", ch.Name, "error", err)
 	}
 
-	poolEntries := buildPoolEntries(b.cfg.HealthCheckIntervalSec, preloaded, ch.Pools)
-	if err := svc.AddPoolsBatch(poolEntries); err != nil {
-		return fmt.Errorf("add pools to chain %s: %w", ch.Name, err)
-	}
-
-	b.startBlockSync(ch, svc)
-
-	if ad := ch.GetAutoDiscover(); ad.Enabled {
-		b.bgWG.Add(1)
-		go func() {
-			defer b.bgWG.Done()
-			select {
-			case <-b.bgCtx.Done():
-				return
-			default:
-			}
-			added := svc.AutoDiscoverPools(ad.SubgraphURL, ad.OrderBy, ad.MinTVLUSD, ad.MinVolumeUSD, ad.MaxPools)
-			b.logger.Info("auto-discover finished", "chain", ch.Name, "added", added)
-		}()
-	}
-
-	return nil
-}
-
-func buildPoolEntries(healthSec int, preloaded map[string]*storage.PoolSnapshot, configPools []config.PoolConfig) []service.PoolEntry {
-	poolEntries := make([]service.PoolEntry, 0, len(preloaded)+len(configPools))
-	seen := make(map[common.Address]struct{})
-
+	poolEntries := make([]service.PoolEntry, 0, len(preloaded))
 	for addrStr, snap := range preloaded {
-		addr := common.HexToAddress(addrStr)
-		if _, ok := seen[addr]; ok {
-			continue
-		}
-		seen[addr] = struct{}{}
 		poolEntries = append(poolEntries, service.PoolEntry{
-			PoolAddress:            addr,
-			HealthCheckIntervalSec: healthSec,
+			PoolAddress:            common.HexToAddress(addrStr),
+			HealthCheckIntervalSec: b.cfg.HealthCheckIntervalSec,
 			SyncFromBlock:          snap.BlockNumber,
 			PoolSnapshot:           toStoreSnapshot(snap),
 		})
 	}
-	for _, pc := range configPools {
-		addr := common.HexToAddress(pc.PoolAddress)
-		if _, ok := seen[addr]; ok {
-			continue
-		}
-		seen[addr] = struct{}{}
-		poolEntries = append(poolEntries, service.PoolEntry{
-			PoolAddress:            addr,
-			HealthCheckIntervalSec: healthSec,
-			SyncFromBlock:          pc.SyncFromBlock,
-		})
+	if err := svc.AddPoolsBatch(poolEntries); err != nil {
+		return fmt.Errorf("add pools to chain %s: %w", ch.Name, err)
 	}
-	return poolEntries
+
+	svc.SetPoolRepo(b.repos.Pool)
+
+	pollSec := b.cfg.PoolStatusPollIntervalSec
+	if pollSec == 0 {
+		pollSec = 30
+	}
+	b.bgWG.Add(1)
+	go func() {
+		defer b.bgWG.Done()
+		svc.StartPoolStatusWatcher(b.bgCtx, time.Duration(pollSec)*time.Second, b.cfg.HealthCheckIntervalSec)
+	}()
+
+	b.startBlockSync(ch, svc, processor)
+
+	return nil
+}
+
+func (b *chainBootstrapper) buildBlockProcessor(ch config.ChainConfig, svc *service.MultiPoolService) (blockchain.BlockProcessor, error) {
+	rpcClient := blockchain.NewClient(ch.RPCEndpoint)
+	fetcher := blockchain.NewLogFetcher(rpcClient)
+	return b.registry.BuildComposite(ch.Name, []blockchain.ProtocolID{
+		blockchain.ProtocolUniswapV3,
+	}, blockchain.ProcessorBuildParams{
+		ChainName: ch.Name,
+		Cache:     svc.PoolCache(),
+		Fetcher:   fetcher,
+		PoolRepo:  b.repos.Pool,
+		SyncRepo:  b.repos.Sync,
+		Logger:    b.logger,
+	})
 }
 
 func toStoreSnapshot(s *storage.PoolSnapshot) *store.PoolSnapshot {
@@ -211,28 +209,8 @@ func copyBigInt(v *big.Int) *big.Int {
 	return new(big.Int).Set(v)
 }
 
-func (b *chainBootstrapper) startBlockSync(ch config.ChainConfig, svc *service.MultiPoolService) {
+func (b *chainBootstrapper) startBlockSync(ch config.ChainConfig, svc *service.MultiPoolService, processor blockchain.BlockProcessor) {
 	rpcClient := blockchain.NewClient(ch.RPCEndpoint)
-	fetcher := blockchain.NewLogFetcher(rpcClient)
-
-	processor, err := b.registry.BuildComposite(ch.Name, []blockchain.ProtocolID{
-		blockchain.ProtocolUniswapV3,
-	}, blockchain.ProcessorBuildParams{
-		ChainName: ch.Name,
-		Cache:     svc.PoolCache(),
-		Fetcher:   fetcher,
-		PoolRepo:  b.repos.Pool,
-		SyncRepo:  b.repos.Sync,
-		Logger:    b.logger,
-	})
-	if err != nil {
-		b.logger.Error("build block processor failed", "chain", ch.Name, "error", err)
-		return
-	}
-
-	if u, ok := processor.(blockchain.PoolAddressUpdater); ok {
-		svc.SetPoolUpdater(u)
-	}
 
 	b.bgWG.Add(1)
 	go func() {

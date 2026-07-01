@@ -8,17 +8,18 @@ import (
 
 // PoolSnapshot 池子状态快照。
 type PoolSnapshot struct {
-	ChainName    string
-	PoolAddress  string
-	BlockNumber  uint64
-	Tick         int32
-	SqrtPriceX96 *big.Int
-	Liquidity    *big.Int
-	Price0In1    float64
-	Token0Symbol string
-	Token1Symbol string
-	Fee          uint32
-	TickData     map[int32]TickLiquiditySnapshot
+	ChainName      string
+	PoolAddress    string
+	BlockNumber    uint64
+	Tick           int32
+	SqrtPriceX96   *big.Int
+	Liquidity      *big.Int
+	Price0In1      float64
+	Token0Symbol   string
+	Token1Symbol   string
+	Fee            uint32
+	TickData       map[int32]TickLiquiditySnapshot
+	SnapshotStatus SnapshotStatus // 空表示 Save 时不更新 snapshot_status 列
 }
 
 // TickLiquiditySnapshot 单个 tick 流动性快照。
@@ -41,6 +42,9 @@ type PoolRepo interface {
 	SaveHistory(ctx context.Context, s *PoolSnapshot) error
 	Load(ctx context.Context, chainName, poolAddress string) (*PoolSnapshot, error)
 	LoadAll(ctx context.Context, chainName string) (map[string]*PoolSnapshot, error)
+	LoadAllByStatus(ctx context.Context, chainName string, status SnapshotStatus) (map[string]*PoolSnapshot, error)
+	ListSnapshotStatuses(ctx context.Context, chainName string) (map[string]SnapshotStatus, error)
+	SetSnapshotStatus(ctx context.Context, chainName, poolAddress string, status SnapshotStatus) error
 	LoadTokenMetadata(ctx context.Context, chainName, tokenAddress string) (*TokenMetadata, error)
 	SaveTokenMetadata(ctx context.Context, meta *TokenMetadata) error
 	Close()

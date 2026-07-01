@@ -86,6 +86,7 @@ func (c *ChainConfig) GetAutoDiscover() AutoDiscoverConfig {
 type AppConfig struct {
 	HTTPPort               int           `yaml:"http_port"`                 // HTTP 端口，0 禁用，默认 8080
 	HealthCheckIntervalSec int           `yaml:"health_check_interval_sec"` // 健康检查间隔，0 禁用
+	PoolStatusPollIntervalSec int        `yaml:"pool_status_poll_interval_sec"` // READY 状态轮询间隔，0 默认 30 秒
 	LogFile                string        `yaml:"log_file"`                  // 日志文件路径
 	LogLevel               string        `yaml:"log_level"`                 // 日志级别: debug/info/warn/error，默认 info
 	TracingEndpoint        string        `yaml:"tracing_endpoint"`          // OTLP 端点，空禁用

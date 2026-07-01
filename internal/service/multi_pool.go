@@ -4,18 +4,20 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/brianliu-sysu/arbitrage/internal/arbitrage"
+	"github.com/brianliu-sysu/arbitrage/internal/blockchain"
 	"github.com/brianliu-sysu/arbitrage/internal/cache"
 	"github.com/brianliu-sysu/arbitrage/internal/logx"
 	"github.com/brianliu-sysu/arbitrage/internal/pool"
 	"github.com/brianliu-sysu/arbitrage/internal/quote"
 	"github.com/brianliu-sysu/arbitrage/internal/router"
+	"github.com/brianliu-sysu/arbitrage/internal/storage"
 	"github.com/brianliu-sysu/arbitrage/internal/store"
 	"github.com/brianliu-sysu/arbitrage/internal/subgraph"
-	"github.com/brianliu-sysu/arbitrage/internal/arbitrage"
-	"github.com/brianliu-sysu/arbitrage/internal/blockchain"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -34,6 +36,7 @@ type MultiPoolService struct {
 	crossQuoter            *arbitrage.CrossQuoter
 	poolUpdater            blockchain.PoolAddressUpdater
 	poolBackfiller         blockchain.PoolBackfiller
+	poolRepo               storage.PoolRepo
 	maxHops                int
 	baseTokens             []common.Address // 基础代币列表（跨池报价中间代币 + 自动发现基础代币）
 	store                  store.Storer
@@ -123,6 +126,19 @@ func (m *MultiPoolService) addPool(poolAddress common.Address, healthCheckInterv
 	}
 	m.mu.Unlock()
 
+	if preloaded == nil && m.poolRepo != nil {
+		loadCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		snap, err := m.poolRepo.Load(loadCtx, m.chainName, strings.ToLower(addr.Hex()))
+		cancel()
+		if err != nil {
+			return fmt.Errorf("load pool %s: %w", addr.Hex(), err)
+		}
+		if snap == nil || snap.SnapshotStatus != storage.SnapshotReady {
+			return fmt.Errorf("pool %s is not READY (run cmd/snapshot first)", addr.Hex())
+		}
+		preloaded = storageSnapshotToStore(snap)
+	}
+
 	svc, err := NewPoolQuoteService(m.wsEndpoint, m.rpcEndpoint, cfg, m.logger, m.store, m.tokenCache, m.logCache)
 	if err != nil {
 		return fmt.Errorf("create pool service for %s: %w", addr.Hex(), err)
@@ -187,15 +203,138 @@ func (m *MultiPoolService) addPool(poolAddress common.Address, healthCheckInterv
 		return fmt.Errorf("pool %s already added", addr.Hex())
 	}
 	m.services[addr] = svc
+	svc.pool.BeginLoading()
 	m.poolCache.Set(addr, svc.pool)
-	poolBlock := svc.pool.BlockNumber
 	m.mu.Unlock()
 
-	// 在加入 getLogs 过滤列表前回填，避免链游标已超前导致历史事件遗漏。
-	m.catchUpPool(addr, poolBlock)
-	m.notifyPoolAddresses()
+	if err := m.catchUpAndRegisterPool(addr); err != nil {
+		m.RemovePool(addr)
+		return fmt.Errorf("register pool %s for block sync: %w", addr.Hex(), err)
+	}
 
 	return nil
+}
+
+// SetPoolRepo 设置池子状态仓库（用于 READY 状态轮询）。
+func (m *MultiPoolService) SetPoolRepo(repo storage.PoolRepo) {
+	m.mu.Lock()
+	m.poolRepo = repo
+	m.mu.Unlock()
+}
+
+// StartPoolStatusWatcher 定期根据 pool_states.snapshot_status 增删跟踪池子。
+func (m *MultiPoolService) StartPoolStatusWatcher(ctx context.Context, interval time.Duration, healthCheckIntervalSec int) {
+	if m.poolRepo == nil || interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			syncCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			if err := m.SyncPoolRegistry(syncCtx, healthCheckIntervalSec); err != nil {
+				m.logger.Warn("pool status sync failed", "chain", m.chainName, "error", err)
+			}
+			cancel()
+		}
+	}
+}
+
+// SyncPoolRegistry 将内存跟踪池子与 DB 中 READY 状态对齐。
+func (m *MultiPoolService) SyncPoolRegistry(ctx context.Context, healthCheckIntervalSec int) error {
+	if m.poolRepo == nil {
+		return nil
+	}
+
+	statuses, err := m.poolRepo.ListSnapshotStatuses(ctx, m.chainName)
+	if err != nil {
+		return err
+	}
+
+	readySnaps, err := m.poolRepo.LoadAllByStatus(ctx, m.chainName, storage.SnapshotReady)
+	if err != nil {
+		return err
+	}
+
+	var changed bool
+	for _, addr := range m.TrackedPoolAddresses() {
+		key := strings.ToLower(addr.Hex())
+		if statuses[key] != storage.SnapshotReady {
+			if m.RemovePool(addr) {
+				changed = true
+				m.logger.Info("pool removed (not READY)", "pool", addr.Hex(), "status", statuses[key])
+			}
+		}
+	}
+
+	for addrStr, snap := range readySnaps {
+		addr := common.HexToAddress(addrStr)
+		m.mu.RLock()
+		_, exists := m.services[addr]
+		m.mu.RUnlock()
+		if exists {
+			continue
+		}
+		if err := m.addPool(addr, healthCheckIntervalSec, snap.BlockNumber, storageSnapshotToStore(snap)); err != nil {
+			m.logger.Warn("add READY pool failed", "pool", addrStr, "error", err)
+			continue
+		}
+		changed = true
+		m.logger.Info("pool added (READY)", "pool", addrStr)
+	}
+
+	if changed {
+		m.rebuildPathFinder()
+		m.notifyPoolAddresses()
+	}
+	return nil
+}
+
+// RemovePool 停止并移除池子（状态非 READY 时由轮询调用）。
+func (m *MultiPoolService) RemovePool(addr common.Address) bool {
+	m.mu.Lock()
+	svc, ok := m.services[addr]
+	if ok {
+		delete(m.services, addr)
+	}
+	m.mu.Unlock()
+	if !ok {
+		return false
+	}
+	m.notifyPoolAddresses()
+	svc.Stop()
+	m.poolCache.Delete(addr)
+	return true
+}
+
+func storageSnapshotToStore(s *storage.PoolSnapshot) *store.PoolSnapshot {
+	if s == nil {
+		return nil
+	}
+	tickData := make(map[int32]store.TickLiquiditySnapshot, len(s.TickData))
+	for tick, t := range s.TickData {
+		tickData[tick] = store.TickLiquiditySnapshot{
+			LiquidityNet:   t.LiquidityNet,
+			LiquidityGross: t.LiquidityGross,
+		}
+	}
+	return &store.PoolSnapshot{
+		ChainName:    s.ChainName,
+		PoolAddress:  s.PoolAddress,
+		BlockNumber:  s.BlockNumber,
+		Tick:         s.Tick,
+		SqrtPriceX96: s.SqrtPriceX96,
+		Liquidity:    s.Liquidity,
+		Price0In1:    s.Price0In1,
+		Token0Symbol: s.Token0Symbol,
+		Token1Symbol: s.Token1Symbol,
+		Fee:          s.Fee,
+		TickData:     tickData,
+	}
 }
 
 // SetPoolUpdater 设置 BlockProcessor 池子地址更新器（BlockSync 注册后调用）。
@@ -209,37 +348,102 @@ func (m *MultiPoolService) SetPoolUpdater(u blockchain.PoolAddressUpdater) {
 	m.notifyPoolAddresses()
 }
 
-// catchUpPool 将单池从 poolBlock+1 追到链级游标（动态加池 / DB 快照落后时）。
-func (m *MultiPoolService) catchUpPool(addr common.Address, poolBlock uint64) {
+// catchUpAndRegisterPool 按 per-pool 加载协议：notify → backfill（Direct apply）→ drain pending。
+// 增量事件经 ApplyBlockEvents 写入 pending buffer，FinishPoolLoading 同步消费。
+func (m *MultiPoolService) catchUpAndRegisterPool(addr common.Address) error {
+	m.mu.RLock()
+	bf := m.poolBackfiller
+	m.mu.RUnlock()
+
+	state, ok := m.poolCache.Get(addr)
+	if !ok {
+		return fmt.Errorf("pool %s not in cache", addr.Hex())
+	}
+	if !state.Loading() {
+		state.BeginLoading()
+	}
+
+	// 1. 先注册到 getLogs 列表（Loaded=true 时 ProcessBlock 只缓冲）
+	m.notifyPoolAddresses()
+
+	if bf == nil {
+		state.CompleteLoading()
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	poolBlock := m.poolBlockNumber(addr)
+	chainLast, err := bf.ChainLastProcessedBlock(ctx)
+	if err != nil {
+		return fmt.Errorf("read chain cursor: %w", err)
+	}
+	backfilledTo := poolBlock
+
+	// 2. 回补历史（Loaded=true 时 ApplyBlockEventsDirect 同步 apply，live 事件进 pending buffer）
+	if poolBlock < chainLast {
+		m.logger.Info("pool catch-up backfill", "pool", addr.Hex(), "from", poolBlock+1, "to", chainLast)
+		if err := bf.BackfillPool(ctx, addr, poolBlock+1, chainLast); err != nil {
+			return fmt.Errorf("backfill [%d,%d]: %w", poolBlock+1, chainLast, err)
+		}
+		backfilledTo = chainLast
+	}
+
+	// 回填期间链级游标可能继续前进；加载完成前再补一段，重复日志会在消费队列时按 BlockNumber 丢弃。
+	latestChainLast, err := bf.ChainLastProcessedBlock(ctx)
+	if err != nil {
+		return fmt.Errorf("read latest chain cursor: %w", err)
+	}
+	if backfilledTo < latestChainLast {
+		m.logger.Info("pool catch-up final backfill", "pool", addr.Hex(), "from", backfilledTo+1, "to", latestChainLast)
+		if err := bf.BackfillPool(ctx, addr, backfilledTo+1, latestChainLast); err != nil {
+			return fmt.Errorf("final backfill [%d,%d]: %w", backfilledTo+1, latestChainLast, err)
+		}
+	}
+
+	// 3. 同步消费 pending buffer（block <= BlockNumber 丢弃）
+	loader, ok := bf.(blockchain.PoolLoader)
+	if !ok {
+		state.CompleteLoading()
+		return nil
+	}
+	if err := loader.FinishPoolLoading(ctx, addr); err != nil {
+		return fmt.Errorf("finish pool loading: %w", err)
+	}
+	return nil
+}
+
+func (m *MultiPoolService) poolBlockNumber(addr common.Address) uint64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if st, ok := m.poolCache.Get(addr); ok {
+		return st.BlockNumber
+	}
+	return 0
+}
+
+// catchUpPool 将单池从 poolBlock+1 追到链级游标（仅回填，不 notify）。
+func (m *MultiPoolService) catchUpPool(addr common.Address, _ uint64) {
 	m.mu.RLock()
 	bf := m.poolBackfiller
 	m.mu.RUnlock()
 	if bf == nil {
 		return
 	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-
-	for {
-		chainLast, err := bf.ChainLastProcessedBlock(ctx)
-		if err != nil {
-			m.logger.Warn("pool catch-up: read chain cursor", "pool", addr.Hex(), "error", err)
-			return
-		}
-		m.mu.RLock()
-		if st, ok := m.poolCache.Get(addr); ok {
-			poolBlock = st.BlockNumber
-		}
-		m.mu.RUnlock()
-		if poolBlock >= chainLast {
-			return
-		}
-		m.logger.Info("pool catch-up backfill", "pool", addr.Hex(), "from", poolBlock+1, "to", chainLast)
-		if err := bf.BackfillPool(ctx, addr, poolBlock+1, chainLast); err != nil {
-			m.logger.Warn("pool catch-up backfill failed", "pool", addr.Hex(), "error", err)
-			return
-		}
+	poolBlock := m.poolBlockNumber(addr)
+	chainLast, err := bf.ChainLastProcessedBlock(ctx)
+	if err != nil {
+		m.logger.Warn("pool catch-up failed", "pool", addr.Hex(), "error", err)
+		return
+	}
+	if poolBlock >= chainLast {
+		return
+	}
+	if err := bf.BackfillPool(ctx, addr, poolBlock+1, chainLast); err != nil {
+		m.logger.Warn("pool catch-up failed", "pool", addr.Hex(), "error", err)
 	}
 }
 

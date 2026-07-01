@@ -11,8 +11,13 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 )
+
 type LogFetcher struct {
 	client *Client
+}
+
+type BlockLogFetcher interface {
+	FetchBlockLogs(ctx context.Context, blockNum uint64, poolAddrs []common.Address) ([]types.Log, error)
 }
 
 // NewLogFetcher 创建 LogFetcher。
