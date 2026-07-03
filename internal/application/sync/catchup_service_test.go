@@ -1,8 +1,11 @@
 package syncapp
 
 import (
+	"context"
+	"fmt"
 	"testing"
 
+	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -87,4 +90,58 @@ func TestTrackedPoolsForBlock(t *testing.T) {
 	if len(tracked) != 2 {
 		t.Fatalf("expected both pools at block 1050, got %#v", tracked)
 	}
+}
+
+func TestBlockHashesFromLogs(t *testing.T) {
+	hash100 := common.HexToHash("0x100")
+	hash101 := common.HexToHash("0x101")
+
+	hashes := blockHashesFromLogs([]RawLog{
+		{BlockNumber: 100, BlockHash: hash100},
+		{BlockNumber: 101, BlockHash: hash101},
+		{BlockNumber: 101, BlockHash: hash101},
+	})
+	if len(hashes) != 2 {
+		t.Fatalf("expected 2 block hashes, got %d", len(hashes))
+	}
+	if hashes[100] != hash100 || hashes[101] != hash101 {
+		t.Fatalf("unexpected hashes: %#v", hashes)
+	}
+}
+
+func TestFetchBlockHeadersConcurrent(t *testing.T) {
+	reader := &stubBlockReader{
+		headers: map[uint64]blockchain.BlockHeader{
+			10: {Number: 10, Hash: common.HexToHash("0xa")},
+			11: {Number: 11, Hash: common.HexToHash("0xb")},
+			12: {Number: 12, Hash: common.HexToHash("0xc")},
+		},
+	}
+
+	hashes, err := fetchBlockHeaders(context.Background(), reader, []uint64{10, 11, 12}, 2)
+	if err != nil {
+		t.Fatalf("fetch block headers: %v", err)
+	}
+	if len(hashes) != 3 {
+		t.Fatalf("expected 3 hashes, got %d", len(hashes))
+	}
+	if hashes[11] != common.HexToHash("0xb") {
+		t.Fatalf("unexpected hash for block 11: %s", hashes[11].Hex())
+	}
+}
+
+type stubBlockReader struct {
+	headers map[uint64]blockchain.BlockHeader
+}
+
+func (r *stubBlockReader) GetBlockHeader(_ context.Context, blockNumber uint64) (blockchain.BlockHeader, error) {
+	header, ok := r.headers[blockNumber]
+	if !ok {
+		return blockchain.BlockHeader{}, fmt.Errorf("header not found")
+	}
+	return header, nil
+}
+
+func (r *stubBlockReader) GetLatestBlockHeader(_ context.Context) (blockchain.BlockHeader, error) {
+	return blockchain.BlockHeader{}, fmt.Errorf("not implemented")
 }

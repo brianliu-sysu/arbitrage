@@ -210,20 +210,41 @@ func (s *CatchupService) catchUpRange(
 		return fmt.Errorf("parse events: %w", err)
 	}
 
+	blockHashes := blockHashesFromLogs(logs)
 	eventsByBlock := groupEventsByBlock(events)
+
+	missingHeaderBlocks := make([]uint64, 0)
+	for blockNumber := fromBlock; blockNumber <= toBlock; blockNumber++ {
+		if len(trackedPoolsForBlock(pools, fromBlocks, blockNumber)) == 0 {
+			continue
+		}
+		if _, ok := blockHashes[blockNumber]; !ok {
+			missingHeaderBlocks = append(missingHeaderBlocks, blockNumber)
+		}
+	}
+	if len(missingHeaderBlocks) > 0 {
+		fetched, err := fetchBlockHeaders(ctx, s.blocks, missingHeaderBlocks, s.config.CatchupHeaderConcurrency)
+		if err != nil {
+			return err
+		}
+		for blockNumber, blockHash := range fetched {
+			blockHashes[blockNumber] = blockHash
+		}
+	}
+
 	for blockNumber := fromBlock; blockNumber <= toBlock; blockNumber++ {
 		trackedPools := trackedPoolsForBlock(pools, fromBlocks, blockNumber)
 		if len(trackedPools) == 0 {
 			continue
 		}
 
-		header, err := s.blocks.GetBlockHeader(ctx, blockNumber)
-		if err != nil {
-			return fmt.Errorf("load block header %d: %w", blockNumber, err)
+		blockHash, ok := blockHashes[blockNumber]
+		if !ok {
+			return fmt.Errorf("missing block hash for block %d", blockNumber)
 		}
 		if _, err := s.blockApply.ApplyBlock(ctx, ApplyBlockRequest{
 			BlockNumber:      blockNumber,
-			BlockHash:        header.Hash,
+			BlockHash:        blockHash,
 			Events:           eventsByBlock[blockNumber],
 			TrackedPools:     trackedPools,
 			SuppressListener: true,

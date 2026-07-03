@@ -46,6 +46,7 @@ func (f *LogFetcher) FetchLogs(ctx context.Context, filter syncapp.LogFilter) ([
 			Topics:      log.Topics,
 			Data:        log.Data,
 			BlockNumber: log.BlockNumber,
+			BlockHash:   log.BlockHash,
 			TxIndex:     log.TxIndex,
 			LogIndex:    log.Index,
 		})
