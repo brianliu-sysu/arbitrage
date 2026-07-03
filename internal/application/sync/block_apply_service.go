@@ -47,10 +47,11 @@ func (s *BlockApplyService) SetListener(listener ChangedPoolsListener) {
 }
 
 type ApplyBlockRequest struct {
-	BlockNumber  uint64
-	BlockHash    common.Hash
-	Events       []market.PoolEvent
-	TrackedPools []common.Address
+	BlockNumber      uint64
+	BlockHash        common.Hash
+	Events           []market.PoolEvent
+	TrackedPools     []common.Address
+	SuppressListener bool
 }
 
 type ApplyBlockResult struct {
@@ -135,7 +136,7 @@ func (s *BlockApplyService) ApplyBlock(ctx context.Context, req ApplyBlockReques
 		return changed[i].Hex() < changed[j].Hex()
 	})
 
-	if len(changed) > 0 {
+	if len(changed) > 0 && !req.SuppressListener {
 		if err := s.listener.OnPoolsChanged(ctx, req.BlockNumber, changed); err != nil {
 			return ApplyBlockResult{}, fmt.Errorf("notify changed pools: %w", err)
 		}

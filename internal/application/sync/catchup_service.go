@@ -222,10 +222,11 @@ func (s *CatchupService) catchUpRange(
 			return fmt.Errorf("load block header %d: %w", blockNumber, err)
 		}
 		if _, err := s.blockApply.ApplyBlock(ctx, ApplyBlockRequest{
-			BlockNumber:  blockNumber,
-			BlockHash:    header.Hash,
-			Events:       eventsByBlock[blockNumber],
-			TrackedPools: trackedPools,
+			BlockNumber:      blockNumber,
+			BlockHash:        header.Hash,
+			Events:           eventsByBlock[blockNumber],
+			TrackedPools:     trackedPools,
+			SuppressListener: true,
 		}); err != nil {
 			return fmt.Errorf("apply block %d: %w", blockNumber, err)
 		}

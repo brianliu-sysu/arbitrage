@@ -294,6 +294,55 @@ func TestBlockApplyServiceApplyBlock(t *testing.T) {
 	}
 }
 
+type recordingListener struct {
+	calls int
+}
+
+func (l *recordingListener) OnPoolsChanged(_ context.Context, _ uint64, _ []common.Address) error {
+	l.calls++
+	return nil
+}
+
+func TestBlockApplyServiceSuppressListener(t *testing.T) {
+	ctx := context.Background()
+	poolRepo := newMemoryPoolRepo()
+	checkpointRepo := newMemoryCheckpointRepo()
+	readiness := syncapp.NewReadinessService()
+	listener := &recordingListener{}
+
+	pool := market.NewPool(testPoolAddress(), common.Address{}, common.Address{}, 3000, 60)
+	pool.LastBlockNumber = 1
+	if err := poolRepo.Save(ctx, pool); err != nil {
+		t.Fatalf("save pool: %v", err)
+	}
+
+	blockApply := syncapp.NewBlockApplyService(poolRepo, checkpointRepo, nil, readiness, listener)
+	_, err := blockApply.ApplyBlock(ctx, syncapp.ApplyBlockRequest{
+		BlockNumber:      2,
+		BlockHash:        common.HexToHash("0x2"),
+		TrackedPools:     []common.Address{testPoolAddress()},
+		SuppressListener: true,
+	})
+	if err != nil {
+		t.Fatalf("apply block: %v", err)
+	}
+	if listener.calls != 0 {
+		t.Fatalf("expected listener suppressed, got %d calls", listener.calls)
+	}
+
+	_, err = blockApply.ApplyBlock(ctx, syncapp.ApplyBlockRequest{
+		BlockNumber:  3,
+		BlockHash:    common.HexToHash("0x3"),
+		TrackedPools: []common.Address{testPoolAddress()},
+	})
+	if err != nil {
+		t.Fatalf("apply block with listener: %v", err)
+	}
+	if listener.calls != 1 {
+		t.Fatalf("expected listener called once, got %d calls", listener.calls)
+	}
+}
+
 func TestBlockApplyServiceMarkPoolsReady(t *testing.T) {
 	ctx := context.Background()
 	poolRepo := newMemoryPoolRepo()
