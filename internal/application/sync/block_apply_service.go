@@ -38,6 +38,14 @@ func NewBlockApplyService(
 	}
 }
 
+// SetListener replaces the pool change listener, typically during application wiring.
+func (s *BlockApplyService) SetListener(listener ChangedPoolsListener) {
+	if listener == nil {
+		listener = NopChangedPoolsListener{}
+	}
+	s.listener = listener
+}
+
 type ApplyBlockRequest struct {
 	BlockNumber  uint64
 	BlockHash    common.Hash

@@ -5,21 +5,23 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"time"
 
+	arbitrageapp "github.com/brianliu-sysu/uniswapv3/internal/application/arbitrage"
 	quoteapp "github.com/brianliu-sysu/uniswapv3/internal/application/quote"
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
 	"github.com/brianliu-sysu/uniswapv3/internal/config"
 	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
 	chaininfra "github.com/brianliu-sysu/uniswapv3/internal/infrastructure/blockchain"
+	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/logging"
 	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/persistence"
 	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/registry"
 	httpapi "github.com/brianliu-sysu/uniswapv3/internal/interfaces/http"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/fx"
+	"go.uber.org/zap"
 )
 
 // Params holds runtime options for the arbitrage application.
@@ -40,15 +42,18 @@ func Module(params Params) fx.Option {
 		fx.Supply(params),
 		fx.Provide(
 			loadConfig,
+			newLogger,
 			newPersistence,
 			newBlockchain,
 			newPoolRegistry,
-			newSyncServices,
+			newRuntimeBundle,
+			provideSyncServices,
+			provideArbitrageServices,
 			newSyncOrchestrator,
 			newQuoteAppService,
 			newHTTPRouter,
 		),
-		fx.Invoke(registerSyncLifecycle, registerHTTPLifecycle),
+		fx.Invoke(registerLoggerLifecycle, registerSyncLifecycle, registerHTTPLifecycle),
 	)
 }
 
@@ -70,6 +75,18 @@ func loadConfig(params Params) (config.Config, error) {
 	return cfg, nil
 }
 
+func newLogger(cfg config.Config) (*zap.Logger, error) {
+	return logging.New(cfg.Log)
+}
+
+func registerLoggerLifecycle(lifecycle fx.Lifecycle, logger *zap.Logger) {
+	lifecycle.Append(fx.Hook{
+		OnStop: func(_ context.Context) error {
+			return logger.Sync()
+		},
+	})
+}
+
 func newPersistence(cfg config.Config) (*persistence.Services, error) {
 	pCfg := cfg.PersistenceConfig()
 	if os.Getenv("USE_MEMORY_DB") == "true" {
@@ -86,12 +103,18 @@ func newPoolRegistry(cfg config.Config) *registry.CompositeRegistry {
 	return registry.NewCompositeRegistry(cfg.Pools)
 }
 
-func newSyncServices(
+type runtimeBundle struct {
+	Sync      *syncapp.Services
+	Arbitrage *arbitrageapp.Services
+}
+
+func newRuntimeBundle(
 	cfg config.Config,
+	logger *zap.Logger,
 	store *persistence.Services,
 	chain *chaininfra.Services,
 	poolRegistry *registry.CompositeRegistry,
-) *syncapp.Services {
+) *runtimeBundle {
 	deps := chain.SyncDeps()
 	persistDeps := store.SyncDeps()
 
@@ -101,8 +124,51 @@ func newSyncServices(
 	deps.Checkpoints = persistDeps.Checkpoints
 	deps.Registry = poolRegistry
 	deps.Health = append(deps.Health, persistDeps.Health...)
+	deps.Listener = syncapp.NopChangedPoolsListener{}
 
-	return syncapp.NewServices(deps)
+	syncServices := syncapp.NewServices(deps)
+
+	triangleCfg := cfg.Arbitrage.Triangle
+	strategies := arbitrageapp.TriangleStrategies(triangleCfg.StartTokenAddresses(), triangleCfg.MinNetProfit())
+	if !cfg.TriangleArbitrageEnabled() {
+		strategies = nil
+	}
+
+	arbitrageServices := arbitrageapp.NewServices(arbitrageapp.ServiceDeps{
+		Logger:              logger,
+		Pools:               store.Pools,
+		Registry:            poolRegistry,
+		Quotes:              domainquote.NewQuoteService(),
+		Readiness:           syncServices.Readiness,
+		Repository:          store.Opportunities,
+		Strategies:          strategies,
+		MinAmount:           triangleCfg.OptimizerMinAmount(),
+		MaxAmount:           triangleCfg.OptimizerMaxAmount(),
+		OptimizerIterations: triangleCfg.OptimizerIterations,
+	})
+
+	syncServices.BlockApply.SetListener(arbitrageServices)
+	if cfg.TriangleArbitrageEnabled() {
+		logger.Info("triangle arbitrage enabled",
+			zap.Int("start_tokens", len(triangleCfg.StartTokens)),
+			zap.Int("routes", len(arbitrageServices.Scan.Routes())),
+		)
+	} else {
+		logger.Info("triangle arbitrage disabled")
+	}
+
+	return &runtimeBundle{
+		Sync:      syncServices,
+		Arbitrage: arbitrageServices,
+	}
+}
+
+func provideSyncServices(bundle *runtimeBundle) *syncapp.Services {
+	return bundle.Sync
+}
+
+func provideArbitrageServices(bundle *runtimeBundle) *arbitrageapp.Services {
+	return bundle.Arbitrage
 }
 
 func newSyncOrchestrator(services *syncapp.Services, chain *chaininfra.Services) *syncapp.SyncOrchestrator {
@@ -140,11 +206,13 @@ type syncLifecycle struct {
 	chain        *chaininfra.Services
 	store        *persistence.Services
 	cfg          config.Config
+	logger       *zap.Logger
 }
 
 func registerSyncLifecycle(
 	lifecycle fx.Lifecycle,
 	cfg config.Config,
+	logger *zap.Logger,
 	orchestrator *syncapp.SyncOrchestrator,
 	chain *chaininfra.Services,
 	store *persistence.Services,
@@ -154,6 +222,7 @@ func registerSyncLifecycle(
 		chain:        chain,
 		store:        store,
 		cfg:          cfg,
+		logger:       logger,
 	}
 	lifecycle.Append(fx.Hook{
 		OnStart: runner.start,
@@ -165,15 +234,15 @@ func (r *syncLifecycle) start(_ context.Context) error {
 	runCtx, cancel := context.WithCancel(context.Background())
 	r.cancel = cancel
 
-	log.Printf("starting pool sync (persistence=%s, subgraph=%t, static_pools=%d)",
-		r.store.BackendName(),
-		r.cfg.Pools.Subgraph.IsEnabled(),
-		len(r.cfg.Pools.Static),
+	r.logger.Info("starting pool sync",
+		zap.String("persistence", r.store.BackendName()),
+		zap.Bool("subgraph", r.cfg.Pools.Subgraph.IsEnabled()),
+		zap.Int("static_pools", len(r.cfg.Pools.Static)),
 	)
 
 	go func() {
 		if err := r.orchestrator.Start(runCtx); err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("pool sync stopped: %v", err)
+			r.logger.Error("pool sync stopped", zap.Error(err))
 		}
 	}()
 	return nil
@@ -185,17 +254,18 @@ func (r *syncLifecycle) stop(_ context.Context) error {
 	}
 	r.chain.Close()
 	r.store.Close()
-	log.Println("pool sync shutdown complete")
+	r.logger.Info("pool sync shutdown complete")
 	return nil
 }
 
 type httpLifecycle struct {
 	server *http.Server
+	logger *zap.Logger
 }
 
-func registerHTTPLifecycle(lifecycle fx.Lifecycle, cfg config.Config, router *gin.Engine) {
+func registerHTTPLifecycle(lifecycle fx.Lifecycle, cfg config.Config, logger *zap.Logger, router *gin.Engine) {
 	if !cfg.HTTP.Enabled {
-		log.Println("http server disabled")
+		logger.Info("http server disabled")
 		return
 	}
 
@@ -205,6 +275,7 @@ func registerHTTPLifecycle(lifecycle fx.Lifecycle, cfg config.Config, router *gi
 			Handler:           router,
 			ReadHeaderTimeout: 5 * time.Second,
 		},
+		logger: logger,
 	}
 	lifecycle.Append(fx.Hook{
 		OnStart: runner.start,
@@ -214,9 +285,9 @@ func registerHTTPLifecycle(lifecycle fx.Lifecycle, cfg config.Config, router *gi
 
 func (h *httpLifecycle) start(_ context.Context) error {
 	go func() {
-		log.Printf("starting http server on %s", h.server.Addr)
+		h.logger.Info("starting http server", zap.String("addr", h.server.Addr))
 		if err := h.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("http server stopped: %v", err)
+			h.logger.Error("http server stopped", zap.Error(err))
 		}
 	}()
 	return nil
@@ -229,6 +300,6 @@ func (h *httpLifecycle) stop(ctx context.Context) error {
 	if err := h.server.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shutdown http server: %w", err)
 	}
-	log.Println("http server shutdown complete")
+	h.logger.Info("http server shutdown complete")
 	return nil
 }

@@ -1,0 +1,190 @@
+package arbitrage
+
+import (
+	"context"
+	"fmt"
+	"math/big"
+	"testing"
+	"time"
+
+	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
+	"github.com/ethereum/go-ethereum/common"
+)
+
+func testToken(index byte) common.Address {
+	return common.HexToAddress(fmt.Sprintf("0x000000000000000000000000000000000000000%x", index))
+}
+
+func TestEvaluatorComputesNetProfit(t *testing.T) {
+	strategy := NewCycleStrategy("cycle-usdc", testToken(1), 3, big.NewInt(10))
+	evaluator := NewEvaluator()
+
+	result := evaluator.Evaluate(EvaluationInput{
+		Strategy:    strategy,
+		BlockNumber: 100,
+		Route:       domainquote.NewDirectRoute(testToken(9), testToken(1), testToken(2)),
+		AmountIn:    big.NewInt(1_000_000),
+		AmountOut:   big.NewInt(1_000_050),
+		GasCost:     big.NewInt(20),
+	})
+
+	if result.GrossProfit.Cmp(big.NewInt(50)) != 0 {
+		t.Fatalf("expected gross profit 50, got %s", result.GrossProfit)
+	}
+	if result.NetProfit.Cmp(big.NewInt(30)) != 0 {
+		t.Fatalf("expected net profit 30, got %s", result.NetProfit)
+	}
+	if !result.Profitable || !result.Accepted {
+		t.Fatal("expected profitable accepted result")
+	}
+}
+
+func TestEvaluatorRejectsBelowMinimumProfit(t *testing.T) {
+	strategy := NewCycleStrategy("cycle-usdc", testToken(1), 3, big.NewInt(100))
+	evaluator := NewEvaluator()
+
+	result := evaluator.Evaluate(EvaluationInput{
+		Strategy:  strategy,
+		AmountIn:  big.NewInt(1_000_000),
+		AmountOut: big.NewInt(1_000_050),
+		GasCost:   big.NewInt(20),
+	})
+
+	if !result.Profitable {
+		t.Fatal("expected profitable result before minimum threshold")
+	}
+	if result.Accepted {
+		t.Fatal("expected rejected result below minimum net profit")
+	}
+}
+
+type linearQuoter struct {
+	gain *big.Int
+}
+
+func (q linearQuoter) QuoteAmountOut(amountIn *big.Int) (*big.Int, error) {
+	return new(big.Int).Add(amountIn, q.gain), nil
+}
+
+func TestOptimizerFindsBestAmount(t *testing.T) {
+	optimizer := NewOptimizer(big.NewInt(1), big.NewInt(100), 10)
+	result, err := optimizer.Optimize(linearQuoter{gain: big.NewInt(5)})
+	if err != nil {
+		t.Fatalf("optimize: %v", err)
+	}
+	if result.GrossProfit.Cmp(big.NewInt(5)) != 0 {
+		t.Fatalf("expected gross profit 5, got %s", result.GrossProfit)
+	}
+	if result.AmountIn.Cmp(big.NewInt(1)) != 0 && result.AmountIn.Cmp(big.NewInt(100)) != 0 {
+		t.Fatalf("expected boundary amount, got %s", result.AmountIn)
+	}
+}
+
+func TestDependencyGraphAffectedRoutes(t *testing.T) {
+	graph := NewDependencyGraph()
+	routeA := RouteRef{
+		ID: "route-a",
+		Route: domainquote.Route{
+			TokenIn:  testToken(1),
+			TokenOut: testToken(2),
+			Hops: []domainquote.RouteHop{
+				{PoolAddress: testToken(10), TokenIn: testToken(1), TokenOut: testToken(2)},
+			},
+		},
+	}
+	routeB := RouteRef{
+		ID: "route-b",
+		Route: domainquote.Route{
+			TokenIn:  testToken(2),
+			TokenOut: testToken(3),
+			Hops: []domainquote.RouteHop{
+				{PoolAddress: testToken(11), TokenIn: testToken(2), TokenOut: testToken(3)},
+			},
+		},
+	}
+	graph.Register(routeA)
+	graph.Register(routeB)
+
+	affected := graph.AffectedRoutes([]common.Address{testToken(10)})
+	if len(affected) != 1 || affected[0].ID != "route-a" {
+		t.Fatalf("expected route-a only, got %+v", affected)
+	}
+}
+
+func TestStaticGasEstimator(t *testing.T) {
+	estimator := NewStaticGasEstimator(100_000, 80_000, big.NewInt(10))
+	estimate, err := estimator.Estimate(context.Background(), 2)
+	if err != nil {
+		t.Fatalf("estimate gas: %v", err)
+	}
+	if estimate.GasLimit != 260_000 {
+		t.Fatalf("expected gas limit 260000, got %d", estimate.GasLimit)
+	}
+	if estimate.CostWei.Cmp(big.NewInt(2_600_000)) != 0 {
+		t.Fatalf("expected gas cost 2600000, got %s", estimate.CostWei)
+	}
+}
+
+func TestNewOpportunity(t *testing.T) {
+	strategy := NewCycleStrategy("cycle-usdc", testToken(1), 3, big.NewInt(1))
+	route := domainquote.NewDirectRoute(testToken(9), testToken(1), testToken(2))
+	evaluation := EvaluationResult{
+		AmountIn:    big.NewInt(1_000),
+		AmountOut:   big.NewInt(1_100),
+		GrossProfit: big.NewInt(100),
+		NetProfit:   big.NewInt(80),
+		Profitable:  true,
+		Accepted:    true,
+	}
+	gas := GasEstimate{CostWei: big.NewInt(20)}
+
+	opportunity := NewOpportunity("opp-1", strategy, 42, route, evaluation, gas, time.Unix(0, 0).UTC())
+	if opportunity.PoolAddress != testToken(9) {
+		t.Fatalf("expected first hop pool, got %s", opportunity.PoolAddress.Hex())
+	}
+	if !opportunity.IsProfitable() {
+		t.Fatal("expected profitable opportunity")
+	}
+}
+
+func TestFindTriangleRoutes(t *testing.T) {
+	tokenA := testToken(1)
+	tokenB := testToken(2)
+	tokenC := testToken(3)
+	poolAB := testToken(10)
+	poolBC := testToken(11)
+	poolCA := testToken(12)
+
+	graph := domainquote.NewStaticPoolGraph([]domainquote.PoolEdge{
+		{PoolAddress: poolAB, Token0: tokenA, Token1: tokenB},
+		{PoolAddress: poolBC, Token0: tokenB, Token1: tokenC},
+		{PoolAddress: poolCA, Token0: tokenC, Token1: tokenA},
+	})
+
+	routes := FindTriangleRoutes(graph, tokenA)
+	if len(routes) != 2 {
+		t.Fatalf("expected 2 triangle routes, got %d", len(routes))
+	}
+	if !IsTriangleRoute(routes[0]) {
+		t.Fatal("expected valid triangle route")
+	}
+	if !MatchesStrategy(NewTriangleStrategy("tri", tokenA, big.NewInt(1)), routes[0]) {
+		t.Fatal("expected route to match triangle strategy")
+	}
+}
+
+func TestTriangleStrategyRejectsTwoHopCycle(t *testing.T) {
+	tokenA := testToken(1)
+	tokenB := testToken(2)
+	route := domainquote.Route{
+		TokenIn:  tokenA,
+		TokenOut: tokenA,
+		Hops: []domainquote.RouteHop{
+			{PoolAddress: testToken(10), TokenIn: tokenA, TokenOut: tokenB},
+			{PoolAddress: testToken(10), TokenIn: tokenB, TokenOut: tokenA},
+		},
+	}
+	if MatchesStrategy(NewTriangleStrategy("tri", tokenA, big.NewInt(1)), route) {
+		t.Fatal("two-hop route should not match triangle strategy")
+	}
+}

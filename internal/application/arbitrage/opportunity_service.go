@@ -1,0 +1,189 @@
+package arbitrageapp
+
+import (
+	"context"
+	"fmt"
+	"math/big"
+	"time"
+
+	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
+	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
+	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	"github.com/ethereum/go-ethereum/common"
+)
+
+// ReadinessChecker gates scanning on pool and system readiness.
+type ReadinessChecker interface {
+	IsSystemReady() bool
+	IsPoolReady(poolAddress common.Address) bool
+}
+
+// OpportunityService generates opportunities from affected routes.
+type OpportunityService struct {
+	pools      market.PoolRepository
+	quotes     *domainquote.QuoteService
+	evaluator  *domainarb.Evaluator
+	optimizer  *domainarb.Optimizer
+	gas        domainarb.GasEstimator
+	strategies []domainarb.Strategy
+	readiness  ReadinessChecker
+	now        func() time.Time
+}
+
+// GenerateRequest is the input for opportunity generation.
+type GenerateRequest struct {
+	BlockNumber uint64
+	Routes      []domainarb.RouteRef
+}
+
+func NewOpportunityService(
+	pools market.PoolRepository,
+	quotes *domainquote.QuoteService,
+	gas domainarb.GasEstimator,
+	strategies []domainarb.Strategy,
+	readiness ReadinessChecker,
+	minAmount, maxAmount *big.Int,
+	optimizerIterations int,
+) *OpportunityService {
+	return &OpportunityService{
+		pools:      pools,
+		quotes:     quotes,
+		evaluator:  domainarb.NewEvaluator(),
+		optimizer:  domainarb.NewOptimizer(minAmount, maxAmount, optimizerIterations),
+		gas:        gas,
+		strategies: append([]domainarb.Strategy(nil), strategies...),
+		readiness:  readiness,
+		now:        time.Now,
+	}
+}
+
+// Generate evaluates affected routes and returns accepted opportunities.
+func (s *OpportunityService) Generate(ctx context.Context, req GenerateRequest) ([]*domainarb.Opportunity, error) {
+	if s.readiness != nil && !s.readiness.IsSystemReady() {
+		return nil, nil
+	}
+	if len(req.Routes) == 0 {
+		return nil, nil
+	}
+	if len(s.strategies) == 0 {
+		return nil, nil
+	}
+
+	opportunities := make([]*domainarb.Opportunity, 0)
+	for _, routeRef := range req.Routes {
+		if err := s.ensureRouteReady(routeRef); err != nil {
+			continue
+		}
+
+		for _, strategy := range s.strategies {
+			if !matchesStrategy(strategy, routeRef) {
+				continue
+			}
+
+			opp, err := s.generateForRoute(ctx, req.BlockNumber, strategy, routeRef)
+			if err != nil {
+				continue
+			}
+			if opp != nil {
+				opportunities = append(opportunities, opp)
+			}
+		}
+	}
+
+	return opportunities, nil
+}
+
+func (s *OpportunityService) generateForRoute(
+	ctx context.Context,
+	blockNumber uint64,
+	strategy domainarb.Strategy,
+	routeRef domainarb.RouteRef,
+) (*domainarb.Opportunity, error) {
+	pools, err := s.loadRoutePools(ctx, routeRef.Route)
+	if err != nil {
+		return nil, err
+	}
+
+	quoter := routeQuoter{
+		quotes: s.quotes,
+		pools:  pools,
+		route:  routeRef.Route,
+	}
+	optimized, err := s.optimizer.Optimize(quoter)
+	if err != nil {
+		return nil, err
+	}
+	if optimized.AmountIn.Sign() <= 0 {
+		return nil, nil
+	}
+
+	gas, err := s.gas.Estimate(ctx, routeRef.Route.Len())
+	if err != nil {
+		return nil, err
+	}
+
+	evaluation := s.evaluator.Evaluate(domainarb.EvaluationInput{
+		Strategy:    strategy,
+		BlockNumber: blockNumber,
+		Route:       routeRef.Route,
+		AmountIn:    optimized.AmountIn,
+		AmountOut:   optimized.AmountOut,
+		GasCost:     gas.CostWei,
+	})
+	if !evaluation.Accepted {
+		return nil, nil
+	}
+
+	id := fmt.Sprintf("%s-%d-%d", routeRef.ID, blockNumber, s.now().UnixNano())
+	opp := domainarb.NewOpportunity(id, strategy, blockNumber, routeRef.Route, evaluation, gas, s.now().UTC())
+	opp.Status = domainarb.OpportunityStatusAccepted
+	return opp, nil
+}
+
+func matchesStrategy(strategy domainarb.Strategy, routeRef domainarb.RouteRef) bool {
+	return domainarb.MatchesStrategy(strategy, routeRef.Route)
+}
+
+func (s *OpportunityService) ensureRouteReady(routeRef domainarb.RouteRef) error {
+	if s.readiness == nil {
+		return nil
+	}
+	for _, hop := range routeRef.Route.Hops {
+		if !s.readiness.IsPoolReady(hop.PoolAddress) {
+			return fmt.Errorf("pool %s is not ready", hop.PoolAddress.Hex())
+		}
+	}
+	return nil
+}
+
+func (s *OpportunityService) loadRoutePools(ctx context.Context, route domainquote.Route) (map[common.Address]*market.Pool, error) {
+	pools := make(map[common.Address]*market.Pool, route.Len())
+	for _, hop := range route.Hops {
+		if _, ok := pools[hop.PoolAddress]; ok {
+			continue
+		}
+		pool, err := s.pools.Get(ctx, hop.PoolAddress)
+		if err != nil {
+			return nil, fmt.Errorf("load pool %s: %w", hop.PoolAddress.Hex(), err)
+		}
+		if pool == nil {
+			return nil, fmt.Errorf("pool %s not found", hop.PoolAddress.Hex())
+		}
+		pools[hop.PoolAddress] = pool
+	}
+	return pools, nil
+}
+
+type routeQuoter struct {
+	quotes *domainquote.QuoteService
+	pools  map[common.Address]*market.Pool
+	route  domainquote.Route
+}
+
+func (q routeQuoter) QuoteAmountOut(amountIn *big.Int) (*big.Int, error) {
+	result, err := q.quotes.QuoteRoute(q.pools, q.route, amountIn)
+	if err != nil {
+		return nil, err
+	}
+	return result.AmountOut, nil
+}

@@ -42,5 +42,31 @@ pools:
     token1: ""
     fee_tiers: [500, 3000, 10000]
 
+http:
+  enabled: true
+  addr: ":8080"
+
+quote:
+  max_hops: 3
+
+# Arbitrage discovery runs after each synced block via ChangedPoolsListener.
+arbitrage:
+  triangle:
+    # Enable A->B->C->A triangular arbitrage scanning.
+    enabled: false
+    # Base tokens to search triangular routes from. Requires synced pools forming closed loops.
+    start_tokens:
+      - "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"  # USDC
+      - "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH
+    # Minimum net profit in wei after gas to accept an opportunity.
+    min_net_profit_wei: "1000000"
+    # Optimizer input amount search bounds (wei).
+    min_amount: "1000000"
+    max_amount: "100000000000000"
+    optimizer_iterations: 16
+
 log:
   level: info
+  format: console   # console | json
+  file: logs/arbitrage.log
+  error_file: logs/arbitrage.error.log

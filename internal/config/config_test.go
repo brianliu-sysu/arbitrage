@@ -42,3 +42,20 @@ pools:
 		t.Fatalf("expected subgraph first=50, got %d", cfg.SubgraphPoolSource().First)
 	}
 }
+
+func TestLogConfigResolvedPaths(t *testing.T) {
+	cfg := config.LogConfig{
+		File:      "logs/arbitrage.log",
+		ErrorFile: "logs/arbitrage.error.log",
+	}
+
+	outputPaths := cfg.ResolvedOutputPaths()
+	if len(outputPaths) != 2 || outputPaths[0] != "stdout" || outputPaths[1] != "logs/arbitrage.log" {
+		t.Fatalf("unexpected output paths: %#v", outputPaths)
+	}
+
+	errorPaths := cfg.ResolvedErrorOutputPaths()
+	if len(errorPaths) != 2 || errorPaths[0] != "stderr" || errorPaths[1] != "logs/arbitrage.error.log" {
+		t.Fatalf("unexpected error output paths: %#v", errorPaths)
+	}
+}

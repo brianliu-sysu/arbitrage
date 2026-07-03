@@ -2,7 +2,9 @@ package config
 
 import (
 	"fmt"
+	"math/big"
 	"os"
+	"strings"
 	"time"
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
@@ -23,6 +25,7 @@ type Config struct {
 	Pools      PoolsConfig      `yaml:"pools"`
 	HTTP       HTTPConfig       `yaml:"http"`
 	Quote      QuoteConfig      `yaml:"quote"`
+	Arbitrage  ArbitrageConfig  `yaml:"arbitrage"`
 	Log        LogConfig        `yaml:"log"`
 }
 
@@ -37,6 +40,19 @@ type HTTPConfig struct {
 
 type QuoteConfig struct {
 	MaxHops int `yaml:"max_hops"`
+}
+
+type ArbitrageConfig struct {
+	Triangle TriangleArbitrageConfig `yaml:"triangle"`
+}
+
+type TriangleArbitrageConfig struct {
+	Enabled             bool     `yaml:"enabled"`
+	StartTokens         []string `yaml:"start_tokens"`
+	MinNetProfitWei     string   `yaml:"min_net_profit_wei"`
+	MinAmount           string   `yaml:"min_amount"`
+	MaxAmount           string   `yaml:"max_amount"`
+	OptimizerIterations int      `yaml:"optimizer_iterations"`
 }
 
 type RPCConfig struct {
@@ -93,7 +109,37 @@ type SubgraphPoolConfig struct {
 type PoolConfig = StaticPoolConfig
 
 type LogConfig struct {
-	Level string `yaml:"level"`
+	Level            string   `yaml:"level"`
+	Format           string   `yaml:"format"`
+	File             string   `yaml:"file"`
+	ErrorFile        string   `yaml:"error_file"`
+	OutputPaths      []string `yaml:"output_paths"`
+	ErrorOutputPaths []string `yaml:"error_output_paths"`
+}
+
+// ResolvedOutputPaths returns zap output paths. stdout is always included unless
+// output_paths is set explicitly.
+func (c LogConfig) ResolvedOutputPaths() []string {
+	if len(c.OutputPaths) > 0 {
+		return c.OutputPaths
+	}
+	paths := []string{"stdout"}
+	if file := strings.TrimSpace(c.File); file != "" {
+		paths = append(paths, file)
+	}
+	return paths
+}
+
+// ResolvedErrorOutputPaths returns zap error output paths.
+func (c LogConfig) ResolvedErrorOutputPaths() []string {
+	if len(c.ErrorOutputPaths) > 0 {
+		return c.ErrorOutputPaths
+	}
+	paths := []string{"stderr"}
+	if file := strings.TrimSpace(c.ErrorFile); file != "" {
+		paths = append(paths, file)
+	}
+	return paths
 }
 
 func Default() Config {
@@ -124,7 +170,19 @@ func Default() Config {
 		Quote: QuoteConfig{
 			MaxHops: 3,
 		},
-		Log: LogConfig{Level: "info"},
+		Arbitrage: ArbitrageConfig{
+			Triangle: TriangleArbitrageConfig{
+				Enabled:             false,
+				MinNetProfitWei:     "1",
+				MinAmount:           "1000000",
+				MaxAmount:           "100000000000000",
+				OptimizerIterations: 16,
+			},
+		},
+		Log: LogConfig{
+			Level:  "info",
+			Format: "console",
+		},
 	}
 }
 
@@ -229,4 +287,43 @@ func (c Config) SubgraphPoolSource() SubgraphPoolConfig {
 
 func (c SubgraphPoolConfig) IsEnabled() bool {
 	return c.Enabled && c.Endpoint != ""
+}
+
+func (c Config) TriangleArbitrageEnabled() bool {
+	return c.Arbitrage.Triangle.Enabled && len(c.Arbitrage.Triangle.StartTokens) > 0
+}
+
+func (c TriangleArbitrageConfig) StartTokenAddresses() []common.Address {
+	addresses := make([]common.Address, 0, len(c.StartTokens))
+	for _, token := range c.StartTokens {
+		if token == "" {
+			continue
+		}
+		addresses = append(addresses, common.HexToAddress(token))
+	}
+	return addresses
+}
+
+func parseConfigBigInt(value string, fallback *big.Int) *big.Int {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return new(big.Int).Set(fallback)
+	}
+	parsed, ok := new(big.Int).SetString(value, 10)
+	if !ok {
+		return new(big.Int).Set(fallback)
+	}
+	return parsed
+}
+
+func (c TriangleArbitrageConfig) MinNetProfit() *big.Int {
+	return parseConfigBigInt(c.MinNetProfitWei, big.NewInt(1))
+}
+
+func (c TriangleArbitrageConfig) OptimizerMinAmount() *big.Int {
+	return parseConfigBigInt(c.MinAmount, big.NewInt(1_000_000))
+}
+
+func (c TriangleArbitrageConfig) OptimizerMaxAmount() *big.Int {
+	return parseConfigBigInt(c.MaxAmount, big.NewInt(100_000_000_000_000))
 }
