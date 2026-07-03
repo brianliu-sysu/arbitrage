@@ -102,6 +102,66 @@ func (r *PoolRepository) Delete(ctx context.Context, address common.Address) err
 	return nil
 }
 
+func (r *PoolRepository) AdvanceSyncProgress(ctx context.Context, address common.Address, blockNumber uint64) error {
+	return r.AdvanceSyncProgressMany(ctx, []common.Address{address}, blockNumber)
+}
+
+func (r *PoolRepository) AdvanceSyncProgressMany(ctx context.Context, addresses []common.Address, blockNumber uint64) error {
+	if len(addresses) == 0 {
+		return nil
+	}
+	if len(addresses) == 1 {
+		return r.advanceSyncProgressOne(ctx, addresses[0], blockNumber)
+	}
+
+	poolAddresses := make([][]byte, len(addresses))
+	for i, address := range addresses {
+		poolAddresses[i] = codec.AddressToBytes(address)
+	}
+
+	tag, err := r.db.pool.Exec(ctx, `
+		UPDATE pools SET
+			last_block_number = GREATEST(last_block_number, $2),
+			status = CASE WHEN status = $3 THEN $4 ELSE status END,
+			updated_at = NOW()
+		WHERE address = ANY($1)
+	`,
+		poolAddresses,
+		blockNumber,
+		string(market.PoolStatusCatchingUp),
+		string(market.PoolStatusSyncing),
+	)
+	if err != nil {
+		return fmt.Errorf("advance sync progress: %w", err)
+	}
+	if tag.RowsAffected() != int64(len(addresses)) {
+		return fmt.Errorf("expected to update %d pools, updated %d", len(addresses), tag.RowsAffected())
+	}
+	return nil
+}
+
+func (r *PoolRepository) advanceSyncProgressOne(ctx context.Context, address common.Address, blockNumber uint64) error {
+	tag, err := r.db.pool.Exec(ctx, `
+		UPDATE pools SET
+			last_block_number = GREATEST(last_block_number, $2),
+			status = CASE WHEN status = $3 THEN $4 ELSE status END,
+			updated_at = NOW()
+		WHERE address = $1
+	`,
+		codec.AddressToBytes(address),
+		blockNumber,
+		string(market.PoolStatusCatchingUp),
+		string(market.PoolStatusSyncing),
+	)
+	if err != nil {
+		return fmt.Errorf("advance sync progress: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("pool %s not found", address.Hex())
+	}
+	return nil
+}
+
 func upsertPool(ctx context.Context, tx pgx.Tx, pool *market.Pool) error {
 	_, err := tx.Exec(ctx, `
 		INSERT INTO pools (

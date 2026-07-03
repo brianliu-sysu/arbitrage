@@ -65,7 +65,8 @@ func (s *BlockApplyService) ApplyBlock(ctx context.Context, req ApplyBlockReques
 
 	grouped := groupEventsByPool(req.Events)
 	changedSet := make(map[common.Address]struct{}, len(grouped))
-	changed := make([]common.Address, 0, len(grouped))
+	changed := make([]common.Address, 0, len(req.TrackedPools))
+	pendingCheckpoints := make([]*blockchain.Checkpoint, 0, len(req.TrackedPools))
 
 	for poolAddress, events := range grouped {
 		changedSet[poolAddress] = struct{}{}
@@ -96,13 +97,7 @@ func (s *BlockApplyService) ApplyBlock(ctx context.Context, req ApplyBlockReques
 		if err := s.pools.Save(ctx, pool); err != nil {
 			return ApplyBlockResult{}, fmt.Errorf("save pool %s: %w", poolAddress.Hex(), err)
 		}
-		if err := s.checkpoints.Save(ctx, &blockchain.Checkpoint{
-			PoolAddress: poolAddress,
-			BlockNumber: req.BlockNumber,
-			BlockHash:   req.BlockHash,
-		}); err != nil {
-			return ApplyBlockResult{}, fmt.Errorf("save checkpoint for pool %s: %w", poolAddress.Hex(), err)
-		}
+		pendingCheckpoints = append(pendingCheckpoints, newCheckpoint(poolAddress, req.BlockNumber, req.BlockHash))
 
 		if s.snapshots != nil {
 			if err := s.snapshots.MaybeCreateSnapshot(ctx, pool, req.BlockNumber); err != nil {
@@ -113,14 +108,27 @@ func (s *BlockApplyService) ApplyBlock(ctx context.Context, req ApplyBlockReques
 		changed = append(changed, poolAddress)
 	}
 
+	idlePools := make([]common.Address, 0, len(req.TrackedPools))
 	for _, poolAddress := range req.TrackedPools {
 		if _, ok := changedSet[poolAddress]; ok {
 			continue
 		}
-		if err := s.advanceCheckpoint(ctx, poolAddress, req.BlockNumber, req.BlockHash); err != nil {
-			return ApplyBlockResult{}, err
+		idlePools = append(idlePools, poolAddress)
+	}
+	if len(idlePools) > 0 {
+		if err := s.pools.AdvanceSyncProgressMany(ctx, idlePools, req.BlockNumber); err != nil {
+			return ApplyBlockResult{}, fmt.Errorf("advance sync progress: %w", err)
 		}
-		changed = append(changed, poolAddress)
+		for _, poolAddress := range idlePools {
+			pendingCheckpoints = append(pendingCheckpoints, newCheckpoint(poolAddress, req.BlockNumber, req.BlockHash))
+		}
+		changed = append(changed, idlePools...)
+	}
+
+	if len(pendingCheckpoints) > 0 {
+		if err := s.checkpoints.SaveMany(ctx, pendingCheckpoints); err != nil {
+			return ApplyBlockResult{}, fmt.Errorf("save checkpoints: %w", err)
+		}
 	}
 
 	sort.Slice(changed, func(i, j int) bool {
@@ -137,6 +145,14 @@ func (s *BlockApplyService) ApplyBlock(ctx context.Context, req ApplyBlockReques
 		BlockNumber:  req.BlockNumber,
 		ChangedPools: changed,
 	}, nil
+}
+
+func newCheckpoint(poolAddress common.Address, blockNumber uint64, blockHash common.Hash) *blockchain.Checkpoint {
+	return &blockchain.Checkpoint{
+		PoolAddress: poolAddress,
+		BlockNumber: blockNumber,
+		BlockHash:   blockHash,
+	}
 }
 
 func (s *BlockApplyService) MarkPoolsReady(ctx context.Context, poolAddresses []common.Address) error {
@@ -164,33 +180,4 @@ func groupEventsByPool(events []market.PoolEvent) map[common.Address][]market.Po
 		grouped[poolAddress] = append(grouped[poolAddress], event)
 	}
 	return grouped
-}
-
-func (s *BlockApplyService) advanceCheckpoint(
-	ctx context.Context,
-	poolAddress common.Address,
-	blockNumber uint64,
-	blockHash common.Hash,
-) error {
-	pool, err := s.pools.Get(ctx, poolAddress)
-	if err != nil {
-		return fmt.Errorf("load pool %s: %w", poolAddress.Hex(), err)
-	}
-	if pool == nil {
-		return fmt.Errorf("pool %s not found", poolAddress.Hex())
-	}
-	if blockNumber > pool.LastBlockNumber {
-		pool.LastBlockNumber = blockNumber
-	}
-	if pool.Status == market.PoolStatusCatchingUp {
-		pool.Status = market.PoolStatusSyncing
-	}
-	if err := s.pools.Save(ctx, pool); err != nil {
-		return fmt.Errorf("save pool %s: %w", poolAddress.Hex(), err)
-	}
-	return s.checkpoints.Save(ctx, &blockchain.Checkpoint{
-		PoolAddress: poolAddress,
-		BlockNumber: blockNumber,
-		BlockHash:   blockHash,
-	})
 }

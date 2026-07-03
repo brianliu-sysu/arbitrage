@@ -2,6 +2,7 @@ package syncapp_test
 
 import (
 	"context"
+	"fmt"
 	"math/big"
 	"testing"
 	"time"
@@ -38,6 +39,26 @@ func (r *memoryPoolRepo) Delete(_ context.Context, address common.Address) error
 	return nil
 }
 
+func (r *memoryPoolRepo) AdvanceSyncProgress(ctx context.Context, address common.Address, blockNumber uint64) error {
+	return r.AdvanceSyncProgressMany(ctx, []common.Address{address}, blockNumber)
+}
+
+func (r *memoryPoolRepo) AdvanceSyncProgressMany(_ context.Context, addresses []common.Address, blockNumber uint64) error {
+	for _, address := range addresses {
+		pool, ok := r.pools[address]
+		if !ok || pool == nil {
+			return fmt.Errorf("pool %s not found", address.Hex())
+		}
+		if blockNumber > pool.LastBlockNumber {
+			pool.LastBlockNumber = blockNumber
+		}
+		if pool.Status == market.PoolStatusCatchingUp {
+			pool.Status = market.PoolStatusSyncing
+		}
+	}
+	return nil
+}
+
 type memoryCheckpointRepo struct {
 	checkpoints map[common.Address]*blockchain.Checkpoint
 }
@@ -46,9 +67,18 @@ func newMemoryCheckpointRepo() *memoryCheckpointRepo {
 	return &memoryCheckpointRepo{checkpoints: make(map[common.Address]*blockchain.Checkpoint)}
 }
 
-func (r *memoryCheckpointRepo) Save(_ context.Context, checkpoint *blockchain.Checkpoint) error {
-	copyCheckpoint := *checkpoint
-	r.checkpoints[checkpoint.PoolAddress] = &copyCheckpoint
+func (r *memoryCheckpointRepo) Save(ctx context.Context, checkpoint *blockchain.Checkpoint) error {
+	return r.SaveMany(ctx, []*blockchain.Checkpoint{checkpoint})
+}
+
+func (r *memoryCheckpointRepo) SaveMany(_ context.Context, checkpoints []*blockchain.Checkpoint) error {
+	for _, checkpoint := range checkpoints {
+		if checkpoint == nil {
+			continue
+		}
+		copyCheckpoint := *checkpoint
+		r.checkpoints[checkpoint.PoolAddress] = &copyCheckpoint
+	}
 	return nil
 }
 

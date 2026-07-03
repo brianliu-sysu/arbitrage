@@ -53,6 +53,36 @@ func TestPoolRepositorySaveGet(t *testing.T) {
 	}
 }
 
+func TestPoolRepositoryAdvanceSyncProgress(t *testing.T) {
+	ctx := context.Background()
+	repo := memory.NewPoolRepository()
+	pool := testPool()
+	pool.Status = market.PoolStatusCatchingUp
+	pool.LastBlockNumber = 10
+
+	if err := repo.Save(ctx, pool); err != nil {
+		t.Fatalf("save pool: %v", err)
+	}
+
+	if err := repo.AdvanceSyncProgress(ctx, pool.Address, 20); err != nil {
+		t.Fatalf("advance sync progress: %v", err)
+	}
+
+	loaded, err := repo.Get(ctx, pool.Address)
+	if err != nil {
+		t.Fatalf("get pool: %v", err)
+	}
+	if loaded.LastBlockNumber != 20 {
+		t.Fatalf("expected last block 20, got %d", loaded.LastBlockNumber)
+	}
+	if loaded.Status != market.PoolStatusSyncing {
+		t.Fatalf("expected syncing status, got %s", loaded.Status)
+	}
+	if _, ok := loaded.Ticks.Get(0); !ok {
+		t.Fatal("expected tick data preserved")
+	}
+}
+
 func TestSnapshotRepositorySaveGetLatest(t *testing.T) {
 	ctx := context.Background()
 	repo := memory.NewSnapshotRepository()
@@ -82,6 +112,32 @@ func TestCheckpointRepositorySaveGet(t *testing.T) {
 	loaded, err := repo.Get(ctx, checkpoint.PoolAddress)
 	if err != nil || loaded == nil || loaded.BlockNumber != 42 {
 		t.Fatalf("get checkpoint: %#v err=%v", loaded, err)
+	}
+}
+
+func TestCheckpointRepositorySaveMany(t *testing.T) {
+	ctx := context.Background()
+	repo := memory.NewCheckpointRepository()
+	checkpoints := []*blockchain.Checkpoint{
+		{
+			PoolAddress: common.HexToAddress("0x1"),
+			BlockNumber: 10,
+			BlockHash:   common.HexToHash("0xa"),
+		},
+		{
+			PoolAddress: common.HexToAddress("0x2"),
+			BlockNumber: 20,
+			BlockHash:   common.HexToHash("0xb"),
+		},
+	}
+	if err := repo.SaveMany(ctx, checkpoints); err != nil {
+		t.Fatalf("save checkpoints: %v", err)
+	}
+	for _, checkpoint := range checkpoints {
+		loaded, err := repo.Get(ctx, checkpoint.PoolAddress)
+		if err != nil || loaded == nil || loaded.BlockNumber != checkpoint.BlockNumber {
+			t.Fatalf("get checkpoint %s: %#v err=%v", checkpoint.PoolAddress.Hex(), loaded, err)
+		}
 	}
 }
 
