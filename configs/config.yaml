@@ -20,6 +20,8 @@ sync:
   snapshot_interval: 5000
   snapshot_fallback: 10m
   reorg_max_depth: 128
+  catchup_pool_group_size: 100   # 每组最多 pool 数
+  catchup_block_span: 100        # 组内起始区块最大跨度
 
 pools:
   # Explicit pool list synced at startup.

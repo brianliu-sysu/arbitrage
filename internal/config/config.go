@@ -74,10 +74,12 @@ type BlockchainConfig struct {
 }
 
 type SyncConfig struct {
-	CatchupBatchSize uint64        `yaml:"catchup_batch_size"`
-	SnapshotInterval uint64        `yaml:"snapshot_interval"`
-	SnapshotFallback time.Duration `yaml:"snapshot_fallback"`
-	ReorgMaxDepth    uint64        `yaml:"reorg_max_depth"`
+	CatchupBatchSize     uint64        `yaml:"catchup_batch_size"`
+	CatchupPoolGroupSize uint64        `yaml:"catchup_pool_group_size"`
+	CatchupBlockSpan     uint64        `yaml:"catchup_block_span"`
+	SnapshotInterval     uint64        `yaml:"snapshot_interval"`
+	SnapshotFallback     time.Duration `yaml:"snapshot_fallback"`
+	ReorgMaxDepth        uint64        `yaml:"reorg_max_depth"`
 }
 
 type PoolsConfig struct {
@@ -252,6 +254,12 @@ func (c Config) SyncConfig() syncapp.Config {
 	syncCfg := syncapp.DefaultConfig()
 	if c.Sync.CatchupBatchSize > 0 {
 		syncCfg.CatchupBatchSize = c.Sync.CatchupBatchSize
+	}
+	if c.Sync.CatchupPoolGroupSize > 0 {
+		syncCfg.CatchupPoolGroupSize = c.Sync.CatchupPoolGroupSize
+	}
+	if c.Sync.CatchupBlockSpan > 0 {
+		syncCfg.CatchupBlockSpan = c.Sync.CatchupBlockSpan
 	}
 	if c.Sync.SnapshotInterval > 0 {
 		syncCfg.SnapshotInterval = c.Sync.SnapshotInterval

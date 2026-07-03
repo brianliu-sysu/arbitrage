@@ -11,18 +11,22 @@ import (
 
 // Config holds sync-related runtime settings.
 type Config struct {
-	CatchupBatchSize  uint64
-	SnapshotInterval  uint64
-	SnapshotFallback  time.Duration
-	ReorgMaxDepth     uint64
+	CatchupBatchSize     uint64
+	CatchupPoolGroupSize uint64
+	CatchupBlockSpan     uint64
+	SnapshotInterval     uint64
+	SnapshotFallback     time.Duration
+	ReorgMaxDepth        uint64
 }
 
 func DefaultConfig() Config {
 	return Config{
-		CatchupBatchSize: 2000,
-		SnapshotInterval: 5000,
-		SnapshotFallback: 10 * time.Minute,
-		ReorgMaxDepth:    128,
+		CatchupBatchSize:     2000,
+		CatchupPoolGroupSize: 100,
+		CatchupBlockSpan:     100,
+		SnapshotInterval:     5000,
+		SnapshotFallback:     10 * time.Minute,
+		ReorgMaxDepth:        128,
 	}
 }
 

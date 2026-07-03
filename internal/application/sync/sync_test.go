@@ -162,6 +162,17 @@ func (f *stubLogFetcher) FetchLogs(_ context.Context, filter syncapp.LogFilter) 
 	return nil, nil
 }
 
+type countingLogFetcher struct {
+	calls      int
+	lastFilter syncapp.LogFilter
+}
+
+func (f *countingLogFetcher) FetchLogs(_ context.Context, filter syncapp.LogFilter) ([]syncapp.RawLog, error) {
+	f.calls++
+	f.lastFilter = filter
+	return nil, nil
+}
+
 type stubParser struct {
 	events []market.PoolEvent
 }
@@ -360,6 +371,56 @@ func TestCatchupServiceCatchUpPool(t *testing.T) {
 		t.Fatalf("expected checkpoint at block 2 after empty catchup, got %#v err=%v", checkpoint, err)
 	}
 	_ = readiness
+}
+
+func TestCatchupServiceCatchUpAllBatchesPools(t *testing.T) {
+	ctx := context.Background()
+	poolRepo := newMemoryPoolRepo()
+	checkpointRepo := newMemoryCheckpointRepo()
+
+	poolA := common.HexToAddress("0x1")
+	poolB := common.HexToAddress("0x2")
+	poolC := common.HexToAddress("0x3")
+	registry := newMemoryRegistry(poolA, poolB, poolC)
+	fetcher := &countingLogFetcher{}
+
+	services := syncapp.NewServices(syncapp.ServiceDeps{
+		Config:      syncapp.DefaultConfig(),
+		Pools:       poolRepo,
+		Checkpoints: checkpointRepo,
+		Snapshots:   newMemorySnapshotRepo(),
+		Registry:    registry,
+		Fetcher:     fetcher,
+		Parser:      &stubParser{},
+		Blocks: newStubBlockReader(
+			blockchain.BlockHeader{Number: 1, Hash: common.HexToHash("0x1")},
+			blockchain.BlockHeader{Number: 2, Hash: common.HexToHash("0x2")},
+			blockchain.BlockHeader{Number: 3, Hash: common.HexToHash("0x3")},
+		),
+		Bootstrap: stubBootstrapReader{},
+	})
+
+	if err := services.Lifecycle.StartAll(ctx, 1); err != nil {
+		t.Fatalf("start pools: %v", err)
+	}
+
+	if err := services.Catchup.CatchUpAll(ctx, 3); err != nil {
+		t.Fatalf("catch up all: %v", err)
+	}
+
+	if fetcher.calls != 1 {
+		t.Fatalf("expected 1 batched log fetch for 3 pools, got %d", fetcher.calls)
+	}
+	if len(fetcher.lastFilter.PoolAddresses) != 3 {
+		t.Fatalf("expected 3 pools in filter, got %d", len(fetcher.lastFilter.PoolAddresses))
+	}
+
+	for _, poolAddress := range []common.Address{poolA, poolB, poolC} {
+		checkpoint, err := checkpointRepo.Get(ctx, poolAddress)
+		if err != nil || checkpoint == nil || checkpoint.BlockNumber != 3 {
+			t.Fatalf("expected checkpoint at block 3 for %s, got %#v err=%v", poolAddress.Hex(), checkpoint, err)
+		}
+	}
 }
 
 func TestReadinessServicePoolLevel(t *testing.T) {

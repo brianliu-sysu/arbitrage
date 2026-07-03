@@ -3,6 +3,7 @@ package syncapp
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
@@ -43,9 +44,29 @@ func NewCatchupService(
 	}
 }
 
+type catchupPoolTask struct {
+	address   common.Address
+	fromBlock uint64
+}
+
+type catchupPoolGroup struct {
+	minFromBlock uint64
+	tasks        []catchupPoolTask
+}
+
 func (s *CatchupService) CatchUpAll(ctx context.Context, targetBlock uint64) error {
-	for _, poolAddress := range s.lifecycle.ListActive() {
-		if err := s.CatchUpPool(ctx, poolAddress, targetBlock); err != nil {
+	tasks, err := s.buildCatchupTasks(ctx, targetBlock)
+	if err != nil {
+		return err
+	}
+
+	groups := groupCatchupPools(
+		tasks,
+		s.config.CatchupPoolGroupSize,
+		s.config.CatchupBlockSpan,
+	)
+	for _, group := range groups {
+		if err := s.catchUpGroup(ctx, group, targetBlock); err != nil {
 			return err
 		}
 	}
@@ -53,14 +74,54 @@ func (s *CatchupService) CatchUpAll(ctx context.Context, targetBlock uint64) err
 }
 
 func (s *CatchupService) CatchUpPool(ctx context.Context, poolAddress common.Address, targetBlock uint64) error {
+	fromBlock, err := s.poolCatchupStartBlock(ctx, poolAddress)
+	if err != nil {
+		return fmt.Errorf("load catchup start for pool %s: %w", poolAddress.Hex(), err)
+	}
+	if fromBlock > targetBlock {
+		return nil
+	}
+
+	return s.catchUpGroup(ctx, catchupPoolGroup{
+		minFromBlock: fromBlock,
+		tasks:        []catchupPoolTask{{address: poolAddress, fromBlock: fromBlock}},
+	}, targetBlock)
+}
+
+func (s *CatchupService) buildCatchupTasks(ctx context.Context, targetBlock uint64) ([]catchupPoolTask, error) {
+	tasks := make([]catchupPoolTask, 0, len(s.lifecycle.ListActive()))
+	for _, poolAddress := range s.lifecycle.ListActive() {
+		fromBlock, err := s.poolCatchupStartBlock(ctx, poolAddress)
+		if err != nil {
+			return nil, fmt.Errorf("load catchup start for pool %s: %w", poolAddress.Hex(), err)
+		}
+		if fromBlock > targetBlock {
+			continue
+		}
+		tasks = append(tasks, catchupPoolTask{
+			address:   poolAddress,
+			fromBlock: fromBlock,
+		})
+	}
+
+	sort.Slice(tasks, func(i, j int) bool {
+		if tasks[i].fromBlock != tasks[j].fromBlock {
+			return tasks[i].fromBlock < tasks[j].fromBlock
+		}
+		return tasks[i].address.Hex() < tasks[j].address.Hex()
+	})
+	return tasks, nil
+}
+
+func (s *CatchupService) poolCatchupStartBlock(ctx context.Context, poolAddress common.Address) (uint64, error) {
 	checkpoint, err := s.checkpoints.Get(ctx, poolAddress)
 	if err != nil {
-		return fmt.Errorf("load checkpoint: %w", err)
+		return 0, fmt.Errorf("load checkpoint: %w", err)
 	}
 
 	pool, err := s.pools.Get(ctx, poolAddress)
 	if err != nil {
-		return fmt.Errorf("load pool: %w", err)
+		return 0, fmt.Errorf("load pool: %w", err)
 	}
 
 	var checkpointBlock uint64
@@ -71,26 +132,70 @@ func (s *CatchupService) CatchUpPool(ctx context.Context, poolAddress common.Add
 	if pool != nil {
 		poolLastBlock = pool.LastBlockNumber
 	}
+	return catchupStartBlock(checkpointBlock, poolLastBlock), nil
+}
 
-	fromBlock := catchupStartBlock(checkpointBlock, poolLastBlock)
-	if fromBlock > targetBlock {
+func groupCatchupPools(tasks []catchupPoolTask, maxPools, maxBlockSpan uint64) []catchupPoolGroup {
+	if len(tasks) == 0 {
 		return nil
 	}
+	if maxPools == 0 {
+		maxPools = 100
+	}
+	if maxBlockSpan == 0 {
+		maxBlockSpan = 100
+	}
 
-	for start := fromBlock; start <= targetBlock; {
+	groups := make([]catchupPoolGroup, 0, len(tasks))
+	current := catchupPoolGroup{
+		minFromBlock: tasks[0].fromBlock,
+		tasks:        []catchupPoolTask{tasks[0]},
+	}
+
+	for i := 1; i < len(tasks); i++ {
+		task := tasks[i]
+		span := task.fromBlock - current.minFromBlock
+		if uint64(len(current.tasks)) >= maxPools || span > maxBlockSpan {
+			groups = append(groups, current)
+			current = catchupPoolGroup{
+				minFromBlock: task.fromBlock,
+				tasks:        []catchupPoolTask{task},
+			}
+			continue
+		}
+		current.tasks = append(current.tasks, task)
+	}
+	groups = append(groups, current)
+	return groups
+}
+
+func (s *CatchupService) catchUpGroup(ctx context.Context, group catchupPoolGroup, targetBlock uint64) error {
+	fromBlocks := make(map[common.Address]uint64, len(group.tasks))
+	poolAddresses := make([]common.Address, 0, len(group.tasks))
+	for _, task := range group.tasks {
+		fromBlocks[task.address] = task.fromBlock
+		poolAddresses = append(poolAddresses, task.address)
+	}
+
+	for start := group.minFromBlock; start <= targetBlock; {
 		end := start + s.config.CatchupBatchSize - 1
 		if end > targetBlock {
 			end = targetBlock
 		}
-		if err := s.catchUpRange(ctx, []common.Address{poolAddress}, start, end); err != nil {
-			return fmt.Errorf("catch up pool %s blocks [%d,%d]: %w", poolAddress.Hex(), start, end, err)
+		if err := s.catchUpRange(ctx, poolAddresses, fromBlocks, start, end); err != nil {
+			return fmt.Errorf("catch up blocks [%d,%d]: %w", start, end, err)
 		}
 		start = end + 1
 	}
 	return nil
 }
 
-func (s *CatchupService) catchUpRange(ctx context.Context, pools []common.Address, fromBlock, toBlock uint64) error {
+func (s *CatchupService) catchUpRange(
+	ctx context.Context,
+	pools []common.Address,
+	fromBlocks map[common.Address]uint64,
+	fromBlock, toBlock uint64,
+) error {
 	logs, err := s.fetcher.FetchLogs(ctx, LogFilter{
 		PoolAddresses: pools,
 		FromBlock:     fromBlock,
@@ -107,6 +212,11 @@ func (s *CatchupService) catchUpRange(ctx context.Context, pools []common.Addres
 
 	eventsByBlock := groupEventsByBlock(events)
 	for blockNumber := fromBlock; blockNumber <= toBlock; blockNumber++ {
+		trackedPools := trackedPoolsForBlock(pools, fromBlocks, blockNumber)
+		if len(trackedPools) == 0 {
+			continue
+		}
+
 		header, err := s.blocks.GetBlockHeader(ctx, blockNumber)
 		if err != nil {
 			return fmt.Errorf("load block header %d: %w", blockNumber, err)
@@ -115,12 +225,26 @@ func (s *CatchupService) catchUpRange(ctx context.Context, pools []common.Addres
 			BlockNumber:  blockNumber,
 			BlockHash:    header.Hash,
 			Events:       eventsByBlock[blockNumber],
-			TrackedPools: pools,
+			TrackedPools: trackedPools,
 		}); err != nil {
 			return fmt.Errorf("apply block %d: %w", blockNumber, err)
 		}
 	}
 	return nil
+}
+
+func trackedPoolsForBlock(
+	pools []common.Address,
+	fromBlocks map[common.Address]uint64,
+	blockNumber uint64,
+) []common.Address {
+	tracked := make([]common.Address, 0, len(pools))
+	for _, poolAddress := range pools {
+		if fromBlocks[poolAddress] <= blockNumber {
+			tracked = append(tracked, poolAddress)
+		}
+	}
+	return tracked
 }
 
 func groupEventsByBlock(events []market.PoolEvent) map[uint64][]market.PoolEvent {
