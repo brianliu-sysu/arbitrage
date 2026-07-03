@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/brianliu-sysu/uniswapv3/internal/app"
+	app "github.com/brianliu-sysu/uniswapv3/internal/app/arbitrage"
 	"go.uber.org/fx"
 )
 

@@ -6,13 +6,19 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
+	"time"
 
+	quoteapp "github.com/brianliu-sysu/uniswapv3/internal/application/quote"
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
 	"github.com/brianliu-sysu/uniswapv3/internal/config"
+	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
 	chaininfra "github.com/brianliu-sysu/uniswapv3/internal/infrastructure/blockchain"
 	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/persistence"
 	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/registry"
+	httpapi "github.com/brianliu-sysu/uniswapv3/internal/interfaces/http"
+	"github.com/gin-gonic/gin"
 	"go.uber.org/fx"
 )
 
@@ -39,8 +45,10 @@ func Module(params Params) fx.Option {
 			newPoolRegistry,
 			newSyncServices,
 			newSyncOrchestrator,
+			newQuoteAppService,
+			newHTTPRouter,
 		),
-		fx.Invoke(registerSyncLifecycle),
+		fx.Invoke(registerSyncLifecycle, registerHTTPLifecycle),
 	)
 }
 
@@ -98,6 +106,31 @@ func newSyncOrchestrator(services *syncapp.Services, chain *chaininfra.Services)
 	return services.NewOrchestrator(chain.Client)
 }
 
+func newQuoteAppService(
+	cfg config.Config,
+	store *persistence.Services,
+	poolRegistry *registry.CompositeRegistry,
+	syncServices *syncapp.Services,
+) *quoteapp.QuoteAppService {
+	maxHops := cfg.Quote.MaxHops
+	if maxHops <= 0 {
+		maxHops = 3
+	}
+	return quoteapp.NewQuoteAppService(
+		store.Pools,
+		poolRegistry,
+		domainquote.NewQuoteService(),
+		syncServices.Readiness,
+		maxHops,
+	)
+}
+
+func newHTTPRouter(quoteService *quoteapp.QuoteAppService) *gin.Engine {
+	return httpapi.NewRouter(httpapi.Handlers{
+		Quote: httpapi.NewQuoteHandler(quoteService),
+	})
+}
+
 type syncLifecycle struct {
 	cancel       context.CancelFunc
 	orchestrator *syncapp.SyncOrchestrator
@@ -150,5 +183,49 @@ func (r *syncLifecycle) stop(_ context.Context) error {
 	r.chain.Close()
 	r.store.Close()
 	log.Println("pool sync shutdown complete")
+	return nil
+}
+
+type httpLifecycle struct {
+	server *http.Server
+}
+
+func registerHTTPLifecycle(lifecycle fx.Lifecycle, cfg config.Config, router *gin.Engine) {
+	if !cfg.HTTP.Enabled {
+		log.Println("http server disabled")
+		return
+	}
+
+	runner := &httpLifecycle{
+		server: &http.Server{
+			Addr:              cfg.HTTP.ListenAddr(),
+			Handler:           router,
+			ReadHeaderTimeout: 5 * time.Second,
+		},
+	}
+	lifecycle.Append(fx.Hook{
+		OnStart: runner.start,
+		OnStop:  runner.stop,
+	})
+}
+
+func (h *httpLifecycle) start(_ context.Context) error {
+	go func() {
+		log.Printf("starting http server on %s", h.server.Addr)
+		if err := h.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("http server stopped: %v", err)
+		}
+	}()
+	return nil
+}
+
+func (h *httpLifecycle) stop(ctx context.Context) error {
+	shutdownCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	if err := h.server.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("shutdown http server: %w", err)
+	}
+	log.Println("http server shutdown complete")
 	return nil
 }

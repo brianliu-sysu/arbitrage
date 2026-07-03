@@ -21,11 +21,22 @@ type Config struct {
 	Blockchain BlockchainConfig `yaml:"blockchain"`
 	Sync       SyncConfig       `yaml:"sync"`
 	Pools      PoolsConfig      `yaml:"pools"`
+	HTTP       HTTPConfig       `yaml:"http"`
+	Quote      QuoteConfig      `yaml:"quote"`
 	Log        LogConfig        `yaml:"log"`
 }
 
 type AppConfig struct {
 	Name string `yaml:"name"`
+}
+
+type HTTPConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Addr    string `yaml:"addr"`
+}
+
+type QuoteConfig struct {
+	MaxHops int `yaml:"max_hops"`
 }
 
 type RPCConfig struct {
@@ -105,8 +116,22 @@ func Default() Config {
 				RefreshInterval: 10 * time.Minute,
 			},
 		},
+		HTTP: HTTPConfig{
+			Enabled: true,
+			Addr:    ":8080",
+		},
+		Quote: QuoteConfig{
+			MaxHops: 3,
+		},
 		Log: LogConfig{Level: "info"},
 	}
+}
+
+func (c HTTPConfig) ListenAddr() string {
+	if c.Addr == "" {
+		return ":8080"
+	}
+	return c.Addr
 }
 
 func Load(path string) (Config, error) {

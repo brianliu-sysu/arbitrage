@@ -19,7 +19,7 @@ build: build-arbitrage build-migrate ## Build all binaries
 
 build-arbitrage: ## Build arbitrage sync binary
 	@mkdir -p $(BIN_DIR)
-	$(GO) build $(GOFLAGS) -o $(ARBITRAGE) ./cmd
+	$(GO) build $(GOFLAGS) -o $(ARBITRAGE) ./cmd/arbitrage/
 
 build-migrate: ## Build database migrate binary
 	@mkdir -p $(BIN_DIR)
