@@ -2,7 +2,8 @@ app:
   name: arbitrage
 
 rpc:
-  url: "https://eth-mainnet.g.alchemy.com/v2/{{ALCHEMY_KEY}}"
+  url: "https://eth-mainnet.g.alchemy.com/v2/your-api-key"
+  ws_url: wss://your-provider.example/v2/your-api-key  # 仅用于订阅新区块
 
 database:
   url: "postgres://postgres:postgres@localhost:5432/arbitrage?sslmode=disable"
@@ -29,7 +30,7 @@ pools:
   # Discover additional pools from Uniswap V3 subgraph.
   subgraph:
     enabled: true
-    endpoint: "https://gateway.thegraph.com/api/subgraphs/id/{{SUBGRAPH_KEY}}"
+    endpoint: "https://gateway.thegraph.com/api/subgraphs/id/your-api-key"
     refresh_interval: 10m
     first: 100
     skip: 0

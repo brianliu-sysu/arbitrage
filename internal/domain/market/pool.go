@@ -61,7 +61,7 @@ func (p *Pool) Apply(event PoolEvent) error {
 		return fmt.Errorf("event pool %s does not match pool %s", event.Meta.PoolAddress.Hex(), p.Address.Hex())
 	}
 	if event.Meta.BlockNumber < p.LastBlockNumber {
-		return fmt.Errorf("event block %d is before pool last block %d", event.Meta.BlockNumber, p.LastBlockNumber)
+		return nil
 	}
 
 	var err error
@@ -147,7 +147,7 @@ func (p *Pool) applyBurn(event PoolEvent) error {
 		return fmt.Errorf("pool is not initialized")
 	}
 	if event.Burn.Amount == nil || event.Burn.Amount.Sign() <= 0 {
-		return fmt.Errorf("burn amount must be positive")
+		return nil
 	}
 
 	negated := new(big.Int).Neg(event.Burn.Amount)

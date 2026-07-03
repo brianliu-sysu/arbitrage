@@ -131,6 +131,24 @@ func (s *BlockApplyService) ApplyBlock(ctx context.Context, req ApplyBlockReques
 	}, nil
 }
 
+func (s *BlockApplyService) MarkPoolsReady(ctx context.Context, poolAddresses []common.Address) error {
+	for _, poolAddress := range poolAddresses {
+		pool, err := s.pools.Get(ctx, poolAddress)
+		if err != nil {
+			return fmt.Errorf("load pool %s: %w", poolAddress.Hex(), err)
+		}
+		if pool == nil {
+			return fmt.Errorf("pool %s not found", poolAddress.Hex())
+		}
+		pool.Status = market.PoolStatusReady
+		if err := s.pools.Save(ctx, pool); err != nil {
+			return fmt.Errorf("save ready pool %s: %w", poolAddress.Hex(), err)
+		}
+		s.readiness.SetPoolReady(poolAddress, true)
+	}
+	return nil
+}
+
 func groupEventsByPool(events []market.PoolEvent) map[common.Address][]market.PoolEvent {
 	grouped := make(map[common.Address][]market.PoolEvent)
 	for _, event := range events {
@@ -155,9 +173,12 @@ func (s *BlockApplyService) advanceCheckpoint(
 	}
 	if blockNumber > pool.LastBlockNumber {
 		pool.LastBlockNumber = blockNumber
-		if err := s.pools.Save(ctx, pool); err != nil {
-			return fmt.Errorf("save pool %s: %w", poolAddress.Hex(), err)
-		}
+	}
+	if pool.Status == market.PoolStatusCatchingUp {
+		pool.Status = market.PoolStatusSyncing
+	}
+	if err := s.pools.Save(ctx, pool); err != nil {
+		return fmt.Errorf("save pool %s: %w", poolAddress.Hex(), err)
 	}
 	return s.checkpoints.Save(ctx, &blockchain.Checkpoint{
 		PoolAddress: poolAddress,

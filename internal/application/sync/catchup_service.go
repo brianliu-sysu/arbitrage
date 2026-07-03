@@ -58,18 +58,21 @@ func (s *CatchupService) CatchUpPool(ctx context.Context, poolAddress common.Add
 		return fmt.Errorf("load checkpoint: %w", err)
 	}
 
-	fromBlock := uint64(1)
-	if checkpoint != nil {
-		fromBlock = checkpoint.BlockNumber + 1
-	} else {
-		pool, err := s.pools.Get(ctx, poolAddress)
-		if err != nil {
-			return fmt.Errorf("load pool: %w", err)
-		}
-		if pool != nil && pool.LastBlockNumber > 0 {
-			fromBlock = pool.LastBlockNumber + 1
-		}
+	pool, err := s.pools.Get(ctx, poolAddress)
+	if err != nil {
+		return fmt.Errorf("load pool: %w", err)
 	}
+
+	var checkpointBlock uint64
+	if checkpoint != nil {
+		checkpointBlock = checkpoint.BlockNumber
+	}
+	var poolLastBlock uint64
+	if pool != nil {
+		poolLastBlock = pool.LastBlockNumber
+	}
+
+	fromBlock := catchupStartBlock(checkpointBlock, poolLastBlock)
 	if fromBlock > targetBlock {
 		return nil
 	}
@@ -127,4 +130,15 @@ func groupEventsByBlock(events []market.PoolEvent) map[uint64][]market.PoolEvent
 		grouped[blockNumber] = append(grouped[blockNumber], event)
 	}
 	return grouped
+}
+
+func catchupStartBlock(checkpointBlock, poolLastBlock uint64) uint64 {
+	fromBlock := uint64(1)
+	if checkpointBlock > 0 {
+		fromBlock = checkpointBlock + 1
+	}
+	if poolLastBlock > 0 && poolLastBlock+1 > fromBlock {
+		fromBlock = poolLastBlock + 1
+	}
+	return fromBlock
 }

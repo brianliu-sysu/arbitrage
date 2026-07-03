@@ -33,6 +33,8 @@ func (s *BootstrapService) Bootstrap(ctx context.Context, poolAddress common.Add
 		return nil, fmt.Errorf("load pool: %w", err)
 	}
 
+	chainBootstrapped := false
+
 	if pool == nil {
 		data, err := s.reader.ReadBootstrapData(ctx, poolAddress, blockNumber)
 		if err != nil {
@@ -43,6 +45,7 @@ func (s *BootstrapService) Bootstrap(ctx context.Context, poolAddress common.Add
 		pool.Ticks = data.Ticks.Clone()
 		pool.Bitmap = data.Bitmap.Clone()
 		pool.Status = market.PoolStatusBootstrapping
+		chainBootstrapped = true
 	} else {
 		pool.Status = market.PoolStatusBootstrapping
 	}
@@ -65,9 +68,12 @@ func (s *BootstrapService) Bootstrap(ctx context.Context, poolAddress common.Add
 		pool.State = data.State.Clone()
 		pool.Ticks = data.Ticks.Clone()
 		pool.Bitmap = data.Bitmap.Clone()
+		chainBootstrapped = true
 	}
 
-	pool.LastBlockNumber = blockNumber
+	if chainBootstrapped {
+		pool.LastBlockNumber = blockNumber
+	}
 	pool.Status = market.PoolStatusCatchingUp
 	if err := s.pools.Save(ctx, pool); err != nil {
 		return nil, fmt.Errorf("save pool: %w", err)

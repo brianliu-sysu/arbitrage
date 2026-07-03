@@ -15,6 +15,7 @@ type SyncOrchestrator struct {
 	lifecycle  *PoolLifecycleService
 	catchup    *CatchupService
 	headSync   *HeadSyncService
+	blockApply *BlockApplyService
 	scheduler  *SnapshotScheduler
 	readiness  *ReadinessService
 }
@@ -25,17 +26,19 @@ func NewSyncOrchestrator(
 	lifecycle *PoolLifecycleService,
 	catchup *CatchupService,
 	headSync *HeadSyncService,
+	blockApply *BlockApplyService,
 	scheduler *SnapshotScheduler,
 	readiness *ReadinessService,
 ) *SyncOrchestrator {
 	return &SyncOrchestrator{
-		config:    config,
-		blocks:    blocks,
-		lifecycle: lifecycle,
-		catchup:   catchup,
-		headSync:  headSync,
-		scheduler: scheduler,
-		readiness: readiness,
+		config:     config,
+		blocks:     blocks,
+		lifecycle:  lifecycle,
+		catchup:    catchup,
+		headSync:   headSync,
+		blockApply: blockApply,
+		scheduler:  scheduler,
+		readiness:  readiness,
 	}
 }
 
@@ -54,7 +57,9 @@ func (o *SyncOrchestrator) Start(ctx context.Context) error {
 		return fmt.Errorf("catch up pools: %w", err)
 	}
 
-	o.markPoolsReady(ctx)
+	if err := o.markPoolsReady(ctx); err != nil {
+		return fmt.Errorf("mark pools ready: %w", err)
+	}
 	o.headSync.SetLocalHead(latest)
 	o.readiness.SetSystemReady(true)
 
@@ -67,11 +72,8 @@ func (o *SyncOrchestrator) Start(ctx context.Context) error {
 	return o.headSync.Run(ctx)
 }
 
-func (o *SyncOrchestrator) markPoolsReady(ctx context.Context) {
-	for _, poolAddress := range o.lifecycle.ListActive() {
-		o.readiness.SetPoolReady(poolAddress, true)
-	}
-	_ = ctx
+func (o *SyncOrchestrator) markPoolsReady(ctx context.Context) error {
+	return o.blockApply.MarkPoolsReady(ctx, o.lifecycle.ListActive())
 }
 
 // Services bundles the sync application services for wiring.
@@ -138,5 +140,5 @@ func NewServices(deps ServiceDeps) *Services {
 }
 
 func (s *Services) NewOrchestrator(blocks BlockReader) *SyncOrchestrator {
-	return NewSyncOrchestrator(s.Config, blocks, s.Lifecycle, s.Catchup, s.HeadSync, s.Scheduler, s.Readiness)
+	return NewSyncOrchestrator(s.Config, blocks, s.Lifecycle, s.Catchup, s.HeadSync, s.BlockApply, s.Scheduler, s.Readiness)
 }

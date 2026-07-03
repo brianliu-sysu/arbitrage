@@ -132,6 +132,28 @@ func TestPoolApplyBurnRemovesLiquidity(t *testing.T) {
 	}
 }
 
+func TestPoolApplySkipsStaleEvent(t *testing.T) {
+	pool := NewPool(testPoolAddress(), common.Address{}, common.Address{}, 3000, 60)
+	sqrtPrice := sqrtPriceAtTick0()
+	if err := pool.Apply(NewInitializeEvent(testMeta(1), sqrtPrice, 0)); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	pool.LastBlockNumber = 100
+
+	err := pool.Apply(NewSwapEvent(
+		testMeta(50),
+		common.Address{}, common.Address{},
+		big.NewInt(-1), big.NewInt(1),
+		sqrtPriceAfterSwap(), big.NewInt(1000), 0,
+	))
+	if err != nil {
+		t.Fatalf("expected stale swap to be skipped, got %v", err)
+	}
+	if pool.LastBlockNumber != 100 {
+		t.Fatalf("expected last block to remain 100, got %d", pool.LastBlockNumber)
+	}
+}
+
 func TestSnapshotRestore(t *testing.T) {
 	pool := NewPool(testPoolAddress(), common.Address{}, common.Address{}, 3000, 60)
 	sqrtPrice := sqrtPriceAtTick0()
@@ -153,7 +175,7 @@ func TestSnapshotRestore(t *testing.T) {
 	}
 }
 
-func TestPoolRejectsOutOfOrderBlock(t *testing.T) {
+func TestPoolSkipsOutOfOrderBlock(t *testing.T) {
 	pool := NewPool(testPoolAddress(), common.Address{}, common.Address{}, 3000, 60)
 	sqrtPrice := sqrtPriceAtTick0()
 	meta := testMeta(10)
@@ -163,8 +185,11 @@ func TestPoolRejectsOutOfOrderBlock(t *testing.T) {
 
 	oldMeta := testMeta(5)
 	err := pool.Apply(NewSwapEvent(oldMeta, common.Address{}, common.Address{}, big.NewInt(1), big.NewInt(1), sqrtPrice, big.NewInt(1), 0))
-	if err == nil {
-		t.Fatal("expected error for out-of-order block")
+	if err != nil {
+		t.Fatalf("expected stale swap to be skipped, got %v", err)
+	}
+	if pool.LastBlockNumber != 10 {
+		t.Fatalf("expected last block to remain 10, got %d", pool.LastBlockNumber)
 	}
 }
 

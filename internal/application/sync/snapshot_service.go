@@ -71,6 +71,9 @@ func (s *SnapshotService) RestorePool(ctx context.Context, pool *market.Pool) (*
 	if snapshot == nil {
 		return nil, nil
 	}
+	if pool.LastBlockNumber > 0 && snapshot.BlockNumber <= pool.LastBlockNumber {
+		return snapshot, nil
+	}
 	snapshot.RestoreTo(pool)
 	return snapshot, nil
 }

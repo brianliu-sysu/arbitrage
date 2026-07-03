@@ -120,8 +120,8 @@ func (s *HeadSyncService) handleHead(ctx context.Context, head blockchain.BlockH
 		return fmt.Errorf("apply head block %d: %w", head.Number, err)
 	}
 
-	for _, poolAddress := range pools {
-		s.readiness.SetPoolReady(poolAddress, true)
+	if err := s.blockApply.MarkPoolsReady(ctx, pools); err != nil {
+		return fmt.Errorf("mark pools ready: %w", err)
 	}
 	s.SetLocalHead(head)
 	return nil

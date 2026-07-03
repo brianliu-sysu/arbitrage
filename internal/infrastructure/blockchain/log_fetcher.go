@@ -7,6 +7,7 @@ import (
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
 	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/common"
 )
 
 // LogFetcher loads pool logs via eth_getLogs.
@@ -30,6 +31,7 @@ func (f *LogFetcher) FetchLogs(ctx context.Context, filter syncapp.LogFilter) ([
 		FromBlock: new(big.Int).SetUint64(filter.FromBlock),
 		ToBlock:   new(big.Int).SetUint64(filter.ToBlock),
 		Addresses: filter.PoolAddresses,
+		Topics:    [][]common.Hash{PoolLogTopics()},
 	}
 
 	logs, err := f.client.FilterLogs(ctx, query)

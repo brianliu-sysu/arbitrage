@@ -70,46 +70,35 @@ type basePoolState struct {
 }
 
 func (r *PoolReader) readBaseState(ctx context.Context, poolAddress common.Address, blockNumber uint64) (*basePoolState, error) {
-	calls := make([]MulticallRequest, 0, 6)
-	for _, method := range []string{"token0", "token1", "fee", "tickSpacing", "slot0", "liquidity"} {
-		data, err := r.poolABI.Pack(method)
-		if err != nil {
-			return nil, fmt.Errorf("pack %s: %w", method, err)
-		}
-		calls = append(calls, MulticallRequest{Target: poolAddress, Data: data})
-	}
-
-	results, err := r.multicall.Aggregate3(ctx, calls, blockNumber)
+	methods := []string{"token0", "token1", "fee", "tickSpacing", "slot0", "liquidity"}
+	results, err := r.callPoolMethods(ctx, poolAddress, blockNumber, methods)
 	if err != nil {
 		return nil, err
-	}
-	if len(results) != len(calls) {
-		return nil, fmt.Errorf("expected %d base results, got %d", len(calls), len(results))
 	}
 
 	token0, err := unpackAddress(r.poolABI, "token0", results[0])
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("token0: %w", err)
 	}
 	token1, err := unpackAddress(r.poolABI, "token1", results[1])
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("token1: %w", err)
 	}
 	fee, err := unpackUint32(r.poolABI, "fee", results[2])
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("fee: %w", err)
 	}
 	tickSpacing, err := unpackInt24(r.poolABI, "tickSpacing", results[3])
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("tickSpacing: %w", err)
 	}
 	slot0, err := unpackSlot0(r.poolABI, results[4])
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("slot0: %w", err)
 	}
 	liquidity, err := unpackBigInt(r.poolABI, "liquidity", results[5])
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("liquidity: %w", err)
 	}
 
 	return &basePoolState{
@@ -123,16 +112,87 @@ func (r *PoolReader) readBaseState(ctx context.Context, poolAddress common.Addre
 	}, nil
 }
 
+func (r *PoolReader) callPoolMethods(
+	ctx context.Context,
+	poolAddress common.Address,
+	blockNumber uint64,
+	methods []string,
+) ([]MulticallResult, error) {
+	results, err := r.multicallPoolMethods(ctx, poolAddress, blockNumber, methods)
+	if err != nil {
+		return r.directPoolMethods(ctx, poolAddress, blockNumber, methods)
+	}
+	if needsDirectPoolFallback(results) {
+		return r.directPoolMethods(ctx, poolAddress, blockNumber, methods)
+	}
+	return results, nil
+}
+
+func (r *PoolReader) multicallPoolMethods(
+	ctx context.Context,
+	poolAddress common.Address,
+	blockNumber uint64,
+	methods []string,
+) ([]MulticallResult, error) {
+	calls := make([]MulticallRequest, 0, len(methods))
+	for _, method := range methods {
+		data, err := r.poolABI.Pack(method)
+		if err != nil {
+			return nil, fmt.Errorf("pack %s: %w", method, err)
+		}
+		calls = append(calls, MulticallRequest{Target: poolAddress, Data: data})
+	}
+
+	results, err := r.multicall.Aggregate3(ctx, calls, blockNumber)
+	if err != nil {
+		return nil, err
+	}
+	if len(results) != len(calls) {
+		return nil, fmt.Errorf("expected %d pool call results, got %d", len(calls), len(results))
+	}
+	return results, nil
+}
+
+func (r *PoolReader) directPoolMethods(
+	ctx context.Context,
+	poolAddress common.Address,
+	blockNumber uint64,
+	methods []string,
+) ([]MulticallResult, error) {
+	results := make([]MulticallResult, len(methods))
+	for i, method := range methods {
+		data, err := r.poolABI.Pack(method)
+		if err != nil {
+			return nil, fmt.Errorf("pack %s: %w", method, err)
+		}
+		output, err := r.client.CallContract(ctx, poolAddress, data, blockNumber)
+		if err != nil {
+			return nil, fmt.Errorf("call %s: %w", method, err)
+		}
+		results[i] = MulticallResult{
+			Success:    len(output) > 0,
+			ReturnData: output,
+		}
+	}
+	return results, nil
+}
+
+func needsDirectPoolFallback(results []MulticallResult) bool {
+	for _, result := range results {
+		if !result.Success || len(result.ReturnData) == 0 {
+			return true
+		}
+	}
+	return false
+}
+
 type slot0Values struct {
 	sqrtPriceX96 *big.Int
 	tick         int32
 }
 
 func unpackSlot0(poolABI abi.ABI, result MulticallResult) (slot0Values, error) {
-	if !result.Success {
-		return slot0Values{}, fmt.Errorf("slot0 call failed")
-	}
-	values, err := poolABI.Unpack("slot0", result.ReturnData)
+	values, err := unpackCallResult(poolABI, "slot0", result)
 	if err != nil {
 		return slot0Values{}, err
 	}
@@ -171,24 +231,13 @@ func (r *PoolReader) readTickState(
 	minWord := int16(compressedMin >> 8)
 	maxWord := int16(compressedMax >> 8)
 
+	bitmapWords, err := r.readTickBitmapWords(ctx, poolAddress, blockNumber, minWord, maxWord)
+	if err != nil {
+		return ticks, bitmap, err
+	}
+
 	initializedTicks := make([]int32, 0)
-	for wordPos := minWord; wordPos <= maxWord; wordPos++ {
-		data, err := r.poolABI.Pack("tickBitmap", wordPos)
-		if err != nil {
-			return ticks, bitmap, fmt.Errorf("pack tickBitmap: %w", err)
-		}
-		output, err := r.client.CallContract(ctx, poolAddress, data, blockNumber)
-		if err != nil {
-			return ticks, bitmap, fmt.Errorf("call tickBitmap: %w", err)
-		}
-		values, err := r.poolABI.Unpack("tickBitmap", output)
-		if err != nil {
-			return ticks, bitmap, fmt.Errorf("unpack tickBitmap: %w", err)
-		}
-		word := values[0].(*big.Int)
-		if word.Sign() == 0 {
-			continue
-		}
+	for wordPos, word := range bitmapWords {
 		bitmapFlipFromWord(&bitmap, wordPos, word, tickSpacing, &initializedTicks)
 	}
 
@@ -210,25 +259,125 @@ func (r *PoolReader) readTickState(
 		return ticks, bitmap, err
 	}
 
-	for i, result := range results {
-		if !result.Success {
-			continue
-		}
-		values, err := r.poolABI.Unpack("ticks", result.ReturnData)
+	for i, tick := range initializedTicks {
+		returnData, err := r.tickReturnData(ctx, poolAddress, tick, blockNumber, results[i])
 		if err != nil {
-			return ticks, bitmap, fmt.Errorf("unpack ticks: %w", err)
+			return ticks, bitmap, fmt.Errorf("read tick %d: %w", tick, err)
+		}
+		values, err := r.poolABI.Unpack("ticks", returnData)
+		if err != nil {
+			return ticks, bitmap, fmt.Errorf("unpack tick %d: %w", tick, err)
 		}
 		liquidityGross := values[0].(*big.Int)
 		liquidityNet := values[1].(*big.Int)
 		if liquidityGross.Sign() == 0 {
 			continue
 		}
-		tick := ticks.GetOrCreate(initializedTicks[i])
-		tick.LiquidityGross = new(big.Int).Set(liquidityGross)
-		tick.LiquidityNet = new(big.Int).Set(liquidityNet)
+		tickState := ticks.GetOrCreate(tick)
+		tickState.LiquidityGross = new(big.Int).Set(liquidityGross)
+		tickState.LiquidityNet = new(big.Int).Set(liquidityNet)
 	}
 
 	return ticks, bitmap, nil
+}
+
+func (r *PoolReader) tickReturnData(
+	ctx context.Context,
+	poolAddress common.Address,
+	tick int32,
+	blockNumber uint64,
+	result MulticallResult,
+) ([]byte, error) {
+	if result.Success && len(result.ReturnData) > 0 {
+		return result.ReturnData, nil
+	}
+
+	data, err := r.poolABI.Pack("ticks", int32ToABIInt24(tick))
+	if err != nil {
+		return nil, fmt.Errorf("pack ticks: %w", err)
+	}
+	output, err := r.client.CallContract(ctx, poolAddress, data, blockNumber)
+	if err != nil {
+		return nil, err
+	}
+	if len(output) == 0 {
+		return nil, fmt.Errorf("returned empty data")
+	}
+	return output, nil
+}
+
+func (r *PoolReader) readTickBitmapWords(
+	ctx context.Context,
+	poolAddress common.Address,
+	blockNumber uint64,
+	minWord, maxWord int16,
+) (map[int16]*big.Int, error) {
+	words := make(map[int16]*big.Int)
+	if minWord > maxWord {
+		return words, nil
+	}
+
+	requests := make([]MulticallRequest, 0, int(maxWord-minWord)+1)
+	wordPositions := make([]int16, 0, int(maxWord-minWord)+1)
+	for wordPos := minWord; wordPos <= maxWord; wordPos++ {
+		data, err := r.poolABI.Pack("tickBitmap", wordPos)
+		if err != nil {
+			return nil, fmt.Errorf("pack tickBitmap word %d: %w", wordPos, err)
+		}
+		requests = append(requests, MulticallRequest{Target: poolAddress, Data: data})
+		wordPositions = append(wordPositions, wordPos)
+	}
+
+	results, err := r.multicall.Aggregate3(ctx, requests, blockNumber)
+	if err != nil {
+		return nil, fmt.Errorf("load tickBitmap words: %w", err)
+	}
+	if len(results) != len(requests) {
+		return nil, fmt.Errorf("expected %d tickBitmap results, got %d", len(requests), len(results))
+	}
+
+	for i, result := range results {
+		wordPos := wordPositions[i]
+		returnData, err := r.tickBitmapReturnData(ctx, poolAddress, wordPos, blockNumber, result)
+		if err != nil {
+			return nil, fmt.Errorf("read tickBitmap word %d: %w", wordPos, err)
+		}
+		values, err := r.poolABI.Unpack("tickBitmap", returnData)
+		if err != nil {
+			return nil, fmt.Errorf("unpack tickBitmap word %d: %w", wordPos, err)
+		}
+		word := values[0].(*big.Int)
+		if word.Sign() == 0 {
+			continue
+		}
+		words[wordPos] = word
+	}
+	return words, nil
+}
+
+func (r *PoolReader) tickBitmapReturnData(
+	ctx context.Context,
+	poolAddress common.Address,
+	wordPos int16,
+	blockNumber uint64,
+	result MulticallResult,
+) ([]byte, error) {
+	if result.Success && len(result.ReturnData) > 0 {
+		return result.ReturnData, nil
+	}
+
+	data, err := r.poolABI.Pack("tickBitmap", wordPos)
+	if err != nil {
+		return nil, fmt.Errorf("pack tickBitmap: %w", err)
+	}
+	output, err := r.client.CallContract(ctx, poolAddress, data, blockNumber)
+	if err != nil {
+		return nil, err
+	}
+	if len(output) == 0 {
+		return nil, fmt.Errorf("returned empty data")
+	}
+	return output, nil
 }
 
 func bitmapFlipFromWord(bitmap *market.TickBitmap, wordPos int16, word *big.Int, tickSpacing int32, initialized *[]int32) {
@@ -247,11 +396,22 @@ func bitmapFlipFromWord(bitmap *market.TickBitmap, wordPos int16, word *big.Int,
 	}
 }
 
-func unpackAddress(poolABI abi.ABI, method string, result MulticallResult) (common.Address, error) {
+func unpackCallResult(poolABI abi.ABI, method string, result MulticallResult) ([]interface{}, error) {
 	if !result.Success {
-		return common.Address{}, fmt.Errorf("%s call failed", method)
+		return nil, fmt.Errorf("call failed")
+	}
+	if len(result.ReturnData) == 0 {
+		return nil, fmt.Errorf("returned empty data (RPC may be rate-limited or block state unavailable; retry or use another endpoint)")
 	}
 	values, err := poolABI.Unpack(method, result.ReturnData)
+	if err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
+func unpackAddress(poolABI abi.ABI, method string, result MulticallResult) (common.Address, error) {
+	values, err := unpackCallResult(poolABI, method, result)
 	if err != nil {
 		return common.Address{}, err
 	}
@@ -263,10 +423,7 @@ func unpackAddress(poolABI abi.ABI, method string, result MulticallResult) (comm
 }
 
 func unpackUint32(poolABI abi.ABI, method string, result MulticallResult) (uint32, error) {
-	if !result.Success {
-		return 0, fmt.Errorf("%s call failed", method)
-	}
-	values, err := poolABI.Unpack(method, result.ReturnData)
+	values, err := unpackCallResult(poolABI, method, result)
 	if err != nil {
 		return 0, err
 	}
@@ -281,10 +438,7 @@ func unpackUint32(poolABI abi.ABI, method string, result MulticallResult) (uint3
 }
 
 func unpackInt24(poolABI abi.ABI, method string, result MulticallResult) (int32, error) {
-	if !result.Success {
-		return 0, fmt.Errorf("%s call failed", method)
-	}
-	values, err := poolABI.Unpack(method, result.ReturnData)
+	values, err := unpackCallResult(poolABI, method, result)
 	if err != nil {
 		return 0, err
 	}
@@ -292,10 +446,7 @@ func unpackInt24(poolABI abi.ABI, method string, result MulticallResult) (int32,
 }
 
 func unpackBigInt(poolABI abi.ABI, method string, result MulticallResult) (*big.Int, error) {
-	if !result.Success {
-		return nil, fmt.Errorf("%s call failed", method)
-	}
-	values, err := poolABI.Unpack(method, result.ReturnData)
+	values, err := unpackCallResult(poolABI, method, result)
 	if err != nil {
 		return nil, err
 	}

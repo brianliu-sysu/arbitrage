@@ -64,6 +64,9 @@ func loadConfig(params Params) (config.Config, error) {
 	if cfg.RPC.URL == "" {
 		return config.Config{}, fmt.Errorf("rpc.url is required")
 	}
+	if cfg.RPC.WSURL == "" {
+		return config.Config{}, fmt.Errorf("rpc.ws_url is required for block head subscription")
+	}
 	return cfg, nil
 }
 

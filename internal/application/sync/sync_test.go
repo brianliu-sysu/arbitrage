@@ -253,6 +253,77 @@ func TestBlockApplyServiceApplyBlock(t *testing.T) {
 	}
 }
 
+func TestBlockApplyServiceMarkPoolsReady(t *testing.T) {
+	ctx := context.Background()
+	poolRepo := newMemoryPoolRepo()
+	readiness := syncapp.NewReadinessService()
+	blockApply := syncapp.NewBlockApplyService(poolRepo, newMemoryCheckpointRepo(), nil, readiness, nil)
+
+	pool := market.NewPool(testPoolAddress(), common.Address{}, common.Address{}, 3000, 60)
+	pool.Status = market.PoolStatusCatchingUp
+	if err := poolRepo.Save(ctx, pool); err != nil {
+		t.Fatalf("save pool: %v", err)
+	}
+
+	if err := blockApply.MarkPoolsReady(ctx, []common.Address{testPoolAddress()}); err != nil {
+		t.Fatalf("mark pools ready: %v", err)
+	}
+
+	loaded, err := poolRepo.Get(ctx, testPoolAddress())
+	if err != nil {
+		t.Fatalf("load pool: %v", err)
+	}
+	if loaded.Status != market.PoolStatusReady {
+		t.Fatalf("expected ready status, got %s", loaded.Status)
+	}
+	if !readiness.IsPoolReady(testPoolAddress()) {
+		t.Fatal("expected pool ready in readiness service")
+	}
+}
+
+func TestCatchupServiceSkipsWhenPoolAheadOfCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	poolRepo := newMemoryPoolRepo()
+	checkpointRepo := newMemoryCheckpointRepo()
+	registry := newMemoryRegistry(testPoolAddress())
+
+	services := syncapp.NewServices(syncapp.ServiceDeps{
+		Config:      syncapp.DefaultConfig(),
+		Pools:       poolRepo,
+		Checkpoints: checkpointRepo,
+		Registry:    registry,
+		Fetcher:     &stubLogFetcher{},
+		Parser:      &stubParser{},
+		Blocks:      newStubBlockReader(blockchain.BlockHeader{Number: 200, Hash: common.HexToHash("0x200")}),
+		Bootstrap:   stubBootstrapReader{},
+	})
+
+	pool := market.NewPool(testPoolAddress(), common.Address{}, common.Address{}, 3000, 60)
+	sqrtPrice, _ := new(big.Int).SetString("79228162514264337593543950336", 10)
+	pool.State.SqrtPriceX96 = sqrtPrice
+	pool.State.Tick = 0
+	pool.LastBlockNumber = 200
+	if err := poolRepo.Save(ctx, pool); err != nil {
+		t.Fatalf("save pool: %v", err)
+	}
+	if err := checkpointRepo.Save(ctx, &blockchain.Checkpoint{
+		PoolAddress: testPoolAddress(),
+		BlockNumber: 150,
+		BlockHash:   common.HexToHash("0x150"),
+	}); err != nil {
+		t.Fatalf("save checkpoint: %v", err)
+	}
+
+	if err := services.Catchup.CatchUpPool(ctx, testPoolAddress(), 200); err != nil {
+		t.Fatalf("catch up pool: %v", err)
+	}
+
+	checkpoint, err := checkpointRepo.Get(ctx, testPoolAddress())
+	if err != nil || checkpoint == nil || checkpoint.BlockNumber != 150 {
+		t.Fatalf("expected checkpoint to remain at 150, got %#v err=%v", checkpoint, err)
+	}
+}
+
 func TestCatchupServiceCatchUpPool(t *testing.T) {
 	ctx := context.Background()
 	poolRepo := newMemoryPoolRepo()
@@ -371,5 +442,12 @@ func TestHeadSyncServiceHandleHead(t *testing.T) {
 	}
 	if !services.Readiness.IsPoolReady(testPoolAddress()) {
 		t.Fatal("expected pool ready after head sync")
+	}
+	loaded, err := poolRepo.Get(ctx, testPoolAddress())
+	if err != nil {
+		t.Fatalf("load pool: %v", err)
+	}
+	if loaded.Status != market.PoolStatusReady {
+		t.Fatalf("expected ready status after head sync, got %s", loaded.Status)
 	}
 }

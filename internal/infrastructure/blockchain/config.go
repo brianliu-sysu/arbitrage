@@ -7,6 +7,7 @@ import (
 // Config holds RPC and Uniswap V3 contract addresses.
 type Config struct {
 	RPCURL           string
+	WSURL            string
 	FactoryAddress   common.Address
 	MulticallAddress common.Address
 }

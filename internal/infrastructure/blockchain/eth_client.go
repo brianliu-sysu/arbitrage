@@ -16,9 +16,11 @@ import (
 
 // EthClient wraps go-ethereum RPC access.
 type EthClient struct {
-	url    string
-	client *ethclient.Client
-	mu     sync.Mutex
+	url      string
+	wsURL    string
+	client   *ethclient.Client
+	wsClient *ethclient.Client
+	mu       sync.Mutex
 }
 
 func NewEthClient(cfg Config) (*EthClient, error) {
@@ -29,7 +31,23 @@ func NewEthClient(cfg Config) (*EthClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dial rpc: %w", err)
 	}
-	return &EthClient{url: cfg.RPCURL, client: client}, nil
+
+	ethClient := &EthClient{
+		url:    cfg.RPCURL,
+		wsURL:  cfg.WSURL,
+		client: client,
+	}
+	if strings.TrimSpace(cfg.WSURL) == "" {
+		return ethClient, nil
+	}
+
+	wsClient, err := ethclient.Dial(cfg.WSURL)
+	if err != nil {
+		client.Close()
+		return nil, fmt.Errorf("dial ws rpc: %w", err)
+	}
+	ethClient.wsClient = wsClient
+	return ethClient, nil
 }
 
 func (c *EthClient) Client() *ethclient.Client {
@@ -39,6 +57,10 @@ func (c *EthClient) Client() *ethclient.Client {
 func (c *EthClient) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.wsClient != nil {
+		c.wsClient.Close()
+		c.wsClient = nil
+	}
 	if c.client != nil {
 		c.client.Close()
 		c.client = nil
@@ -74,14 +96,15 @@ func (c *EthClient) GetLatestBlockHeader(ctx context.Context) (domainchain.Block
 }
 
 func (c *EthClient) CallContract(ctx context.Context, to common.Address, data []byte, blockNumber uint64) ([]byte, error) {
-	var block *big.Int
-	if blockNumber > 0 {
-		block = new(big.Int).SetUint64(blockNumber)
-	}
-	return c.client.CallContract(ctx, ethereum.CallMsg{
-		To:   &to,
-		Data: data,
-	}, block)
+	return callContractWithRetry(ctx, c, to, data, blockNumber)
+}
+
+func (c *EthClient) CodeAt(ctx context.Context, address common.Address, blockNumber uint64) ([]byte, error) {
+	return codeAtWithRetry(ctx, c, address, blockNumber)
+}
+
+func (c *EthClient) ChainID(ctx context.Context) (*big.Int, error) {
+	return c.client.ChainID(ctx)
 }
 
 func (c *EthClient) FilterLogs(ctx context.Context, query ethereum.FilterQuery) ([]types.Log, error) {
@@ -89,7 +112,10 @@ func (c *EthClient) FilterLogs(ctx context.Context, query ethereum.FilterQuery) 
 }
 
 func (c *EthClient) SubscribeNewHead(ctx context.Context, ch chan<- *types.Header) (ethereum.Subscription, error) {
-	return c.client.SubscribeNewHead(ctx, ch)
+	if c.wsClient == nil {
+		return nil, fmt.Errorf("websocket rpc is required for head subscription; set rpc.ws_url in config")
+	}
+	return c.wsClient.SubscribeNewHead(ctx, ch)
 }
 
 func headerToDomain(header *types.Header) domainchain.BlockHeader {

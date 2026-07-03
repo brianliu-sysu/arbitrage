@@ -40,7 +40,8 @@ type QuoteConfig struct {
 }
 
 type RPCConfig struct {
-	URL string `yaml:"url"`
+	URL    string `yaml:"url"`
+	WSURL  string `yaml:"ws_url"`
 }
 
 type DatabaseConfig struct {
@@ -183,6 +184,7 @@ func (c Config) BlockchainConfig() chaininfra.Config {
 	}
 	return chaininfra.Config{
 		RPCURL:           c.RPC.URL,
+		WSURL:            c.RPC.WSURL,
 		FactoryAddress:   factory,
 		MulticallAddress: multicall,
 	}

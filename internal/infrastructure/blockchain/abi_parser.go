@@ -32,6 +32,10 @@ func NewABIParser() (*ABIParser, error) {
 	return &ABIParser{poolABI: parsed}, nil
 }
 
+func PoolLogTopics() []common.Hash {
+	return []common.Hash{topicInitialize, topicSwap, topicMint, topicBurn}
+}
+
 func (p *ABIParser) ParsePoolEvents(logs []syncapp.RawLog) ([]market.PoolEvent, error) {
 	events := make([]market.PoolEvent, 0, len(logs))
 	for _, log := range logs {
@@ -136,9 +140,21 @@ func (p *ABIParser) parseMint(meta market.EventMeta, log syncapp.RawLog) (*marke
 		return nil, fmt.Errorf("mint event has %d values", len(values))
 	}
 	sender := values[0].(common.Address)
-	amount := values[1].(*big.Int)
-	amount0 := values[2].(*big.Int)
-	amount1 := values[3].(*big.Int)
+	amount, err := abiUintToBigInt(values[1])
+	if err != nil {
+		return nil, fmt.Errorf("mint amount: %w", err)
+	}
+	if amount.Sign() <= 0 {
+		return nil, nil
+	}
+	amount0, err := abiUintToBigInt(values[2])
+	if err != nil {
+		return nil, fmt.Errorf("mint amount0: %w", err)
+	}
+	amount1, err := abiUintToBigInt(values[3])
+	if err != nil {
+		return nil, fmt.Errorf("mint amount1: %w", err)
+	}
 
 	event := market.NewMintEvent(meta, sender, owner, tickLower, tickUpper, amount, amount0, amount1)
 	return &event, nil
@@ -165,9 +181,21 @@ func (p *ABIParser) parseBurn(meta market.EventMeta, log syncapp.RawLog) (*marke
 	if len(values) != 3 {
 		return nil, fmt.Errorf("burn event has %d values", len(values))
 	}
-	amount := values[0].(*big.Int)
-	amount0 := values[1].(*big.Int)
-	amount1 := values[2].(*big.Int)
+	amount, err := abiUintToBigInt(values[0])
+	if err != nil {
+		return nil, fmt.Errorf("burn amount: %w", err)
+	}
+	if amount.Sign() <= 0 {
+		return nil, nil
+	}
+	amount0, err := abiUintToBigInt(values[1])
+	if err != nil {
+		return nil, fmt.Errorf("burn amount0: %w", err)
+	}
+	amount1, err := abiUintToBigInt(values[2])
+	if err != nil {
+		return nil, fmt.Errorf("burn amount1: %w", err)
+	}
 
 	event := market.NewBurnEvent(meta, owner, tickLower, tickUpper, amount, amount0, amount1)
 	return &event, nil
@@ -179,6 +207,26 @@ func topicToInt24(topic common.Hash) (int32, error) {
 
 func int32ToABIInt24(value int32) *big.Int {
 	return big.NewInt(int64(value))
+}
+
+func abiUintToBigInt(value interface{}) (*big.Int, error) {
+	switch v := value.(type) {
+	case *big.Int:
+		if v == nil {
+			return nil, fmt.Errorf("nil big.Int")
+		}
+		return new(big.Int).Set(v), nil
+	case uint64:
+		return new(big.Int).SetUint64(v), nil
+	case uint32:
+		return new(big.Int).SetUint64(uint64(v)), nil
+	case uint16:
+		return new(big.Int).SetUint64(uint64(v)), nil
+	case uint8:
+		return new(big.Int).SetUint64(uint64(v)), nil
+	default:
+		return nil, fmt.Errorf("unsupported uint type %T", value)
+	}
 }
 
 func abiInt24ToInt32(value interface{}) (int32, error) {

@@ -82,6 +82,68 @@ func TestABIParserSwapEvent(t *testing.T) {
 	}
 }
 
+func TestABIParserBurnEvent(t *testing.T) {
+	parser := mustParser(t)
+	poolABI := mustPoolABI(t)
+
+	amount := big.NewInt(5_000_000)
+	data, err := poolABI.Events["Burn"].Inputs.NonIndexed().Pack(amount, big.NewInt(0), big.NewInt(1))
+	if err != nil {
+		t.Fatalf("pack burn: %v", err)
+	}
+
+	owner := common.HexToAddress("0x0000000000000000000000000000000000000002")
+	poolAddress := common.HexToAddress("0x0000000000000000000000000000000000000001")
+	events, err := parser.ParsePoolEvents([]syncapp.RawLog{{
+		Address: poolAddress,
+		Topics: []common.Hash{
+			topicBurn,
+			common.BytesToHash(common.LeftPadBytes(owner.Bytes(), 32)),
+			common.BytesToHash(common.LeftPadBytes(int32ToABIInt24(-120).Bytes(), 32)),
+			common.BytesToHash(common.LeftPadBytes(int32ToABIInt24(120).Bytes(), 32)),
+		},
+		Data:        data,
+		BlockNumber: 102,
+	}})
+	if err != nil {
+		t.Fatalf("parse burn: %v", err)
+	}
+	if len(events) != 1 || events[0].Kind != market.EventKindBurn {
+		t.Fatalf("unexpected events: %#v", events)
+	}
+	if events[0].Burn.Amount.Cmp(amount) != 0 {
+		t.Fatalf("expected burn amount %s, got %s", amount, events[0].Burn.Amount)
+	}
+}
+
+func TestABIParserSkipsZeroBurn(t *testing.T) {
+	parser := mustParser(t)
+	poolABI := mustPoolABI(t)
+
+	data, err := poolABI.Events["Burn"].Inputs.NonIndexed().Pack(big.NewInt(0), big.NewInt(1), big.NewInt(2))
+	if err != nil {
+		t.Fatalf("pack burn: %v", err)
+	}
+
+	events, err := parser.ParsePoolEvents([]syncapp.RawLog{{
+		Address: common.HexToAddress("0x0000000000000000000000000000000000000001"),
+		Topics: []common.Hash{
+			topicBurn,
+			common.BytesToHash(common.LeftPadBytes(common.Address{}.Bytes(), 32)),
+			common.BytesToHash(common.LeftPadBytes(int32ToABIInt24(-120).Bytes(), 32)),
+			common.BytesToHash(common.LeftPadBytes(int32ToABIInt24(120).Bytes(), 32)),
+		},
+		Data:        data,
+		BlockNumber: 103,
+	}})
+	if err != nil {
+		t.Fatalf("parse burn: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected zero burn to be skipped, got %#v", events)
+	}
+}
+
 func TestSortTokens(t *testing.T) {
 	tokenA := common.HexToAddress("0x0000000000000000000000000000000000000002")
 	tokenB := common.HexToAddress("0x0000000000000000000000000000000000000001")
