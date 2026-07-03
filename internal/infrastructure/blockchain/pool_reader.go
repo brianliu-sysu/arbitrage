@@ -198,7 +198,7 @@ func (r *PoolReader) readTickState(
 
 	requests := make([]MulticallRequest, len(initializedTicks))
 	for i, tick := range initializedTicks {
-		data, err := r.poolABI.Pack("ticks", tick)
+		data, err := r.poolABI.Pack("ticks", int32ToABIInt24(tick))
 		if err != nil {
 			return ticks, bitmap, fmt.Errorf("pack ticks: %w", err)
 		}

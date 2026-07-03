@@ -177,6 +177,10 @@ func topicToInt24(topic common.Hash) (int32, error) {
 	return abiInt24ToInt32(new(big.Int).SetBytes(topic.Bytes()))
 }
 
+func int32ToABIInt24(value int32) *big.Int {
+	return big.NewInt(int64(value))
+}
+
 func abiInt24ToInt32(value interface{}) (int32, error) {
 	switch v := value.(type) {
 	case int32:

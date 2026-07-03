@@ -1,2 +1,5 @@
 bin
 .idea
+
+*.yml
+*.yaml

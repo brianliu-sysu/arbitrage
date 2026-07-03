@@ -100,6 +100,15 @@ func mustParser(t *testing.T) *ABIParser {
 	return parser
 }
 
+func TestPackTicksCall(t *testing.T) {
+	poolABI := mustPoolABI(t)
+
+	_, err := poolABI.Pack("ticks", int32ToABIInt24(-887220))
+	if err != nil {
+		t.Fatalf("pack ticks: %v", err)
+	}
+}
+
 func mustPoolABI(t *testing.T) abi.ABI {
 	t.Helper()
 	parsed, err := abi.JSON(strings.NewReader(poolABIJSON))
