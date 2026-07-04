@@ -38,9 +38,10 @@ pools:
     refresh_interval: 10m
     first: 100
     skip: 0
-    order_by: totalValueLockedUSD
+    order_by: volume24h
     order_direction: desc
     min_total_value_locked_usd: "1000000"
+    min_volume_24h_usd: "200000"
     # Optional filters; leave empty to ignore.
     token0: ""
     token1: ""

@@ -105,7 +105,8 @@ type SubgraphPoolConfig struct {
 	OrderBy                string        `yaml:"order_by"`
 	OrderDirection         string        `yaml:"order_direction"`
 	MinTotalValueLockedUSD string        `yaml:"min_total_value_locked_usd"`
-	Token0                 string        `yaml:"token0"`
+	MinVolume24hUSD          string        `yaml:"min_volume_24h_usd"`
+	Token0                   string        `yaml:"token0"`
 	Token1                 string        `yaml:"token1"`
 	FeeTiers               []uint32      `yaml:"fee_tiers"`
 }
@@ -161,10 +162,12 @@ func Default() Config {
 		},
 		Pools: PoolsConfig{
 			Subgraph: SubgraphPoolConfig{
-				First:          100,
-				OrderBy:        "totalValueLockedUSD",
-				OrderDirection: "desc",
-				RefreshInterval: 10 * time.Minute,
+				First:                    100,
+				OrderBy:                  "volume24h",
+				OrderDirection:           "desc",
+				MinTotalValueLockedUSD:   "1000000",
+				MinVolume24hUSD:          "200000",
+				RefreshInterval:          10 * time.Minute,
 			},
 		},
 		HTTP: HTTPConfig{

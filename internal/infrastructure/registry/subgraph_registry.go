@@ -22,6 +22,7 @@ const defaultGraphQLTimeout = 30 * time.Second
 var allowedOrderBy = map[string]struct{}{
 	"totalValueLockedUSD": {},
 	"volumeUSD":           {},
+	"volume24h":           {},
 	"txCount":             {},
 	"feesUSD":             {},
 	"liquidity":           {},
@@ -50,7 +51,7 @@ func NewSubgraphRegistry(cfg config.SubgraphPoolConfig) *SubgraphRegistry {
 		cfg.First = 100
 	}
 	if cfg.OrderBy == "" {
-		cfg.OrderBy = "totalValueLockedUSD"
+		cfg.OrderBy = "volume24h"
 	}
 	if cfg.OrderDirection == "" {
 		cfg.OrderDirection = "desc"
@@ -157,7 +158,7 @@ func (r *SubgraphRegistry) currentAddressesLocked() []common.Address {
 }
 
 func (r *SubgraphRegistry) queryPools(ctx context.Context) ([]common.Address, error) {
-	query, variables, err := r.buildQuery()
+	query, variables, mode, err := r.buildQuery()
 	if err != nil {
 		return nil, err
 	}
@@ -197,42 +198,76 @@ func (r *SubgraphRegistry) queryPools(ctx context.Context) ([]common.Address, er
 	if len(response.Errors) > 0 {
 		return nil, fmt.Errorf("subgraph graphql error: %s", response.Errors[0].Message)
 	}
-	if response.Data.Pools == nil {
-		return nil, fmt.Errorf("subgraph response missing pools")
-	}
 
-	addresses := make([]common.Address, 0, len(response.Data.Pools))
-	for _, pool := range response.Data.Pools {
+	switch mode {
+	case queryModePoolDayData:
+		if response.Data.PoolDayDatas == nil {
+			return nil, fmt.Errorf("subgraph response missing poolDayDatas")
+		}
+		return poolAddressesFromDayData(response.Data.PoolDayDatas), nil
+	default:
+		if response.Data.Pools == nil {
+			return nil, fmt.Errorf("subgraph response missing pools")
+		}
+		return poolAddressesFromPools(response.Data.Pools), nil
+	}
+}
+
+func poolAddressesFromPools(pools []subgraphPool) []common.Address {
+	addresses := make([]common.Address, 0, len(pools))
+	for _, pool := range pools {
 		if pool.ID == "" {
 			continue
 		}
 		addresses = append(addresses, common.HexToAddress(pool.ID))
 	}
-	return addresses, nil
+	return addresses
 }
 
-func (r *SubgraphRegistry) buildQuery() (string, map[string]any, error) {
+func poolAddressesFromDayData(rows []subgraphPoolDayData) []common.Address {
+	addresses := make([]common.Address, 0, len(rows))
+	for _, row := range rows {
+		if row.Pool.ID == "" {
+			continue
+		}
+		addresses = append(addresses, common.HexToAddress(row.Pool.ID))
+	}
+	return addresses
+}
+
+type queryMode int
+
+const (
+	queryModePools queryMode = iota
+	queryModePoolDayData
+)
+
+func (r *SubgraphRegistry) buildQuery() (string, map[string]any, queryMode, error) {
 	orderBy := strings.TrimSpace(r.cfg.OrderBy)
 	if _, ok := allowedOrderBy[orderBy]; !ok {
-		return "", nil, fmt.Errorf("unsupported subgraph order_by %q", orderBy)
+		return "", nil, queryModePools, fmt.Errorf("unsupported subgraph order_by %q", orderBy)
 	}
 	orderDirection := strings.ToLower(strings.TrimSpace(r.cfg.OrderDirection))
 	if _, ok := allowedOrderDirection[orderDirection]; !ok {
-		return "", nil, fmt.Errorf("unsupported subgraph order_direction %q", orderDirection)
+		return "", nil, queryModePools, fmt.Errorf("unsupported subgraph order_direction %q", orderDirection)
 	}
 
-	where := make(map[string]any)
-	if r.cfg.MinTotalValueLockedUSD != "" {
-		where["totalValueLockedUSD_gt"] = r.cfg.MinTotalValueLockedUSD
+	if orderBy == "volume24h" {
+		return r.buildPoolDayDataQuery(orderDirection)
 	}
-	if token0 := strings.TrimSpace(r.cfg.Token0); token0 != "" {
-		where["token0"] = strings.ToLower(token0)
-	}
-	if token1 := strings.TrimSpace(r.cfg.Token1); token1 != "" {
-		where["token1"] = strings.ToLower(token1)
-	}
-	if len(r.cfg.FeeTiers) > 0 {
-		where["feeTier_in"] = r.cfg.FeeTiers
+	return r.buildPoolsQuery(orderBy, orderDirection)
+}
+
+func (r *SubgraphRegistry) buildPoolsQuery(orderBy, orderDirection string) (string, map[string]any, queryMode, error) {
+	where := r.buildPoolWhereFilter()
+	if r.cfg.MinVolume24hUSD != "" {
+		dayWhere := map[string]any{
+			"date": poolDayDate(r.clock()),
+		}
+		if volumeFilter := strings.TrimSpace(r.cfg.MinVolume24hUSD); volumeFilter != "" {
+			dayWhere["volumeUSD_gt"] = volumeFilter
+		}
+		where["poolDayData_"] = dayWhere
 	}
 
 	variables := map[string]any{
@@ -257,7 +292,64 @@ query Pools($first: Int!, $skip: Int!, $orderBy: Pool_orderBy!, $orderDirection:
     id
   }
 }`
-	return query, variables, nil
+	return query, variables, queryModePools, nil
+}
+
+func (r *SubgraphRegistry) buildPoolDayDataQuery(orderDirection string) (string, map[string]any, queryMode, error) {
+	where := map[string]any{
+		"date": poolDayDate(r.clock()),
+	}
+	if volumeFilter := strings.TrimSpace(r.cfg.MinVolume24hUSD); volumeFilter != "" {
+		where["volumeUSD_gt"] = volumeFilter
+	}
+	if poolWhere := r.buildPoolWhereFilter(); len(poolWhere) > 0 {
+		where["pool_"] = poolWhere
+	}
+
+	variables := map[string]any{
+		"first":          r.cfg.First,
+		"skip":           r.cfg.Skip,
+		"orderBy":        "volumeUSD",
+		"orderDirection": orderDirection,
+		"where":          where,
+	}
+
+	query := `
+query PoolDayDatas($first: Int!, $skip: Int!, $orderBy: PoolDayData_orderBy!, $orderDirection: OrderDirection!, $where: PoolDayData_filter) {
+  poolDayDatas(
+    first: $first
+    skip: $skip
+    orderBy: $orderBy
+    orderDirection: $orderDirection
+    where: $where
+  ) {
+    pool {
+      id
+    }
+  }
+}`
+	return query, variables, queryModePoolDayData, nil
+}
+
+func (r *SubgraphRegistry) buildPoolWhereFilter() map[string]any {
+	where := make(map[string]any)
+	if r.cfg.MinTotalValueLockedUSD != "" {
+		where["totalValueLockedUSD_gt"] = r.cfg.MinTotalValueLockedUSD
+	}
+	if token0 := strings.TrimSpace(r.cfg.Token0); token0 != "" {
+		where["token0"] = strings.ToLower(token0)
+	}
+	if token1 := strings.TrimSpace(r.cfg.Token1); token1 != "" {
+		where["token1"] = strings.ToLower(token1)
+	}
+	if len(r.cfg.FeeTiers) > 0 {
+		where["feeTier_in"] = r.cfg.FeeTiers
+	}
+	return where
+}
+
+func poolDayDate(now time.Time) int {
+	return int(now.Unix()/86400) * 86400
 }
 
 type graphQLRequest struct {
@@ -267,7 +359,8 @@ type graphQLRequest struct {
 
 type graphQLResponse struct {
 	Data struct {
-		Pools []subgraphPool `json:"pools"`
+		Pools        []subgraphPool         `json:"pools"`
+		PoolDayDatas []subgraphPoolDayData  `json:"poolDayDatas"`
 	} `json:"data"`
 	Errors []graphQLError `json:"errors"`
 }
@@ -278,6 +371,10 @@ type graphQLError struct {
 
 type subgraphPool struct {
 	ID string `json:"id"`
+}
+
+type subgraphPoolDayData struct {
+	Pool subgraphPool `json:"pool"`
 }
 
 var _ market.PoolRegistry = (*SubgraphRegistry)(nil)

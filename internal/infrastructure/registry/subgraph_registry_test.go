@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -76,8 +77,52 @@ func TestSubgraphRegistryBuildQueryValidation(t *testing.T) {
 		OrderBy:        "invalid",
 		OrderDirection: "desc",
 	})
-	if _, _, err := registry.buildQuery(); err == nil {
+	if _, _, _, err := registry.buildQuery(); err == nil {
 		t.Fatal("expected order_by validation error")
+	}
+}
+
+func TestSubgraphRegistryBuildPoolDayDataQuery(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	registry := NewSubgraphRegistry(config.SubgraphPoolConfig{
+		Enabled:                  true,
+		Endpoint:                 "http://example.com",
+		OrderBy:                  "volume24h",
+		OrderDirection:           "desc",
+		MinTotalValueLockedUSD:   "1000000",
+		MinVolume24hUSD:          "200000",
+	})
+	registry.clock = func() time.Time { return now }
+
+	query, variables, mode, err := registry.buildQuery()
+	if err != nil {
+		t.Fatalf("build query: %v", err)
+	}
+	if mode != queryModePoolDayData {
+		t.Fatalf("expected poolDayData query mode, got %d", mode)
+	}
+	if !strings.Contains(query, "poolDayDatas") {
+		t.Fatalf("expected poolDayDatas query, got %q", query)
+	}
+	where, ok := variables["where"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected where variables, got %#v", variables["where"])
+	}
+	if where["date"] != poolDayDate(now) {
+		t.Fatalf("expected date %d, got %#v", poolDayDate(now), where["date"])
+	}
+	if where["volumeUSD_gt"] != "200000" {
+		t.Fatalf("expected volume filter, got %#v", where["volumeUSD_gt"])
+	}
+	poolWhere, ok := where["pool_"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected nested pool filter, got %#v", where["pool_"])
+	}
+	if poolWhere["totalValueLockedUSD_gt"] != "1000000" {
+		t.Fatalf("expected tvl filter, got %#v", poolWhere["totalValueLockedUSD_gt"])
+	}
+	if variables["orderBy"] != "volumeUSD" || variables["orderDirection"] != "desc" {
+		t.Fatalf("unexpected sort variables: %#v", variables)
 	}
 }
 
@@ -97,9 +142,11 @@ func TestSubgraphRegistryUsesCacheUntilRefreshInterval(t *testing.T) {
 
 	now := time.Unix(0, 0)
 	registry := NewSubgraphRegistry(config.SubgraphPoolConfig{
-		Enabled:         true,
-		Endpoint:        server.URL,
-		RefreshInterval: time.Minute,
+		Enabled:          true,
+		Endpoint:         server.URL,
+		RefreshInterval:  time.Minute,
+		OrderBy:          "totalValueLockedUSD",
+		OrderDirection:   "desc",
 	})
 	registry.client = server.Client()
 	registry.clock = func() time.Time { return now }
