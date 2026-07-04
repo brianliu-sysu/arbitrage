@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/persistence/codec"
 	"github.com/ethereum/go-ethereum/common"
@@ -22,7 +23,7 @@ func NewPoolRepository(db *DB) *PoolRepository {
 	return &PoolRepository{db: db}
 }
 
-func (r *PoolRepository) Save(ctx context.Context, pool *market.Pool) error {
+func (r *PoolRepository) Save(ctx context.Context, pool *marketv3.Pool) error {
 	tx, err := r.db.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -41,7 +42,7 @@ func (r *PoolRepository) Save(ctx context.Context, pool *market.Pool) error {
 	return tx.Commit(ctx)
 }
 
-func (r *PoolRepository) Get(ctx context.Context, address common.Address) (*market.Pool, error) {
+func (r *PoolRepository) Get(ctx context.Context, address common.Address) (*marketv3.Pool, error) {
 	row := r.db.pool.QueryRow(ctx, `
 		SELECT token0, token1, fee, tick_spacing, status, last_block_number,
 		       sqrt_price_x96::text, tick, liquidity::text,
@@ -79,7 +80,7 @@ func (r *PoolRepository) Get(ctx context.Context, address common.Address) (*mark
 		return nil, err
 	}
 
-	pool := market.NewPool(address, codec.BytesToAddress(token0), codec.BytesToAddress(token1), fee, tickSpacing)
+	pool := marketv3.NewPool(address, codec.BytesToAddress(token0), codec.BytesToAddress(token1), fee, tickSpacing)
 	pool.Status = market.PoolStatus(status)
 	pool.LastBlockNumber = lastBlockNumber
 	pool.State = codec.PoolStateFromRow(
@@ -162,7 +163,7 @@ func (r *PoolRepository) advanceSyncProgressOne(ctx context.Context, address com
 	return nil
 }
 
-func upsertPool(ctx context.Context, tx pgx.Tx, pool *market.Pool) error {
+func upsertPool(ctx context.Context, tx pgx.Tx, pool *marketv3.Pool) error {
 	_, err := tx.Exec(ctx, `
 		INSERT INTO pools (
 			address, token0, token1, fee, tick_spacing, status, last_block_number,
@@ -204,7 +205,7 @@ func upsertPool(ctx context.Context, tx pgx.Tx, pool *market.Pool) error {
 	return nil
 }
 
-func replacePoolTicks(ctx context.Context, tx pgx.Tx, pool *market.Pool) error {
+func replacePoolTicks(ctx context.Context, tx pgx.Tx, pool *marketv3.Pool) error {
 	if _, err := tx.Exec(ctx, `DELETE FROM pool_ticks WHERE pool_address = $1`, codec.AddressToBytes(pool.Address)); err != nil {
 		return fmt.Errorf("delete pool ticks: %w", err)
 	}
@@ -224,7 +225,7 @@ func replacePoolTicks(ctx context.Context, tx pgx.Tx, pool *market.Pool) error {
 	return nil
 }
 
-func replacePoolBitmap(ctx context.Context, tx pgx.Tx, pool *market.Pool) error {
+func replacePoolBitmap(ctx context.Context, tx pgx.Tx, pool *marketv3.Pool) error {
 	if _, err := tx.Exec(ctx, `DELETE FROM pool_tick_bitmap WHERE pool_address = $1`, codec.AddressToBytes(pool.Address)); err != nil {
 		return fmt.Errorf("delete pool bitmap: %w", err)
 	}

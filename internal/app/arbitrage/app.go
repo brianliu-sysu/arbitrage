@@ -11,7 +11,8 @@ import (
 
 	arbitrageapp "github.com/brianliu-sysu/uniswapv3/internal/application/arbitrage"
 	quoteapp "github.com/brianliu-sysu/uniswapv3/internal/application/quote"
-	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
+	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/v3"
+	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/v4"
 	"github.com/brianliu-sysu/uniswapv3/internal/config"
 	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
 	chaininfra "github.com/brianliu-sysu/uniswapv3/internal/infrastructure/blockchain"
@@ -46,10 +47,13 @@ func Module(params Params) fx.Option {
 			newPersistence,
 			newBlockchain,
 			newPoolRegistry,
+			newV4PoolRegistry,
 			newRuntimeBundle,
 			provideSyncServices,
+			provideSyncV4Services,
 			provideArbitrageServices,
 			newSyncOrchestrator,
+			newSyncV4Orchestrator,
 			newQuoteAppService,
 			newHTTPRouter,
 		),
@@ -100,11 +104,19 @@ func newBlockchain(cfg config.Config) (*chaininfra.Services, error) {
 }
 
 func newPoolRegistry(cfg config.Config) *registry.CompositeRegistry {
-	return registry.NewCompositeRegistry(cfg.Pools)
+	return registry.NewCompositeRegistry(cfg.Sync.V3)
+}
+
+func newV4PoolRegistry(cfg config.Config) (*registry.CompositeV4Registry, error) {
+	if !cfg.Sync.V4.IsActive() {
+		return nil, nil
+	}
+	return registry.NewCompositeV4Registry(cfg.Sync.V4)
 }
 
 type runtimeBundle struct {
-	Sync      *syncapp.Services
+	Sync      *syncv3.Services
+	SyncV4    *syncv4.Services
 	Arbitrage *arbitrageapp.Services
 }
 
@@ -114,7 +126,8 @@ func newRuntimeBundle(
 	store *persistence.Services,
 	chain *chaininfra.Services,
 	poolRegistry *registry.CompositeRegistry,
-) *runtimeBundle {
+	v4PoolRegistry *registry.CompositeV4Registry,
+) (*runtimeBundle, error) {
 	deps := chain.SyncDeps()
 	persistDeps := store.SyncDeps()
 
@@ -124,9 +137,26 @@ func newRuntimeBundle(
 	deps.Checkpoints = persistDeps.Checkpoints
 	deps.Registry = poolRegistry
 	deps.Health = append(deps.Health, persistDeps.Health...)
-	deps.Listener = syncapp.NopChangedPoolsListener{}
+	deps.Listener = syncv3.NopChangedPoolsListener{}
 
-	syncServices := syncapp.NewServices(deps)
+	syncServices := syncv3.NewServices(deps)
+
+	var syncV4Services *syncv4.Services
+	if cfg.Sync.V4.IsActive() {
+		if v4PoolRegistry == nil {
+			return nil, fmt.Errorf("v4 pool registry is required when sync.v4 is enabled")
+		}
+		v4Deps := chain.SyncV4Deps()
+		v4Persist := store.SyncV4Deps()
+		v4Deps.Config = cfg.SyncConfig()
+		v4Deps.Pools = v4Persist.Pools
+		v4Deps.Snapshots = v4Persist.Snapshots
+		v4Deps.Checkpoints = v4Persist.Checkpoints
+		v4Deps.Registry = v4PoolRegistry
+		v4Deps.Health = append(v4Deps.Health, v4Persist.Health...)
+		v4Deps.Listener = syncv4.NopChangedPoolsListener{}
+		syncV4Services = syncv4.NewServices(v4Deps)
+	}
 
 	triangleCfg := cfg.Arbitrage.Triangle
 	strategies := arbitrageapp.TriangleStrategies(triangleCfg.StartTokenAddresses(), triangleCfg.MinNetProfit())
@@ -159,19 +189,31 @@ func newRuntimeBundle(
 
 	return &runtimeBundle{
 		Sync:      syncServices,
+		SyncV4:    syncV4Services,
 		Arbitrage: arbitrageServices,
-	}
+	}, nil
 }
 
-func provideSyncServices(bundle *runtimeBundle) *syncapp.Services {
+func provideSyncServices(bundle *runtimeBundle) *syncv3.Services {
 	return bundle.Sync
+}
+
+func provideSyncV4Services(bundle *runtimeBundle) *syncv4.Services {
+	return bundle.SyncV4
 }
 
 func provideArbitrageServices(bundle *runtimeBundle) *arbitrageapp.Services {
 	return bundle.Arbitrage
 }
 
-func newSyncOrchestrator(services *syncapp.Services, chain *chaininfra.Services) *syncapp.SyncOrchestrator {
+func newSyncOrchestrator(services *syncv3.Services, chain *chaininfra.Services) *syncv3.SyncOrchestrator {
+	return services.NewOrchestrator(chain.Client)
+}
+
+func newSyncV4Orchestrator(services *syncv4.Services, chain *chaininfra.Services) *syncv4.SyncOrchestrator {
+	if services == nil {
+		return nil
+	}
 	return services.NewOrchestrator(chain.Client)
 }
 
@@ -179,7 +221,7 @@ func newQuoteAppService(
 	cfg config.Config,
 	store *persistence.Services,
 	poolRegistry *registry.CompositeRegistry,
-	syncServices *syncapp.Services,
+	syncServices *syncv3.Services,
 ) *quoteapp.QuoteAppService {
 	maxHops := cfg.Quote.MaxHops
 	if maxHops <= 0 {
@@ -201,28 +243,31 @@ func newHTTPRouter(quoteService *quoteapp.QuoteAppService) *gin.Engine {
 }
 
 type syncLifecycle struct {
-	cancel       context.CancelFunc
-	orchestrator *syncapp.SyncOrchestrator
-	chain        *chaininfra.Services
-	store        *persistence.Services
-	cfg          config.Config
-	logger       *zap.Logger
+	cancel         context.CancelFunc
+	orchestrator   *syncv3.SyncOrchestrator
+	orchestratorV4 *syncv4.SyncOrchestrator
+	chain          *chaininfra.Services
+	store          *persistence.Services
+	cfg            config.Config
+	logger         *zap.Logger
 }
 
 func registerSyncLifecycle(
 	lifecycle fx.Lifecycle,
 	cfg config.Config,
 	logger *zap.Logger,
-	orchestrator *syncapp.SyncOrchestrator,
+	orchestrator *syncv3.SyncOrchestrator,
+	orchestratorV4 *syncv4.SyncOrchestrator,
 	chain *chaininfra.Services,
 	store *persistence.Services,
 ) {
 	runner := &syncLifecycle{
-		orchestrator: orchestrator,
-		chain:        chain,
-		store:        store,
-		cfg:          cfg,
-		logger:       logger,
+		orchestrator:   orchestrator,
+		orchestratorV4: orchestratorV4,
+		chain:          chain,
+		store:          store,
+		cfg:            cfg,
+		logger:         logger,
 	}
 	lifecycle.Append(fx.Hook{
 		OnStart: runner.start,
@@ -236,15 +281,27 @@ func (r *syncLifecycle) start(_ context.Context) error {
 
 	r.logger.Info("starting pool sync",
 		zap.String("persistence", r.store.BackendName()),
-		zap.Bool("subgraph", r.cfg.Pools.Subgraph.IsEnabled()),
-		zap.Int("static_pools", len(r.cfg.Pools.Static)),
+		zap.Bool("v3", r.cfg.Sync.V3.IsActive()),
+		zap.Bool("v3_subgraph", r.cfg.Sync.V3.Subgraph.IsEnabled()),
+		zap.Int("v3_pools", len(r.cfg.Sync.V3.Pools)),
+		zap.Bool("v4", r.cfg.Sync.V4.IsActive()),
+		zap.Int("v4_poolmanager_pools", len(r.cfg.Sync.V4.PoolManager.Pools)),
+		zap.Bool("v4_subgraph", r.cfg.Sync.V4.Subgraph.IsEnabled()),
 	)
 
 	go func() {
 		if err := r.orchestrator.Start(runCtx); err != nil && !errors.Is(err, context.Canceled) {
-			r.logger.Error("pool sync stopped", zap.Error(err))
+			r.logger.Error("v3 pool sync stopped", zap.Error(err))
 		}
 	}()
+
+	if r.orchestratorV4 != nil {
+		go func() {
+			if err := r.orchestratorV4.Start(runCtx); err != nil && !errors.Is(err, context.Canceled) {
+				r.logger.Error("v4 pool sync stopped", zap.Error(err))
+			}
+		}()
+	}
 	return nil
 }
 

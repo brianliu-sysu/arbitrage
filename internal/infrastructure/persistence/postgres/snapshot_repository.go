@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/persistence/codec"
 	"github.com/ethereum/go-ethereum/common"
@@ -21,7 +22,7 @@ func NewSnapshotRepository(db *DB) *SnapshotRepository {
 	return &SnapshotRepository{db: db}
 }
 
-func (r *SnapshotRepository) Save(ctx context.Context, snapshot *market.Snapshot) error {
+func (r *SnapshotRepository) Save(ctx context.Context, snapshot *marketv3.Snapshot) error {
 	tx, err := r.db.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -40,7 +41,7 @@ func (r *SnapshotRepository) Save(ctx context.Context, snapshot *market.Snapshot
 	return tx.Commit(ctx)
 }
 
-func (r *SnapshotRepository) GetLatest(ctx context.Context, poolAddress common.Address) (*market.Snapshot, error) {
+func (r *SnapshotRepository) GetLatest(ctx context.Context, poolAddress common.Address) (*marketv3.Snapshot, error) {
 	row := r.db.pool.QueryRow(ctx, `
 		SELECT block_number, sqrt_price_x96::text, tick, liquidity::text,
 		       fee_growth_global0_x128::text, fee_growth_global1_x128::text, created_at
@@ -52,7 +53,7 @@ func (r *SnapshotRepository) GetLatest(ctx context.Context, poolAddress common.A
 	return scanSnapshotRow(ctx, r.db.pool, poolAddress, row)
 }
 
-func (r *SnapshotRepository) GetAtBlock(ctx context.Context, poolAddress common.Address, blockNumber uint64) (*market.Snapshot, error) {
+func (r *SnapshotRepository) GetAtBlock(ctx context.Context, poolAddress common.Address, blockNumber uint64) (*marketv3.Snapshot, error) {
 	row := r.db.pool.QueryRow(ctx, `
 		SELECT block_number, sqrt_price_x96::text, tick, liquidity::text,
 		       fee_growth_global0_x128::text, fee_growth_global1_x128::text, created_at
@@ -73,7 +74,7 @@ func (r *SnapshotRepository) DeleteAfterBlock(ctx context.Context, poolAddress c
 	return nil
 }
 
-func upsertSnapshot(ctx context.Context, tx pgx.Tx, snapshot *market.Snapshot) error {
+func upsertSnapshot(ctx context.Context, tx pgx.Tx, snapshot *marketv3.Snapshot) error {
 	_, err := tx.Exec(ctx, `
 		INSERT INTO snapshots (
 			pool_address, block_number, sqrt_price_x96, tick, liquidity,
@@ -102,7 +103,7 @@ func upsertSnapshot(ctx context.Context, tx pgx.Tx, snapshot *market.Snapshot) e
 	return nil
 }
 
-func replaceSnapshotTicks(ctx context.Context, tx pgx.Tx, snapshot *market.Snapshot) error {
+func replaceSnapshotTicks(ctx context.Context, tx pgx.Tx, snapshot *marketv3.Snapshot) error {
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM snapshot_ticks
 		WHERE pool_address = $1 AND block_number = $2
@@ -126,7 +127,7 @@ func replaceSnapshotTicks(ctx context.Context, tx pgx.Tx, snapshot *market.Snaps
 	return nil
 }
 
-func replaceSnapshotBitmap(ctx context.Context, tx pgx.Tx, snapshot *market.Snapshot) error {
+func replaceSnapshotBitmap(ctx context.Context, tx pgx.Tx, snapshot *marketv3.Snapshot) error {
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM snapshot_tick_bitmap
 		WHERE pool_address = $1 AND block_number = $2
@@ -153,7 +154,7 @@ type snapshotRowScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanSnapshotRow(ctx context.Context, pool pgxQueryPool, poolAddress common.Address, row snapshotRowScanner) (*market.Snapshot, error) {
+func scanSnapshotRow(ctx context.Context, pool pgxQueryPool, poolAddress common.Address, row snapshotRowScanner) (*marketv3.Snapshot, error) {
 	var (
 		blockNumber            uint64
 		sqrtPrice, liquidity   string
@@ -177,7 +178,7 @@ func scanSnapshotRow(ctx context.Context, pool pgxQueryPool, poolAddress common.
 		return nil, err
 	}
 
-	return &market.Snapshot{
+	return &marketv3.Snapshot{
 		PoolAddress: poolAddress,
 		BlockNumber: blockNumber,
 		State: codec.PoolStateFromRow(

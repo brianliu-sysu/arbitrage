@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
-	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -36,8 +36,8 @@ func PoolLogTopics() []common.Hash {
 	return []common.Hash{topicInitialize, topicSwap, topicMint, topicBurn}
 }
 
-func (p *ABIParser) ParsePoolEvents(logs []syncapp.RawLog) ([]market.PoolEvent, error) {
-	events := make([]market.PoolEvent, 0, len(logs))
+func (p *ABIParser) ParsePoolEvents(logs []syncapp.RawLog) ([]marketv3.PoolEvent, error) {
+	events := make([]marketv3.PoolEvent, 0, len(logs))
 	for _, log := range logs {
 		if len(log.Topics) == 0 {
 			continue
@@ -53,8 +53,8 @@ func (p *ABIParser) ParsePoolEvents(logs []syncapp.RawLog) ([]market.PoolEvent, 
 	return events, nil
 }
 
-func (p *ABIParser) parseLog(log syncapp.RawLog) (*market.PoolEvent, error) {
-	meta := market.EventMeta{
+func (p *ABIParser) parseLog(log syncapp.RawLog) (*marketv3.PoolEvent, error) {
+	meta := marketv3.EventMeta{
 		PoolAddress: log.Address,
 		BlockNumber: log.BlockNumber,
 		TxIndex:     log.TxIndex,
@@ -75,7 +75,7 @@ func (p *ABIParser) parseLog(log syncapp.RawLog) (*market.PoolEvent, error) {
 	}
 }
 
-func (p *ABIParser) parseInitialize(meta market.EventMeta, log syncapp.RawLog) (*market.PoolEvent, error) {
+func (p *ABIParser) parseInitialize(meta marketv3.EventMeta, log syncapp.RawLog) (*marketv3.PoolEvent, error) {
 	values, err := p.poolABI.Unpack("Initialize", log.Data)
 	if err != nil {
 		return nil, err
@@ -88,11 +88,11 @@ func (p *ABIParser) parseInitialize(meta market.EventMeta, log syncapp.RawLog) (
 	if err != nil {
 		return nil, err
 	}
-	event := market.NewInitializeEvent(meta, sqrtPriceX96, tick)
+	event := marketv3.NewInitializeEvent(meta, sqrtPriceX96, tick)
 	return &event, nil
 }
 
-func (p *ABIParser) parseSwap(meta market.EventMeta, log syncapp.RawLog) (*market.PoolEvent, error) {
+func (p *ABIParser) parseSwap(meta marketv3.EventMeta, log syncapp.RawLog) (*marketv3.PoolEvent, error) {
 	if len(log.Topics) < 3 {
 		return nil, fmt.Errorf("swap event missing indexed topics")
 	}
@@ -114,11 +114,11 @@ func (p *ABIParser) parseSwap(meta market.EventMeta, log syncapp.RawLog) (*marke
 	if err != nil {
 		return nil, err
 	}
-	event := market.NewSwapEvent(meta, sender, recipient, amount0, amount1, sqrtPriceX96, liquidity, tick)
+	event := marketv3.NewSwapEvent(meta, sender, recipient, amount0, amount1, sqrtPriceX96, liquidity, tick)
 	return &event, nil
 }
 
-func (p *ABIParser) parseMint(meta market.EventMeta, log syncapp.RawLog) (*market.PoolEvent, error) {
+func (p *ABIParser) parseMint(meta marketv3.EventMeta, log syncapp.RawLog) (*marketv3.PoolEvent, error) {
 	if len(log.Topics) < 4 {
 		return nil, fmt.Errorf("mint event missing indexed topics")
 	}
@@ -156,11 +156,11 @@ func (p *ABIParser) parseMint(meta market.EventMeta, log syncapp.RawLog) (*marke
 		return nil, fmt.Errorf("mint amount1: %w", err)
 	}
 
-	event := market.NewMintEvent(meta, sender, owner, tickLower, tickUpper, amount, amount0, amount1)
+	event := marketv3.NewMintEvent(meta, sender, owner, tickLower, tickUpper, amount, amount0, amount1)
 	return &event, nil
 }
 
-func (p *ABIParser) parseBurn(meta market.EventMeta, log syncapp.RawLog) (*market.PoolEvent, error) {
+func (p *ABIParser) parseBurn(meta marketv3.EventMeta, log syncapp.RawLog) (*marketv3.PoolEvent, error) {
 	if len(log.Topics) < 4 {
 		return nil, fmt.Errorf("burn event missing indexed topics")
 	}
@@ -197,7 +197,7 @@ func (p *ABIParser) parseBurn(meta market.EventMeta, log syncapp.RawLog) (*marke
 		return nil, fmt.Errorf("burn amount1: %w", err)
 	}
 
-	event := market.NewBurnEvent(meta, owner, tickLower, tickUpper, amount, amount0, amount1)
+	event := marketv3.NewBurnEvent(meta, owner, tickLower, tickUpper, amount, amount0, amount1)
 	return &event, nil
 }
 

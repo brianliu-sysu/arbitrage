@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/big"
 
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -16,7 +17,7 @@ func NewQuoteService() *QuoteService {
 }
 
 // QuoteExactInput quotes an exact-input swap on a single pool.
-func (s *QuoteService) QuoteExactInput(pool *market.Pool, tokenIn, tokenOut common.Address, amountIn *big.Int) (QuoteResult, error) {
+func (s *QuoteService) QuoteExactInput(pool *marketv3.Pool, tokenIn, tokenOut common.Address, amountIn *big.Int) (QuoteResult, error) {
 	if pool == nil {
 		return QuoteResult{}, fmt.Errorf("pool is nil")
 	}
@@ -33,7 +34,7 @@ func (s *QuoteService) QuoteExactInput(pool *market.Pool, tokenIn, tokenOut comm
 }
 
 // QuoteExactOutput quotes an exact-output swap on a single pool.
-func (s *QuoteService) QuoteExactOutput(pool *market.Pool, tokenIn, tokenOut common.Address, amountOut *big.Int) (QuoteResult, error) {
+func (s *QuoteService) QuoteExactOutput(pool *marketv3.Pool, tokenIn, tokenOut common.Address, amountOut *big.Int) (QuoteResult, error) {
 	if pool == nil {
 		return QuoteResult{}, fmt.Errorf("pool is nil")
 	}
@@ -61,7 +62,7 @@ func (s *QuoteService) QuoteExactOutput(pool *market.Pool, tokenIn, tokenOut com
 }
 
 // QuoteRoute quotes an exact-input swap along a multi-hop route.
-func (s *QuoteService) QuoteRoute(pools map[common.Address]*market.Pool, route Route, amountIn *big.Int) (QuoteResult, error) {
+func (s *QuoteService) QuoteRoute(pools map[common.Address]*marketv3.Pool, route Route, amountIn *big.Int) (QuoteResult, error) {
 	if amountIn == nil || amountIn.Sign() <= 0 {
 		return QuoteResult{}, fmt.Errorf("amountIn must be positive")
 	}
@@ -107,7 +108,7 @@ type swapState struct {
 }
 
 func (s *QuoteService) swap(
-	pool *market.Pool,
+	pool *marketv3.Pool,
 	zeroForOne bool,
 	exactInput bool,
 	amountSpecified *big.Int,
@@ -161,7 +162,7 @@ func (s *QuoteService) swap(
 }
 
 func (s *QuoteService) runSwapStep(
-	pool *market.Pool,
+	pool *marketv3.Pool,
 	state *swapState,
 	zeroForOne bool,
 	exactInput bool,
@@ -247,7 +248,7 @@ func (s *QuoteService) runSwapStep(
 	return nil
 }
 
-func resolveSwapDirection(pool *market.Pool, tokenIn, tokenOut common.Address) (bool, error) {
+func resolveSwapDirection(pool *marketv3.Pool, tokenIn, tokenOut common.Address) (bool, error) {
 	switch {
 	case tokenIn == pool.Token0 && tokenOut == pool.Token1:
 		return true, nil

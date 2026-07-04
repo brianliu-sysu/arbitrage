@@ -8,7 +8,7 @@ import (
 
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
 	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
-	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -20,7 +20,7 @@ type ReadinessChecker interface {
 
 // OpportunityService generates opportunities from affected routes.
 type OpportunityService struct {
-	pools      market.PoolRepository
+	pools      marketv3.PoolRepository
 	quotes     *domainquote.QuoteService
 	evaluator  *domainarb.Evaluator
 	optimizer  *domainarb.Optimizer
@@ -37,7 +37,7 @@ type GenerateRequest struct {
 }
 
 func NewOpportunityService(
-	pools market.PoolRepository,
+	pools marketv3.PoolRepository,
 	quotes *domainquote.QuoteService,
 	gas domainarb.GasEstimator,
 	strategies []domainarb.Strategy,
@@ -156,8 +156,8 @@ func (s *OpportunityService) ensureRouteReady(routeRef domainarb.RouteRef) error
 	return nil
 }
 
-func (s *OpportunityService) loadRoutePools(ctx context.Context, route domainquote.Route) (map[common.Address]*market.Pool, error) {
-	pools := make(map[common.Address]*market.Pool, route.Len())
+func (s *OpportunityService) loadRoutePools(ctx context.Context, route domainquote.Route) (map[common.Address]*marketv3.Pool, error) {
+	pools := make(map[common.Address]*marketv3.Pool, route.Len())
 	for _, hop := range route.Hops {
 		if _, ok := pools[hop.PoolAddress]; ok {
 			continue
@@ -176,7 +176,7 @@ func (s *OpportunityService) loadRoutePools(ctx context.Context, route domainquo
 
 type routeQuoter struct {
 	quotes *domainquote.QuoteService
-	pools  map[common.Address]*market.Pool
+	pools  map[common.Address]*marketv3.Pool
 	route  domainquote.Route
 }
 

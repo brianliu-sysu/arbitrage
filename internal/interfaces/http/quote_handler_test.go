@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	quoteapp "github.com/brianliu-sysu/uniswapv3/internal/application/quote"
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
 	httpapi "github.com/brianliu-sysu/uniswapv3/internal/interfaces/http"
@@ -18,19 +19,19 @@ import (
 )
 
 type memoryPoolRepo struct {
-	pools map[common.Address]*market.Pool
+	pools map[common.Address]*marketv3.Pool
 }
 
 func newMemoryPoolRepo() *memoryPoolRepo {
-	return &memoryPoolRepo{pools: make(map[common.Address]*market.Pool)}
+	return &memoryPoolRepo{pools: make(map[common.Address]*marketv3.Pool)}
 }
 
-func (r *memoryPoolRepo) Save(_ context.Context, pool *market.Pool) error {
+func (r *memoryPoolRepo) Save(_ context.Context, pool *marketv3.Pool) error {
 	r.pools[pool.Address] = pool.Clone()
 	return nil
 }
 
-func (r *memoryPoolRepo) Get(_ context.Context, address common.Address) (*market.Pool, error) {
+func (r *memoryPoolRepo) Get(_ context.Context, address common.Address) (*marketv3.Pool, error) {
 	pool, ok := r.pools[address]
 	if !ok {
 		return nil, nil
@@ -88,11 +89,11 @@ func sqrtPriceAtTick0() *big.Int {
 	return v
 }
 
-func setupQuotedPool(address, token0, token1 common.Address) *market.Pool {
-	pool := market.NewPool(address, token0, token1, 3000, 60)
-	meta := market.EventMeta{PoolAddress: address, BlockNumber: 1}
-	_ = pool.Apply(market.NewInitializeEvent(meta, sqrtPriceAtTick0(), 0))
-	_ = pool.Apply(market.NewMintEvent(meta, common.Address{}, common.Address{}, -120, 120, big.NewInt(10_000_000_000_000), big.NewInt(1), big.NewInt(1)))
+func setupQuotedPool(address, token0, token1 common.Address) *marketv3.Pool {
+	pool := marketv3.NewPool(address, token0, token1, 3000, 60)
+	meta := marketv3.EventMeta{PoolAddress: address, BlockNumber: 1}
+	_ = pool.Apply(marketv3.NewInitializeEvent(meta, sqrtPriceAtTick0(), 0))
+	_ = pool.Apply(marketv3.NewMintEvent(meta, common.Address{}, common.Address{}, -120, 120, big.NewInt(10_000_000_000_000), big.NewInt(1), big.NewInt(1)))
 	pool.Status = market.PoolStatusReady
 	return pool
 }

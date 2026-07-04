@@ -82,3 +82,30 @@ func fetchBlockHeaders(
 	}
 	return results, nil
 }
+
+// BlockHashesFromLogs extracts block hashes from raw logs.
+func BlockHashesFromLogs(logs []RawLog) map[uint64]common.Hash {
+	return blockHashesFromLogs(logs)
+}
+
+// FetchBlockHeaders loads block hashes for the given block numbers.
+func FetchBlockHeaders(
+	ctx context.Context,
+	reader BlockReader,
+	blockNumbers []uint64,
+	concurrency int,
+) (map[uint64]common.Hash, error) {
+	return fetchBlockHeaders(ctx, reader, blockNumbers, concurrency)
+}
+
+// CatchupStartBlock returns the first block to replay from checkpoint and pool progress.
+func CatchupStartBlock(checkpointBlock, poolLastBlock uint64) uint64 {
+	fromBlock := uint64(1)
+	if checkpointBlock > 0 {
+		fromBlock = checkpointBlock + 1
+	}
+	if poolLastBlock > 0 && poolLastBlock+1 > fromBlock {
+		fromBlock = poolLastBlock + 1
+	}
+	return fromBlock
+}

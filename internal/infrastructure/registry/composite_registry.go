@@ -5,7 +5,7 @@ import (
 	"sort"
 
 	"github.com/brianliu-sysu/uniswapv3/internal/config"
-	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -16,9 +16,9 @@ type CompositeRegistry struct {
 	subgraphEnabled bool
 }
 
-func NewCompositeRegistry(cfg config.PoolsConfig) *CompositeRegistry {
+func NewCompositeRegistry(cfg config.V3SyncConfig) *CompositeRegistry {
 	return &CompositeRegistry{
-		static:          staticAddresses(cfg.Static),
+		static:          staticAddresses(cfg.Pools),
 		subgraph:        NewSubgraphRegistry(cfg.Subgraph),
 		subgraphEnabled: cfg.Subgraph.IsEnabled(),
 	}
@@ -81,4 +81,4 @@ func staticAddresses(pools []config.StaticPoolConfig) []common.Address {
 	return addresses
 }
 
-var _ market.PoolRegistry = (*CompositeRegistry)(nil)
+var _ marketv3.PoolRegistry = (*CompositeRegistry)(nil)

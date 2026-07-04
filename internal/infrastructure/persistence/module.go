@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 
-	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
+	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/v3"
+	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/v4"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
-	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v4"
 	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/persistence/memory"
 	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/persistence/postgres"
 )
@@ -21,10 +23,13 @@ type Config struct {
 
 // Services bundles repository implementations.
 type Services struct {
-	Pools         market.PoolRepository
-	Snapshots     market.SnapshotRepository
+	Pools         marketv3.PoolRepository
+	Snapshots     marketv3.SnapshotRepository
 	Checkpoints   blockchain.CheckpointRepository
 	Opportunities arbitrage.OpportunityRepository
+	V4Pools       marketv4.PoolRepository
+	V4Snapshots   marketv4.SnapshotRepository
+	V4Checkpoints blockchain.V4CheckpointRepository
 	Postgres      *postgres.DB
 
 	memory *memoryBundle
@@ -35,6 +40,9 @@ type memoryBundle struct {
 	snapshots     *memory.SnapshotRepository
 	checkpoints   *memory.CheckpointRepository
 	opportunities *memory.OpportunityRepository
+	v4Pools       *memory.V4PoolRepository
+	v4Snapshots   *memory.V4SnapshotRepository
+	v4Checkpoints *memory.V4CheckpointRepository
 }
 
 // MemoryServices returns in-memory repositories for local development and tests.
@@ -44,12 +52,18 @@ func MemoryServices() *Services {
 		snapshots:     memory.NewSnapshotRepository(),
 		checkpoints:   memory.NewCheckpointRepository(),
 		opportunities: memory.NewOpportunityRepository(),
+		v4Pools:       memory.NewV4PoolRepository(),
+		v4Snapshots:   memory.NewV4SnapshotRepository(),
+		v4Checkpoints: memory.NewV4CheckpointRepository(),
 	}
 	return &Services{
 		Pools:         bundle.pools,
 		Snapshots:     bundle.snapshots,
 		Checkpoints:   bundle.checkpoints,
 		Opportunities: bundle.opportunities,
+		V4Pools:       bundle.v4Pools,
+		V4Snapshots:   bundle.v4Snapshots,
+		V4Checkpoints: bundle.v4Checkpoints,
 		memory:        bundle,
 	}
 }
@@ -70,16 +84,32 @@ func NewServices(ctx context.Context, cfg Config) (*Services, error) {
 		Snapshots:     postgres.NewSnapshotRepository(db),
 		Checkpoints:   postgres.NewCheckpointRepository(db),
 		Opportunities: postgres.NewOpportunityRepository(db),
+		V4Pools:       memory.NewV4PoolRepository(),
+		V4Snapshots:   memory.NewV4SnapshotRepository(),
+		V4Checkpoints: memory.NewV4CheckpointRepository(),
 		Postgres:      db,
 	}, nil
 }
 
 // SyncDeps returns repositories for sync application wiring.
-func (s *Services) SyncDeps() syncapp.ServiceDeps {
-	deps := syncapp.ServiceDeps{
+func (s *Services) SyncDeps() syncv3.ServiceDeps {
+	deps := syncv3.ServiceDeps{
 		Pools:       s.Pools,
 		Snapshots:   s.Snapshots,
 		Checkpoints: s.Checkpoints,
+	}
+	if s.Postgres != nil {
+		deps.Health = append(deps.Health, s.Postgres)
+	}
+	return deps
+}
+
+// SyncV4Deps returns repositories for V4 sync application wiring.
+func (s *Services) SyncV4Deps() syncv4.ServiceDeps {
+	deps := syncv4.ServiceDeps{
+		Pools:       s.V4Pools,
+		Snapshots:   s.V4Snapshots,
+		Checkpoints: s.V4Checkpoints,
 	}
 	if s.Postgres != nil {
 		deps.Health = append(deps.Health, s.Postgres)

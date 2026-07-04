@@ -8,21 +8,29 @@ import (
 	"github.com/brianliu-sysu/uniswapv3/internal/config"
 )
 
-func TestLoadPoolsConfig(t *testing.T) {
+func TestLoadSyncV3Config(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := `
 database:
   url: postgres://localhost/univ3
-pools:
-  static:
-    - address: "0x88e6A0c2dDD26FEEb64F039a2c41296Fb728693B"
-      fee: 500
-  subgraph:
+sync:
+  v3:
     enabled: true
-    endpoint: "https://example.com/subgraph"
-    first: 50
-    fee_tiers: [500, 3000]
+    pools:
+      - address: "0x88e6A0c2dDD26FEEb64F039a2c41296Fb728693B"
+        fee: 500
+    subgraph:
+      enabled: true
+      endpoint: "https://example.com/subgraph"
+      first: 50
+      fee_tiers: [500, 3000]
+  v4:
+    enabled: false
+    poolmanager:
+      pools: []
+    subgraph:
+      enabled: false
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -34,6 +42,9 @@ pools:
 	}
 	if len(cfg.StaticPoolAddresses()) != 1 {
 		t.Fatalf("expected 1 static pool")
+	}
+	if !cfg.Sync.V3.IsActive() {
+		t.Fatal("expected v3 sync active")
 	}
 	if !cfg.SubgraphPoolSource().IsEnabled() {
 		t.Fatal("expected subgraph source enabled")

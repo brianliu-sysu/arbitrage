@@ -22,7 +22,6 @@ type Config struct {
 	Redis      RedisConfig      `yaml:"redis"`
 	Blockchain BlockchainConfig `yaml:"blockchain"`
 	Sync       SyncConfig       `yaml:"sync"`
-	Pools      PoolsConfig      `yaml:"pools"`
 	HTTP       HTTPConfig       `yaml:"http"`
 	Quote      QuoteConfig      `yaml:"quote"`
 	Arbitrage  ArbitrageConfig  `yaml:"arbitrage"`
@@ -69,8 +68,10 @@ type RedisConfig struct {
 }
 
 type BlockchainConfig struct {
-	FactoryAddress   string `yaml:"factory_address"`
-	MulticallAddress string `yaml:"multicall_address"`
+	FactoryAddress     string `yaml:"factory_address"`
+	MulticallAddress   string `yaml:"multicall_address"`
+	PoolManagerAddress string `yaml:"pool_manager_address"`
+	StateViewAddress   string `yaml:"state_view_address"`
 }
 
 type SyncConfig struct {
@@ -82,20 +83,45 @@ type SyncConfig struct {
 	SnapshotInterval             uint64        `yaml:"snapshot_interval"`
 	SnapshotFallback             time.Duration `yaml:"snapshot_fallback"`
 	ReorgMaxDepth                uint64        `yaml:"reorg_max_depth"`
+	V3                           V3SyncConfig  `yaml:"v3"`
+	V4                           V4SyncConfig  `yaml:"v4"`
 }
 
-type PoolsConfig struct {
-	Static   []StaticPoolConfig `yaml:"static"`
-	Subgraph SubgraphPoolConfig `yaml:"subgraph"`
+// V3SyncConfig configures Uniswap V3 pool sync sources.
+type V3SyncConfig struct {
+	Enabled  bool                 `yaml:"enabled"`
+	Pools    []StaticPoolConfig   `yaml:"pools"`
+	Subgraph SubgraphPoolConfig   `yaml:"subgraph"`
 }
 
-// StaticPoolConfig defines a pool tracked by explicit on-chain address.
+// V4SyncConfig configures Uniswap V4 pool sync sources.
+type V4SyncConfig struct {
+	Enabled      bool                 `yaml:"enabled"`
+	PoolManager  V4PoolManagerConfig  `yaml:"poolmanager"`
+	Subgraph     SubgraphPoolConfig   `yaml:"subgraph"`
+}
+
+// V4PoolManagerConfig lists V4 pools tracked via static PoolKey definitions.
+type V4PoolManagerConfig struct {
+	Pools []StaticV4PoolConfig `yaml:"pools"`
+}
+
+// StaticV4PoolConfig defines a V4 pool tracked by PoolKey fields.
+type StaticV4PoolConfig struct {
+	Currency0   string `yaml:"currency0"`
+	Currency1   string `yaml:"currency1"`
+	Fee         uint32 `yaml:"fee"`
+	TickSpacing int32  `yaml:"tick_spacing"`
+	Hooks       string `yaml:"hooks"`
+}
+
+// StaticPoolConfig defines a V3 pool tracked by explicit on-chain address.
 type StaticPoolConfig struct {
 	Address string `yaml:"address"`
 	Fee     uint32 `yaml:"fee"`
 }
 
-// SubgraphPoolConfig discovers pools from a Uniswap V3 subgraph.
+// SubgraphPoolConfig discovers pools from a Uniswap subgraph.
 type SubgraphPoolConfig struct {
 	Enabled                bool          `yaml:"enabled"`
 	Endpoint               string        `yaml:"endpoint"`
@@ -151,23 +177,26 @@ func Default() Config {
 	return Config{
 		App: AppConfig{Name: "univ3-arbitrage"},
 		Blockchain: BlockchainConfig{
-			FactoryAddress:   "0x1F98431c8aD98523631AE4a59f267346ea31F984",
-			MulticallAddress: "0xcA11bde05977b3631167028862bE2a173976CA11",
+			FactoryAddress:     "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+			MulticallAddress:   "0xcA11bde05977b3631167028862bE2a173976CA11",
+			PoolManagerAddress: "0x000000000004444c5dc75cb35838093bd135961",
+			StateViewAddress:   "0x7ffe42c4a5deea5b0fec41c94c136cf115597227",
 		},
 		Sync: SyncConfig{
 			CatchupBatchSize: 2000,
 			SnapshotInterval: 5000,
 			SnapshotFallback: 10 * time.Minute,
 			ReorgMaxDepth:    128,
-		},
-		Pools: PoolsConfig{
-			Subgraph: SubgraphPoolConfig{
-				First:                    100,
-				OrderBy:                  "volume24h",
-				OrderDirection:           "desc",
-				MinTotalValueLockedUSD:   "1000000",
-				MinVolume24hUSD:          "200000",
-				RefreshInterval:          10 * time.Minute,
+			V3: V3SyncConfig{
+				Enabled: true,
+				Subgraph: SubgraphPoolConfig{
+					First:                  100,
+					OrderBy:                "volume24h",
+					OrderDirection:         "desc",
+					MinTotalValueLockedUSD: "1000000",
+					MinVolume24hUSD:        "200000",
+					RefreshInterval:        10 * time.Minute,
+				},
 			},
 		},
 		HTTP: HTTPConfig{
@@ -220,12 +249,28 @@ func (c Config) Validate() error {
 	if c.Database.URL == "" {
 		return fmt.Errorf("database.url is required")
 	}
-	if c.Pools.Subgraph.Enabled && c.Pools.Subgraph.Endpoint == "" {
-		return fmt.Errorf("pools.subgraph.endpoint is required when subgraph is enabled")
+	if c.Sync.V3.Subgraph.Enabled && c.Sync.V3.Subgraph.Endpoint == "" {
+		return fmt.Errorf("sync.v3.subgraph.endpoint is required when subgraph is enabled")
 	}
-	for i, pool := range c.Pools.Static {
+	if c.Sync.V4.Subgraph.Enabled && c.Sync.V4.Subgraph.Endpoint == "" {
+		return fmt.Errorf("sync.v4.subgraph.endpoint is required when subgraph is enabled")
+	}
+	for i, pool := range c.Sync.V3.Pools {
 		if pool.Address == "" {
-			return fmt.Errorf("pools.static[%d].address is required", i)
+			return fmt.Errorf("sync.v3.pools[%d].address is required", i)
+		}
+	}
+	for i, pool := range c.Sync.V4.PoolManager.Pools {
+		if pool.Currency0 == "" || pool.Currency1 == "" {
+			return fmt.Errorf("sync.v4.poolmanager.pools[%d] requires currency0 and currency1", i)
+		}
+	}
+	if c.Sync.V4.IsActive() {
+		if c.Blockchain.PoolManagerAddress == "" {
+			return fmt.Errorf("blockchain.pool_manager_address is required when sync.v4 is enabled")
+		}
+		if c.Blockchain.StateViewAddress == "" {
+			return fmt.Errorf("blockchain.state_view_address is required when sync.v4 is enabled")
 		}
 	}
 	return nil
@@ -247,11 +292,21 @@ func (c Config) BlockchainConfig() chaininfra.Config {
 	if (multicall == common.Address{}) {
 		multicall = common.HexToAddress(Default().Blockchain.MulticallAddress)
 	}
+	poolManager := common.HexToAddress(c.Blockchain.PoolManagerAddress)
+	if (poolManager == common.Address{}) {
+		poolManager = common.HexToAddress(Default().Blockchain.PoolManagerAddress)
+	}
+	stateView := common.HexToAddress(c.Blockchain.StateViewAddress)
+	if (stateView == common.Address{}) {
+		stateView = common.HexToAddress(Default().Blockchain.StateViewAddress)
+	}
 	return chaininfra.Config{
-		RPCURL:           c.RPC.URL,
-		WSURL:            c.RPC.WSURL,
-		FactoryAddress:   factory,
-		MulticallAddress: multicall,
+		RPCURL:             c.RPC.URL,
+		WSURL:              c.RPC.WSURL,
+		FactoryAddress:     factory,
+		MulticallAddress:   multicall,
+		PoolManagerAddress: poolManager,
+		StateViewAddress:   stateView,
 	}
 }
 
@@ -285,8 +340,8 @@ func (c Config) SyncConfig() syncapp.Config {
 }
 
 func (c Config) StaticPoolAddresses() []common.Address {
-	addresses := make([]common.Address, 0, len(c.Pools.Static))
-	for _, pool := range c.Pools.Static {
+	addresses := make([]common.Address, 0, len(c.Sync.V3.Pools))
+	for _, pool := range c.Sync.V3.Pools {
 		if pool.Address == "" {
 			continue
 		}
@@ -295,17 +350,31 @@ func (c Config) StaticPoolAddresses() []common.Address {
 	return addresses
 }
 
-// PoolAddresses returns statically configured pool addresses.
+// PoolAddresses returns statically configured V3 pool addresses.
 func (c Config) PoolAddresses() []common.Address {
 	return c.StaticPoolAddresses()
 }
 
 func (c Config) SubgraphPoolSource() SubgraphPoolConfig {
-	return c.Pools.Subgraph
+	return c.Sync.V3.Subgraph
 }
 
 func (c SubgraphPoolConfig) IsEnabled() bool {
 	return c.Enabled && c.Endpoint != ""
+}
+
+func (c V3SyncConfig) IsActive() bool {
+	if !c.Enabled {
+		return false
+	}
+	return len(c.Pools) > 0 || c.Subgraph.IsEnabled()
+}
+
+func (c V4SyncConfig) IsActive() bool {
+	if !c.Enabled {
+		return false
+	}
+	return len(c.PoolManager.Pools) > 0 || c.Subgraph.IsEnabled()
 }
 
 func (c Config) TriangleArbitrageEnabled() bool {

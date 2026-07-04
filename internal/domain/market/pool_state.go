@@ -9,7 +9,7 @@ const (
 	MaxTick = 887272
 )
 
-// PoolState holds the mutable on-chain state of a Uniswap V3 pool.
+// PoolState holds the mutable concentrated-liquidity state shared by V3 and V4 pools.
 type PoolState struct {
 	SqrtPriceX96         *big.Int
 	Tick                 int32

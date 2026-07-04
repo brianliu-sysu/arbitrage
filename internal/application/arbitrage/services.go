@@ -7,7 +7,7 @@ import (
 
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
 	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
-	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
 	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap"
 )
@@ -15,8 +15,8 @@ import (
 // ServiceDeps contains dependencies for arbitrage application services.
 type ServiceDeps struct {
 	Logger              *zap.Logger
-	Pools               market.PoolRepository
-	Registry            market.PoolRegistry
+	Pools               marketv3.PoolRepository
+	Registry            marketv3.PoolRegistry
 	Quotes              *domainquote.QuoteService
 	Gas                 domainarb.GasEstimator
 	Strategies          []domainarb.Strategy
@@ -100,7 +100,7 @@ func registerTriangleRoutes(scan *ScanService, deps ServiceDeps) {
 }
 
 // BuildPoolGraph builds a routing graph from tracked pools.
-func BuildPoolGraph(ctx context.Context, registry market.PoolRegistry, pools market.PoolRepository) (domainquote.PoolGraph, error) {
+func BuildPoolGraph(ctx context.Context, registry marketv3.PoolRegistry, pools marketv3.PoolRepository) (domainquote.PoolGraph, error) {
 	if registry == nil {
 		return nil, fmt.Errorf("pool registry is nil")
 	}

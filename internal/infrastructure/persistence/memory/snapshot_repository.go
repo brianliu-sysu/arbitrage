@@ -5,7 +5,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
 	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/persistence/codec"
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -13,14 +13,14 @@ import (
 // SnapshotRepository is an in-memory SnapshotRepository.
 type SnapshotRepository struct {
 	mu        sync.RWMutex
-	snapshots map[common.Address][]*market.Snapshot
+	snapshots map[common.Address][]*marketv3.Snapshot
 }
 
 func NewSnapshotRepository() *SnapshotRepository {
-	return &SnapshotRepository{snapshots: make(map[common.Address][]*market.Snapshot)}
+	return &SnapshotRepository{snapshots: make(map[common.Address][]*marketv3.Snapshot)}
 }
 
-func (r *SnapshotRepository) Save(_ context.Context, snapshot *market.Snapshot) error {
+func (r *SnapshotRepository) Save(_ context.Context, snapshot *marketv3.Snapshot) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.snapshots[snapshot.PoolAddress] = append(r.snapshots[snapshot.PoolAddress], codec.CloneSnapshot(snapshot))
@@ -28,7 +28,7 @@ func (r *SnapshotRepository) Save(_ context.Context, snapshot *market.Snapshot) 
 	return nil
 }
 
-func (r *SnapshotRepository) GetLatest(_ context.Context, poolAddress common.Address) (*market.Snapshot, error) {
+func (r *SnapshotRepository) GetLatest(_ context.Context, poolAddress common.Address) (*marketv3.Snapshot, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	items := r.snapshots[poolAddress]
@@ -38,7 +38,7 @@ func (r *SnapshotRepository) GetLatest(_ context.Context, poolAddress common.Add
 	return codec.CloneSnapshot(items[len(items)-1]), nil
 }
 
-func (r *SnapshotRepository) GetAtBlock(_ context.Context, poolAddress common.Address, blockNumber uint64) (*market.Snapshot, error) {
+func (r *SnapshotRepository) GetAtBlock(_ context.Context, poolAddress common.Address, blockNumber uint64) (*marketv3.Snapshot, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for i := len(r.snapshots[poolAddress]) - 1; i >= 0; i-- {
@@ -53,7 +53,7 @@ func (r *SnapshotRepository) DeleteAfterBlock(_ context.Context, poolAddress com
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	items := r.snapshots[poolAddress]
-	kept := make([]*market.Snapshot, 0, len(items))
+	kept := make([]*marketv3.Snapshot, 0, len(items))
 	for _, snapshot := range items {
 		if snapshot.BlockNumber <= blockNumber {
 			kept = append(kept, snapshot)
@@ -63,7 +63,7 @@ func (r *SnapshotRepository) DeleteAfterBlock(_ context.Context, poolAddress com
 	return nil
 }
 
-func sortSnapshots(items []*market.Snapshot) {
+func sortSnapshots(items []*marketv3.Snapshot) {
 	sort.Slice(items, func(i, j int) bool {
 		return items[i].BlockNumber < items[j].BlockNumber
 	})

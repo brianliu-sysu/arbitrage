@@ -8,13 +8,14 @@ import (
 
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/persistence/memory"
 	"github.com/ethereum/go-ethereum/common"
 )
 
-func testPool() *market.Pool {
-	pool := market.NewPool(
+func testPool() *marketv3.Pool {
+	pool := marketv3.NewPool(
 		common.HexToAddress("0x0000000000000000000000000000000000000001"),
 		common.HexToAddress("0x0000000000000000000000000000000000000002"),
 		common.HexToAddress("0x0000000000000000000000000000000000000003"),
@@ -87,7 +88,7 @@ func TestSnapshotRepositorySaveGetLatest(t *testing.T) {
 	ctx := context.Background()
 	repo := memory.NewSnapshotRepository()
 	pool := testPool()
-	snapshot := market.NewSnapshot(pool, 10, time.Unix(0, 0).UTC())
+	snapshot := marketv3.NewSnapshot(pool, 10, time.Unix(0, 0).UTC())
 
 	if err := repo.Save(ctx, snapshot); err != nil {
 		t.Fatalf("save snapshot: %v", err)

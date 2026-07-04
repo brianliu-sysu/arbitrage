@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
-	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -33,7 +33,7 @@ func TestABIParserInitializeEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse initialize: %v", err)
 	}
-	if len(events) != 1 || events[0].Kind != market.EventKindInitialize {
+	if len(events) != 1 || events[0].Kind != marketv3.EventKindInitialize {
 		t.Fatalf("unexpected events: %#v", events)
 	}
 	if events[0].Initialize.Tick != 0 {
@@ -74,7 +74,7 @@ func TestABIParserSwapEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse swap: %v", err)
 	}
-	if len(events) != 1 || events[0].Kind != market.EventKindSwap {
+	if len(events) != 1 || events[0].Kind != marketv3.EventKindSwap {
 		t.Fatalf("unexpected events: %#v", events)
 	}
 	if events[0].Swap.Liquidity.Cmp(big.NewInt(1000)) != 0 {
@@ -108,7 +108,7 @@ func TestABIParserBurnEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse burn: %v", err)
 	}
-	if len(events) != 1 || events[0].Kind != market.EventKindBurn {
+	if len(events) != 1 || events[0].Kind != marketv3.EventKindBurn {
 		t.Fatalf("unexpected events: %#v", events)
 	}
 	if events[0].Burn.Amount.Cmp(amount) != 0 {

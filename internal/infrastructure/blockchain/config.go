@@ -4,12 +4,14 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// Config holds RPC and Uniswap V3 contract addresses.
+// Config holds RPC and Uniswap contract addresses.
 type Config struct {
-	RPCURL           string
-	WSURL            string
-	FactoryAddress   common.Address
-	MulticallAddress common.Address
+	RPCURL             string
+	WSURL              string
+	FactoryAddress     common.Address
+	MulticallAddress   common.Address
+	PoolManagerAddress common.Address
+	StateViewAddress   common.Address
 }
 
 func DefaultConfig(rpcURL string) Config {

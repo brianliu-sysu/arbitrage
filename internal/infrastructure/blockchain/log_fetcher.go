@@ -6,6 +6,7 @@ import (
 	"math/big"
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
+	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/v3"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -19,7 +20,7 @@ func NewLogFetcher(client *EthClient) *LogFetcher {
 	return &LogFetcher{client: client}
 }
 
-func (f *LogFetcher) FetchLogs(ctx context.Context, filter syncapp.LogFilter) ([]syncapp.RawLog, error) {
+func (f *LogFetcher) FetchLogs(ctx context.Context, filter syncv3.LogFilter) ([]syncapp.RawLog, error) {
 	if filter.ToBlock < filter.FromBlock {
 		return nil, fmt.Errorf("invalid block range: from %d to %d", filter.FromBlock, filter.ToBlock)
 	}

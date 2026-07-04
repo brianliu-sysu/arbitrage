@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/brianliu-sysu/uniswapv3/internal/config"
-	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -377,4 +377,4 @@ type subgraphPoolDayData struct {
 	Pool subgraphPool `json:"pool"`
 }
 
-var _ market.PoolRegistry = (*SubgraphRegistry)(nil)
+var _ marketv3.PoolRegistry = (*SubgraphRegistry)(nil)

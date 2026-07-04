@@ -4,17 +4,23 @@ import (
 	"fmt"
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
+	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/v3"
+	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/v4"
+	"github.com/ethereum/go-ethereum/common"
 )
 
 // Services bundles blockchain infrastructure adapters for sync wiring.
 type Services struct {
-	Client     *EthClient
-	Multicall  *Multicall
-	LogFetcher *LogFetcher
-	HeadSub    *HeadSubscriber
-	Parser     *ABIParser
-	Factory    *FactoryReader
-	PoolReader *PoolReader
+	Client       *EthClient
+	Multicall    *Multicall
+	LogFetcher   *LogFetcher
+	HeadSub      *HeadSubscriber
+	Parser       *ABIParser
+	Factory      *FactoryReader
+	PoolReader   *PoolReader
+	V4LogFetcher *V4LogFetcher
+	V4Parser     *V4ABIParser
+	V4PoolReader *V4PoolReader
 }
 
 func NewServices(cfg Config) (*Services, error) {
@@ -47,14 +53,32 @@ func NewServices(cfg Config) (*Services, error) {
 		return nil, fmt.Errorf("create pool reader: %w", err)
 	}
 
+	v4Parser, err := NewV4ABIParser()
+	if err != nil {
+		client.Close()
+		return nil, fmt.Errorf("create v4 abi parser: %w", err)
+	}
+
+	var v4PoolReader *V4PoolReader
+	if (cfg.StateViewAddress != common.Address{}) {
+		v4PoolReader, err = NewV4PoolReader(client, multicall, cfg.StateViewAddress)
+		if err != nil {
+			client.Close()
+			return nil, fmt.Errorf("create v4 pool reader: %w", err)
+		}
+	}
+
 	return &Services{
-		Client:     client,
-		Multicall:  multicall,
-		LogFetcher: NewLogFetcher(client),
-		HeadSub:    NewHeadSubscriber(client),
-		Parser:     parser,
-		Factory:    factory,
-		PoolReader: poolReader,
+		Client:       client,
+		Multicall:    multicall,
+		LogFetcher:   NewLogFetcher(client),
+		HeadSub:      NewHeadSubscriber(client),
+		Parser:       parser,
+		Factory:      factory,
+		PoolReader:   poolReader,
+		V4LogFetcher: NewV4LogFetcher(client, cfg.PoolManagerAddress),
+		V4Parser:     v4Parser,
+		V4PoolReader: v4PoolReader,
 	}, nil
 }
 
@@ -65,12 +89,24 @@ func (s *Services) Close() {
 }
 
 // SyncDeps returns application sync dependencies backed by this package.
-func (s *Services) SyncDeps() syncapp.ServiceDeps {
-	return syncapp.ServiceDeps{
+func (s *Services) SyncDeps() syncv3.ServiceDeps {
+	return syncv3.ServiceDeps{
 		Fetcher:    s.LogFetcher,
 		Parser:     s.Parser,
 		Blocks:     s.Client,
 		Bootstrap:  s.PoolReader,
+		Subscriber: s.HeadSub,
+		Health:     []syncapp.HealthProbe{s.Client},
+	}
+}
+
+// SyncV4Deps returns application V4 sync dependencies backed by this package.
+func (s *Services) SyncV4Deps() syncv4.ServiceDeps {
+	return syncv4.ServiceDeps{
+		Fetcher:    s.V4LogFetcher,
+		Parser:     s.V4Parser,
+		Blocks:     s.Client,
+		Bootstrap:  s.V4PoolReader,
 		Subscriber: s.HeadSub,
 		Health:     []syncapp.HealthProbe{s.Client},
 	}

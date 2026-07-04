@@ -6,7 +6,7 @@ import (
 	"math/big"
 
 	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
-	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -18,16 +18,16 @@ type ReadinessChecker interface {
 
 // QuoteAppService orchestrates route discovery and quoting.
 type QuoteAppService struct {
-	pools     market.PoolRepository
-	registry  market.PoolRegistry
+	pools     marketv3.PoolRepository
+	registry  marketv3.PoolRegistry
 	quotes    *domainquote.QuoteService
 	readiness ReadinessChecker
 	maxHops   int
 }
 
 func NewQuoteAppService(
-	pools market.PoolRepository,
-	registry market.PoolRegistry,
+	pools marketv3.PoolRepository,
+	registry marketv3.PoolRegistry,
 	quotes *domainquote.QuoteService,
 	readiness ReadinessChecker,
 	maxHops int,
@@ -215,8 +215,8 @@ func (s *QuoteAppService) buildPoolGraph(ctx context.Context) (domainquote.PoolG
 	return domainquote.NewStaticPoolGraph(edges), nil
 }
 
-func (s *QuoteAppService) loadRoutePools(ctx context.Context, route domainquote.Route) (map[common.Address]*market.Pool, error) {
-	pools := make(map[common.Address]*market.Pool, route.Len())
+func (s *QuoteAppService) loadRoutePools(ctx context.Context, route domainquote.Route) (map[common.Address]*marketv3.Pool, error) {
+	pools := make(map[common.Address]*marketv3.Pool, route.Len())
 	for _, hop := range route.Hops {
 		if _, ok := pools[hop.PoolAddress]; ok {
 			continue

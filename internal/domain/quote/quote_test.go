@@ -5,7 +5,7 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -18,24 +18,24 @@ func testToken(index byte) common.Address {
 	return common.HexToAddress(fmt.Sprintf("0x000000000000000000000000000000000000000%x", index))
 }
 
-func setupQuotedPool(t *testing.T) (*market.Pool, common.Address, common.Address) {
+func setupQuotedPool(t *testing.T) (*marketv3.Pool, common.Address, common.Address) {
 	t.Helper()
 
 	token0 := testToken(2)
 	token1 := testToken(3)
-	pool := market.NewPool(testToken(1), token0, token1, 3000, 60)
+	pool := marketv3.NewPool(testToken(1), token0, token1, 3000, 60)
 	sqrtPrice := sqrtPriceAtTick0()
 
-	meta := market.EventMeta{
+	meta := marketv3.EventMeta{
 		PoolAddress: pool.Address,
 		BlockNumber: 1,
 	}
-	if err := pool.Apply(market.NewInitializeEvent(meta, sqrtPrice, 0)); err != nil {
+	if err := pool.Apply(marketv3.NewInitializeEvent(meta, sqrtPrice, 0)); err != nil {
 		t.Fatalf("initialize pool: %v", err)
 	}
 
 	liquidity := big.NewInt(10_000_000_000_000)
-	if err := pool.Apply(market.NewMintEvent(meta, common.Address{}, common.Address{}, -120, 120, liquidity, big.NewInt(1), big.NewInt(1))); err != nil {
+	if err := pool.Apply(marketv3.NewMintEvent(meta, common.Address{}, common.Address{}, -120, 120, liquidity, big.NewInt(1), big.NewInt(1))); err != nil {
 		t.Fatalf("mint liquidity: %v", err)
 	}
 	return pool, token0, token1
@@ -162,7 +162,7 @@ func TestQuoteRouteTwoHop(t *testing.T) {
 	}
 
 	service := NewQuoteService()
-	result, err := service.QuoteRoute(map[common.Address]*market.Pool{
+	result, err := service.QuoteRoute(map[common.Address]*marketv3.Pool{
 		poolABAddr: poolAB,
 		poolBCAddr: poolBC,
 	}, route, big.NewInt(1_000_000))

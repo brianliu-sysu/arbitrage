@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"math/big"
 
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -53,18 +54,18 @@ func PoolStateFromRow(
 	}
 }
 
-func ClonePool(pool *market.Pool) *market.Pool {
+func ClonePool(pool *marketv3.Pool) *marketv3.Pool {
 	if pool == nil {
 		return nil
 	}
 	return pool.Clone()
 }
 
-func CloneSnapshot(snapshot *market.Snapshot) *market.Snapshot {
+func CloneSnapshot(snapshot *marketv3.Snapshot) *marketv3.Snapshot {
 	if snapshot == nil {
 		return nil
 	}
-	return &market.Snapshot{
+	return &marketv3.Snapshot{
 		PoolAddress: snapshot.PoolAddress,
 		BlockNumber: snapshot.BlockNumber,
 		State:       snapshot.State.Clone(),
