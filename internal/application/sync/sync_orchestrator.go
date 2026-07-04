@@ -115,7 +115,7 @@ func NewServices(deps ServiceDeps) *Services {
 	readiness := NewReadinessService()
 	snapshotPolicy := SnapshotPolicy{BlockInterval: deps.Config.SnapshotInterval}
 	snapshots := NewSnapshotService(deps.Snapshots, snapshotPolicy)
-	bootstrap := NewBootstrapService(deps.Pools, deps.Bootstrap, snapshots)
+	bootstrap := NewBootstrapService(deps.Pools, deps.Bootstrap, snapshots, deps.Config.BootstrapStaleBlockThreshold)
 	lifecycle := NewPoolLifecycleService(deps.Registry, bootstrap, readiness)
 	blockApply := NewBlockApplyService(deps.Pools, deps.Checkpoints, snapshots, readiness, deps.Listener)
 	catchup := NewCatchupService(deps.Config, deps.Pools, deps.Checkpoints, deps.Fetcher, deps.Parser, blockApply, lifecycle, deps.Blocks)

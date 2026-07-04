@@ -10,20 +10,26 @@ import (
 
 // BootstrapService cold-starts a pool from chain state or snapshot.
 type BootstrapService struct {
-	pools    market.PoolRepository
-	reader   PoolBootstrapReader
-	snapshot *SnapshotService
+	pools                 market.PoolRepository
+	reader                PoolBootstrapReader
+	snapshot              *SnapshotService
+	staleBlockThreshold   uint64
 }
 
 func NewBootstrapService(
 	pools market.PoolRepository,
 	reader PoolBootstrapReader,
 	snapshot *SnapshotService,
+	staleBlockThreshold uint64,
 ) *BootstrapService {
+	if staleBlockThreshold == 0 {
+		staleBlockThreshold = DefaultConfig().BootstrapStaleBlockThreshold
+	}
 	return &BootstrapService{
-		pools:    pools,
-		reader:   reader,
-		snapshot: snapshot,
+		pools:               pools,
+		reader:              reader,
+		snapshot:            snapshot,
+		staleBlockThreshold: staleBlockThreshold,
 	}
 }
 
@@ -41,9 +47,7 @@ func (s *BootstrapService) Bootstrap(ctx context.Context, poolAddress common.Add
 			return nil, fmt.Errorf("read bootstrap data: %w", err)
 		}
 		pool = market.NewPool(poolAddress, data.Token0, data.Token1, data.Fee, data.TickSpacing)
-		pool.State = data.State.Clone()
-		pool.Ticks = data.Ticks.Clone()
-		pool.Bitmap = data.Bitmap.Clone()
+		applyBootstrapData(pool, data)
 		pool.Status = market.PoolStatusBootstrapping
 		chainBootstrapped = true
 	} else {
@@ -65,9 +69,18 @@ func (s *BootstrapService) Bootstrap(ctx context.Context, poolAddress common.Add
 		pool.Token1 = data.Token1
 		pool.Fee = data.Fee
 		pool.TickSpacing = data.TickSpacing
-		pool.State = data.State.Clone()
-		pool.Ticks = data.Ticks.Clone()
-		pool.Bitmap = data.Bitmap.Clone()
+		applyBootstrapData(pool, data)
+		chainBootstrapped = true
+	} else if needsChainRebootstrap(pool, blockNumber, s.staleBlockThreshold) {
+		data, err := s.reader.ReadBootstrapData(ctx, poolAddress, blockNumber)
+		if err != nil {
+			return nil, fmt.Errorf("read bootstrap data: %w", err)
+		}
+		pool.Token0 = data.Token0
+		pool.Token1 = data.Token1
+		pool.Fee = data.Fee
+		pool.TickSpacing = data.TickSpacing
+		applyBootstrapData(pool, data)
 		chainBootstrapped = true
 	}
 
@@ -79,4 +92,17 @@ func (s *BootstrapService) Bootstrap(ctx context.Context, poolAddress common.Add
 		return nil, fmt.Errorf("save pool: %w", err)
 	}
 	return pool, nil
+}
+
+func applyBootstrapData(pool *market.Pool, data *BootstrapData) {
+	pool.State = data.State.Clone()
+	pool.Ticks = data.Ticks.Clone()
+	pool.Bitmap = data.Bitmap.Clone()
+}
+
+func needsChainRebootstrap(pool *market.Pool, blockNumber, threshold uint64) bool {
+	if pool == nil || threshold == 0 || blockNumber <= pool.LastBlockNumber {
+		return false
+	}
+	return blockNumber-pool.LastBlockNumber > threshold
 }

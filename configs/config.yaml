@@ -3,7 +3,7 @@ app:
 
 rpc:
   url: "https://eth-mainnet.g.alchemy.com/v2/your-api-key"
-  ws_url: wss://your-provider.example/v2/your-api-key  # 仅用于订阅新区块
+  ws_url: wss://your-provider.example/v2/your-api-key  # Only used for subscribing to new blocks
 
 database:
   url: "postgres://postgres:postgres@localhost:5432/arbitrage?sslmode=disable"
@@ -20,9 +20,10 @@ sync:
   snapshot_interval: 5000
   snapshot_fallback: 10m
   reorg_max_depth: 128
-  catchup_pool_group_size: 100   # 每组最多 pool 数
-  catchup_block_span: 100        # 组内起始区块最大跨度
-  catchup_header_concurrency: 16 # 空块并发拉取 block header 数
+  catchup_pool_group_size: 100   # Maximum number of pools per group
+  catchup_block_span: 100        # Maximum block span within a group
+  catchup_header_concurrency: 16 # Maximum number of empty block headers to fetch concurrently
+  bootstrap_stale_block_threshold: 1000
 
 pools:
   # Explicit pool list synced at startup.

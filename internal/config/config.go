@@ -74,13 +74,14 @@ type BlockchainConfig struct {
 }
 
 type SyncConfig struct {
-	CatchupBatchSize         uint64        `yaml:"catchup_batch_size"`
-	CatchupPoolGroupSize     uint64        `yaml:"catchup_pool_group_size"`
-	CatchupBlockSpan         uint64        `yaml:"catchup_block_span"`
-	CatchupHeaderConcurrency int           `yaml:"catchup_header_concurrency"`
-	SnapshotInterval         uint64        `yaml:"snapshot_interval"`
-	SnapshotFallback     time.Duration `yaml:"snapshot_fallback"`
-	ReorgMaxDepth        uint64        `yaml:"reorg_max_depth"`
+	CatchupBatchSize             uint64        `yaml:"catchup_batch_size"`
+	CatchupPoolGroupSize         uint64        `yaml:"catchup_pool_group_size"`
+	CatchupBlockSpan             uint64        `yaml:"catchup_block_span"`
+	CatchupHeaderConcurrency     int           `yaml:"catchup_header_concurrency"`
+	BootstrapStaleBlockThreshold uint64        `yaml:"bootstrap_stale_block_threshold"`
+	SnapshotInterval             uint64        `yaml:"snapshot_interval"`
+	SnapshotFallback             time.Duration `yaml:"snapshot_fallback"`
+	ReorgMaxDepth                uint64        `yaml:"reorg_max_depth"`
 }
 
 type PoolsConfig struct {
@@ -264,6 +265,9 @@ func (c Config) SyncConfig() syncapp.Config {
 	}
 	if c.Sync.CatchupHeaderConcurrency > 0 {
 		syncCfg.CatchupHeaderConcurrency = c.Sync.CatchupHeaderConcurrency
+	}
+	if c.Sync.BootstrapStaleBlockThreshold > 0 {
+		syncCfg.BootstrapStaleBlockThreshold = c.Sync.BootstrapStaleBlockThreshold
 	}
 	if c.Sync.SnapshotInterval > 0 {
 		syncCfg.SnapshotInterval = c.Sync.SnapshotInterval
