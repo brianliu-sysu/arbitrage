@@ -4,24 +4,12 @@ import (
 	"context"
 	"time"
 
+	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
 	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// SnapshotPolicy decides when snapshots should be created.
-type SnapshotPolicy struct {
-	BlockInterval uint64
-}
-
-func (p SnapshotPolicy) ShouldSnapshot(lastSnapshotBlock, currentBlock uint64) bool {
-	if p.BlockInterval == 0 {
-		return false
-	}
-	if lastSnapshotBlock == 0 {
-		return currentBlock >= p.BlockInterval
-	}
-	return currentBlock >= lastSnapshotBlock+p.BlockInterval
-}
+type SnapshotPolicy = syncapp.SnapshotPolicy
 
 // SnapshotService creates and restores pool snapshots.
 type SnapshotService struct {

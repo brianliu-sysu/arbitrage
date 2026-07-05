@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v4"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 )
@@ -76,7 +77,7 @@ func (s *BootstrapService) Bootstrap(ctx context.Context, poolID marketv4.PoolID
 		pool.Key = data.Key
 		applyBootstrapData(pool, data)
 		chainBootstrapped = true
-	} else if needsChainRebootstrap(pool, blockNumber, s.staleBlockThreshold) {
+	} else if syncapp.NeedsChainRebootstrap(pool.LastBlockNumber, blockNumber, s.staleBlockThreshold) {
 		data, err := s.reader.ReadBootstrapData(ctx, poolID, key, blockNumber)
 		if err != nil {
 			return nil, fmt.Errorf("read bootstrap data: %w", err)
@@ -100,11 +101,4 @@ func applyBootstrapData(pool *marketv4.Pool, data *BootstrapData) {
 	pool.State = data.State.Clone()
 	pool.Ticks = data.Ticks.Clone()
 	pool.Bitmap = data.Bitmap.Clone()
-}
-
-func needsChainRebootstrap(pool *marketv4.Pool, blockNumber, threshold uint64) bool {
-	if pool == nil || threshold == 0 || blockNumber <= pool.LastBlockNumber {
-		return false
-	}
-	return blockNumber-pool.LastBlockNumber > threshold
 }

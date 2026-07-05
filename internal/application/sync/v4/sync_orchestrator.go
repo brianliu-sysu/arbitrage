@@ -2,14 +2,12 @@ package syncv4
 
 import (
 	"context"
-	"fmt"
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
 )
 
 // SyncOrchestrator coordinates V4 bootstrap, catchup, and live head sync startup.
 type SyncOrchestrator struct {
-	config     Config
 	blocks     BlockReader
 	lifecycle  *PoolLifecycleService
 	catchup    *CatchupService
@@ -20,7 +18,7 @@ type SyncOrchestrator struct {
 }
 
 func NewSyncOrchestrator(
-	config Config,
+	_ Config,
 	blocks BlockReader,
 	lifecycle *PoolLifecycleService,
 	catchup *CatchupService,
@@ -30,7 +28,6 @@ func NewSyncOrchestrator(
 	readiness *ReadinessService,
 ) *SyncOrchestrator {
 	return &SyncOrchestrator{
-		config:     config,
 		blocks:     blocks,
 		lifecycle:  lifecycle,
 		catchup:    catchup,
@@ -42,36 +39,22 @@ func NewSyncOrchestrator(
 }
 
 func (o *SyncOrchestrator) Start(ctx context.Context) error {
-	latest, err := o.blocks.GetLatestBlockHeader(ctx)
-	if err != nil {
-		return fmt.Errorf("load latest block: %w", err)
-	}
-
-	if err := o.lifecycle.StartAll(ctx, latest.Number); err != nil {
-		return fmt.Errorf("start pools: %w", err)
-	}
-
-	if err := o.catchup.CatchUpAll(ctx, latest.Number); err != nil {
-		return fmt.Errorf("catch up pools: %w", err)
-	}
-
-	if err := o.markPoolsReady(ctx); err != nil {
-		return fmt.Errorf("mark pools ready: %w", err)
-	}
-	o.headSync.SetLocalHead(latest)
-	o.readiness.SetSystemReady(true)
-
+	var schedulerRun func(context.Context) error
 	if o.scheduler != nil {
-		go func() {
-			_ = o.scheduler.Run(ctx)
-		}()
+		schedulerRun = o.scheduler.Run
 	}
 
-	return o.headSync.Run(ctx)
-}
-
-func (o *SyncOrchestrator) markPoolsReady(ctx context.Context) error {
-	return o.blockApply.MarkPoolsReady(ctx, o.lifecycle.ListActive())
+	return syncapp.RunStartup(ctx, o.blocks, syncapp.SyncPhases{
+		StartAll:   o.lifecycle.StartAll,
+		CatchUpAll: o.catchup.CatchUpAll,
+		MarkPoolsReady: func(ctx context.Context) error {
+			return o.blockApply.MarkPoolsReady(ctx, o.lifecycle.ListActive())
+		},
+		SetLocalHead:   o.headSync.SetLocalHead,
+		SetSystemReady: o.readiness.SetSystemReady,
+		RunHeadSync:    o.headSync.Run,
+		RunScheduler:   schedulerRun,
+	})
 }
 
 // Services bundles the V4 sync application services for wiring.

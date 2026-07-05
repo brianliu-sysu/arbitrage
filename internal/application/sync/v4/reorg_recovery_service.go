@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v4"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
@@ -47,26 +48,7 @@ func NewReorgRecoveryService(
 }
 
 func (s *ReorgRecoveryService) DetectReorg(ctx context.Context, localHead, remoteHead blockchain.BlockHeader) (*blockchain.Reorg, error) {
-	if localHead.Number == 0 || remoteHead.Number == 0 {
-		return nil, nil
-	}
-	if remoteHead.Number == localHead.Number+1 && remoteHead.ParentHash == localHead.Hash {
-		return nil, nil
-	}
-	if localHead.Hash == remoteHead.Hash {
-		return nil, nil
-	}
-
-	ancestor, err := s.findCommonAncestor(ctx, localHead, remoteHead)
-	if err != nil {
-		return nil, err
-	}
-	if ancestor >= localHead.Number {
-		return nil, nil
-	}
-
-	reorg := blockchain.NewReorg(remoteHead.Number, localHead, remoteHead, ancestor)
-	return &reorg, nil
+	return syncapp.DetectReorg(ctx, s.blocks, s.config.ReorgMaxDepth, localHead, remoteHead)
 }
 
 func (s *ReorgRecoveryService) Recover(ctx context.Context, reorg blockchain.Reorg, poolIDs []marketv4.PoolID) error {
@@ -143,65 +125,4 @@ func (s *ReorgRecoveryService) Recover(ctx context.Context, reorg blockchain.Reo
 		s.readiness.SetPoolReady(poolID, true)
 	}
 	return nil
-}
-
-func (s *ReorgRecoveryService) findCommonAncestor(
-	ctx context.Context,
-	localHead, remoteHead blockchain.BlockHeader,
-) (uint64, error) {
-	localBlock := localHead
-	remoteBlock := remoteHead
-
-	for depth := uint64(0); depth <= s.config.ReorgMaxDepth; depth++ {
-		if localBlock.Number == 0 || remoteBlock.Number == 0 {
-			break
-		}
-
-		if localBlock.Number == remoteBlock.Number {
-			if localBlock.Hash == remoteBlock.Hash {
-				return localBlock.Number, nil
-			}
-			var err error
-			localBlock, remoteBlock, err = s.stepBack(ctx, localBlock, remoteBlock)
-			if err != nil {
-				return 0, err
-			}
-			continue
-		}
-
-		if localBlock.Number > remoteBlock.Number {
-			header, err := s.blocks.GetBlockHeader(ctx, localBlock.Number-1)
-			if err != nil {
-				return 0, fmt.Errorf("load local block %d: %w", localBlock.Number-1, err)
-			}
-			localBlock = header
-			continue
-		}
-
-		header, err := s.blocks.GetBlockHeader(ctx, remoteBlock.Number-1)
-		if err != nil {
-			return 0, fmt.Errorf("load remote block %d: %w", remoteBlock.Number-1, err)
-		}
-		remoteBlock = header
-	}
-	return 0, fmt.Errorf("common ancestor not found within depth %d", s.config.ReorgMaxDepth)
-}
-
-func (s *ReorgRecoveryService) stepBack(
-	ctx context.Context,
-	localBlock, remoteBlock blockchain.BlockHeader,
-) (blockchain.BlockHeader, blockchain.BlockHeader, error) {
-	if localBlock.Number == 0 || remoteBlock.Number == 0 {
-		return localBlock, remoteBlock, nil
-	}
-
-	nextLocal, err := s.blocks.GetBlockHeader(ctx, localBlock.Number-1)
-	if err != nil {
-		return blockchain.BlockHeader{}, blockchain.BlockHeader{}, fmt.Errorf("load local block %d: %w", localBlock.Number-1, err)
-	}
-	nextRemote, err := s.blocks.GetBlockHeader(ctx, remoteBlock.Number-1)
-	if err != nil {
-		return blockchain.BlockHeader{}, blockchain.BlockHeader{}, fmt.Errorf("load remote block %d: %w", remoteBlock.Number-1, err)
-	}
-	return nextLocal, nextRemote, nil
 }

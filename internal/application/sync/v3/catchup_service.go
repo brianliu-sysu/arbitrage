@@ -137,36 +137,23 @@ func (s *CatchupService) poolCatchupStartBlock(ctx context.Context, poolAddress 
 }
 
 func groupCatchupPools(tasks []catchupPoolTask, maxPools, maxBlockSpan uint64) []catchupPoolGroup {
-	if len(tasks) == 0 {
-		return nil
-	}
-	if maxPools == 0 {
-		maxPools = 100
-	}
-	if maxBlockSpan == 0 {
-		maxBlockSpan = 100
+	fromBlocks := make([]uint64, len(tasks))
+	for i, task := range tasks {
+		fromBlocks[i] = task.fromBlock
 	}
 
-	groups := make([]catchupPoolGroup, 0, len(tasks))
-	current := catchupPoolGroup{
-		minFromBlock: tasks[0].fromBlock,
-		tasks:        []catchupPoolTask{tasks[0]},
-	}
-
-	for i := 1; i < len(tasks); i++ {
-		task := tasks[i]
-		span := task.fromBlock - current.minFromBlock
-		if uint64(len(current.tasks)) >= maxPools || span > maxBlockSpan {
-			groups = append(groups, current)
-			current = catchupPoolGroup{
-				minFromBlock: task.fromBlock,
-				tasks:        []catchupPoolTask{task},
-			}
-			continue
+	indexGroups := syncapp.GroupCatchupFromBlocks(fromBlocks, maxPools, maxBlockSpan)
+	groups := make([]catchupPoolGroup, 0, len(indexGroups))
+	for _, indexGroup := range indexGroups {
+		groupTasks := make([]catchupPoolTask, len(indexGroup.Indices))
+		for i, idx := range indexGroup.Indices {
+			groupTasks[i] = tasks[idx]
 		}
-		current.tasks = append(current.tasks, task)
+		groups = append(groups, catchupPoolGroup{
+			minFromBlock: indexGroup.MinFromBlock,
+			tasks:        groupTasks,
+		})
 	}
-	groups = append(groups, current)
 	return groups
 }
 

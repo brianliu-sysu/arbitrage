@@ -40,29 +40,6 @@ func initializedPool(address common.Address, lastBlock uint64) *marketv3.Pool {
 	return pool
 }
 
-func TestNeedsChainRebootstrap(t *testing.T) {
-	pool := initializedPool(common.Address{}, 9000)
-	cases := []struct {
-		name        string
-		blockNumber uint64
-		threshold   uint64
-		want        bool
-	}{
-		{name: "within threshold", blockNumber: 9999, threshold: 1000, want: false},
-		{name: "exactly threshold", blockNumber: 10_000, threshold: 1000, want: false},
-		{name: "over threshold", blockNumber: 10_001, threshold: 1000, want: true},
-		{name: "already caught up", blockNumber: 9000, threshold: 1000, want: false},
-		{name: "disabled threshold", blockNumber: 20_000, threshold: 0, want: false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := needsChainRebootstrap(pool, tc.blockNumber, tc.threshold); got != tc.want {
-				t.Fatalf("needsChainRebootstrap() = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestBootstrapRefreshesStalePoolFromChain(t *testing.T) {
 	ctx := context.Background()
 	address := common.HexToAddress("0x0000000000000000000000000000000000000001")
