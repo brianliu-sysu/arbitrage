@@ -1,15 +1,16 @@
-package quote
+package univ4
 
 import (
 	"fmt"
 	"math/big"
 
-	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
+	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v4"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// QuoteService quotes swaps against pool state using Uniswap V3 math.
+// QuoteService quotes swaps against V4 pool state using concentrated-liquidity math.
 type QuoteService struct{}
 
 func NewQuoteService() *QuoteService {
@@ -17,42 +18,42 @@ func NewQuoteService() *QuoteService {
 }
 
 // QuoteExactInput quotes an exact-input swap on a single pool.
-func (s *QuoteService) QuoteExactInput(pool *marketv3.Pool, tokenIn, tokenOut common.Address, amountIn *big.Int) (QuoteResult, error) {
+func (s *QuoteService) QuoteExactInput(pool *marketv4.Pool, tokenIn, tokenOut common.Address, amountIn *big.Int) (quoteshared.QuoteResult, error) {
 	if pool == nil {
-		return QuoteResult{}, fmt.Errorf("pool is nil")
+		return quoteshared.QuoteResult{}, fmt.Errorf("pool is nil")
 	}
 	if amountIn == nil || amountIn.Sign() <= 0 {
-		return QuoteResult{}, fmt.Errorf("amountIn must be positive")
+		return quoteshared.QuoteResult{}, fmt.Errorf("amountIn must be positive")
 	}
 
 	zeroForOne, err := resolveSwapDirection(pool, tokenIn, tokenOut)
 	if err != nil {
-		return QuoteResult{}, err
+		return quoteshared.QuoteResult{}, err
 	}
 
 	return s.swap(pool, zeroForOne, true, new(big.Int).Set(amountIn), nil)
 }
 
 // QuoteExactOutput quotes an exact-output swap on a single pool.
-func (s *QuoteService) QuoteExactOutput(pool *marketv3.Pool, tokenIn, tokenOut common.Address, amountOut *big.Int) (QuoteResult, error) {
+func (s *QuoteService) QuoteExactOutput(pool *marketv4.Pool, tokenIn, tokenOut common.Address, amountOut *big.Int) (quoteshared.QuoteResult, error) {
 	if pool == nil {
-		return QuoteResult{}, fmt.Errorf("pool is nil")
+		return quoteshared.QuoteResult{}, fmt.Errorf("pool is nil")
 	}
 	if amountOut == nil || amountOut.Sign() <= 0 {
-		return QuoteResult{}, fmt.Errorf("amountOut must be positive")
+		return quoteshared.QuoteResult{}, fmt.Errorf("amountOut must be positive")
 	}
 
 	zeroForOne, err := resolveSwapDirection(pool, tokenIn, tokenOut)
 	if err != nil {
-		return QuoteResult{}, err
+		return quoteshared.QuoteResult{}, err
 	}
 
 	result, err := s.swap(pool, zeroForOne, false, new(big.Int).Set(amountOut), nil)
 	if err != nil {
-		return QuoteResult{}, err
+		return quoteshared.QuoteResult{}, err
 	}
 
-	return QuoteResult{
+	return quoteshared.QuoteResult{
 		AmountIn:     result.AmountIn,
 		AmountOut:    new(big.Int).Set(amountOut),
 		FeeAmount:    result.FeeAmount,
@@ -62,27 +63,27 @@ func (s *QuoteService) QuoteExactOutput(pool *marketv3.Pool, tokenIn, tokenOut c
 }
 
 // QuoteRoute quotes an exact-input swap along a multi-hop route.
-func (s *QuoteService) QuoteRoute(pools map[common.Address]*marketv3.Pool, route Route, amountIn *big.Int) (QuoteResult, error) {
+func (s *QuoteService) QuoteRoute(pools map[marketv4.PoolID]*marketv4.Pool, route Route, amountIn *big.Int) (quoteshared.QuoteResult, error) {
 	if amountIn == nil || amountIn.Sign() <= 0 {
-		return QuoteResult{}, fmt.Errorf("amountIn must be positive")
+		return quoteshared.QuoteResult{}, fmt.Errorf("amountIn must be positive")
 	}
 	if len(route.Hops) == 0 {
-		return QuoteResult{}, fmt.Errorf("route has no hops")
+		return quoteshared.QuoteResult{}, fmt.Errorf("route has no hops")
 	}
 
 	currentAmount := new(big.Int).Set(amountIn)
 	totalFee := big.NewInt(0)
-	var last QuoteResult
+	var last quoteshared.QuoteResult
 
 	for i, hop := range route.Hops {
-		pool := pools[hop.PoolAddress]
+		pool := pools[hop.PoolID]
 		if pool == nil {
-			return QuoteResult{}, fmt.Errorf("pool %s not found", hop.PoolAddress.Hex())
+			return quoteshared.QuoteResult{}, fmt.Errorf("pool %s not found", hop.PoolID.String())
 		}
 
 		step, err := s.QuoteExactInput(pool, hop.TokenIn, hop.TokenOut, currentAmount)
 		if err != nil {
-			return QuoteResult{}, fmt.Errorf("hop %d: %w", i, err)
+			return quoteshared.QuoteResult{}, fmt.Errorf("hop %d: %w", i, err)
 		}
 
 		totalFee.Add(totalFee, step.FeeAmount)
@@ -90,13 +91,7 @@ func (s *QuoteService) QuoteRoute(pools map[common.Address]*marketv3.Pool, route
 		last = step
 	}
 
-	return QuoteResult{
-		AmountIn:     cloneBigInt(amountIn),
-		AmountOut:    cloneBigInt(currentAmount),
-		FeeAmount:    cloneBigInt(totalFee),
-		SqrtPriceX96: cloneBigInt(last.SqrtPriceX96),
-		Tick:         last.Tick,
-	}, nil
+	return quoteshared.NewQuoteResult(amountIn, currentAmount, totalFee, last.SqrtPriceX96, last.Tick), nil
 }
 
 type swapState struct {
@@ -108,19 +103,19 @@ type swapState struct {
 }
 
 func (s *QuoteService) swap(
-	pool *marketv3.Pool,
+	pool *marketv4.Pool,
 	zeroForOne bool,
 	exactInput bool,
 	amountSpecified *big.Int,
 	sqrtPriceLimitX96 *big.Int,
-) (QuoteResult, error) {
+) (quoteshared.QuoteResult, error) {
 	if !pool.State.IsInitialized() {
-		return QuoteResult{}, fmt.Errorf("pool is not initialized")
+		return quoteshared.QuoteResult{}, fmt.Errorf("pool is not initialized")
 	}
 
-	limit, err := resolveSqrtPriceLimit(zeroForOne, sqrtPriceLimitX96)
+	limit, err := quoteshared.DefaultSqrtPriceLimit(zeroForOne, sqrtPriceLimitX96)
 	if err != nil {
-		return QuoteResult{}, err
+		return quoteshared.QuoteResult{}, err
 	}
 
 	state := swapState{
@@ -139,7 +134,7 @@ func (s *QuoteService) swap(
 	totalFee := big.NewInt(0)
 	for state.amountSpecifiedRemaining.Sign() != 0 && state.sqrtPriceX96.Cmp(limit) != 0 {
 		if err := s.runSwapStep(pool, &state, zeroForOne, exactInput, limit, totalFee); err != nil {
-			return QuoteResult{}, err
+			return quoteshared.QuoteResult{}, err
 		}
 	}
 
@@ -152,17 +147,11 @@ func (s *QuoteService) swap(
 		amountIn = new(big.Int).Set(state.amountCalculated)
 	}
 
-	return QuoteResult{
-		AmountIn:     amountIn,
-		AmountOut:    amountOut,
-		FeeAmount:    totalFee,
-		SqrtPriceX96: new(big.Int).Set(state.sqrtPriceX96),
-		Tick:         state.tick,
-	}, nil
+	return quoteshared.NewQuoteResult(amountIn, amountOut, totalFee, state.sqrtPriceX96, state.tick), nil
 }
 
 func (s *QuoteService) runSwapStep(
-	pool *marketv3.Pool,
+	pool *marketv4.Pool,
 	state *swapState,
 	zeroForOne bool,
 	exactInput bool,
@@ -171,7 +160,7 @@ func (s *QuoteService) runSwapStep(
 ) error {
 	sqrtPriceStartX96 := new(big.Int).Set(state.sqrtPriceX96)
 
-	tickNext, initialized, err := pool.Bitmap.NextInitializedTick(state.tick, pool.TickSpacing, zeroForOne)
+	tickNext, initialized, err := pool.Bitmap.NextInitializedTick(state.tick, pool.Key.TickSpacing, zeroForOne)
 	if err != nil {
 		return fmt.Errorf("find next initialized tick: %w", err)
 	}
@@ -181,7 +170,7 @@ func (s *QuoteService) runSwapStep(
 		tickNext = market.MaxTick
 	}
 
-	sqrtPriceNextX96, err := GetSqrtRatioAtTick(tickNext)
+	sqrtPriceNextX96, err := quoteshared.GetSqrtRatioAtTick(tickNext)
 	if err != nil {
 		return fmt.Errorf("sqrt ratio at tick %d: %w", tickNext, err)
 	}
@@ -195,12 +184,12 @@ func (s *QuoteService) runSwapStep(
 		sqrtRatioTargetX96 = sqrtPriceLimitX96
 	}
 
-	step, err := ComputeSwapStep(
+	step, err := quoteshared.ComputeSwapStep(
 		state.sqrtPriceX96,
 		sqrtRatioTargetX96,
 		state.liquidity,
 		state.amountSpecifiedRemaining,
-		pool.Fee,
+		pool.Key.Fee,
 	)
 	if err != nil {
 		return fmt.Errorf("compute swap step: %w", err)
@@ -228,7 +217,7 @@ func (s *QuoteService) runSwapStep(
 			if zeroForOne {
 				liquidityNet.Neg(liquidityNet)
 			}
-			state.liquidity, err = AddDelta(state.liquidity, liquidityNet)
+			state.liquidity, err = quoteshared.AddDelta(state.liquidity, liquidityNet)
 			if err != nil {
 				return fmt.Errorf("cross tick %d: %w", tickNext, err)
 			}
@@ -239,7 +228,7 @@ func (s *QuoteService) runSwapStep(
 			state.tick = tickNext
 		}
 	} else if state.sqrtPriceX96.Cmp(sqrtPriceStartX96) != 0 {
-		state.tick, err = GetTickAtSqrtRatio(state.sqrtPriceX96)
+		state.tick, err = quoteshared.GetTickAtSqrtRatio(state.sqrtPriceX96)
 		if err != nil {
 			return fmt.Errorf("tick at sqrt ratio: %w", err)
 		}
@@ -248,26 +237,13 @@ func (s *QuoteService) runSwapStep(
 	return nil
 }
 
-func resolveSwapDirection(pool *marketv3.Pool, tokenIn, tokenOut common.Address) (bool, error) {
+func resolveSwapDirection(pool *marketv4.Pool, tokenIn, tokenOut common.Address) (bool, error) {
 	switch {
-	case tokenIn == pool.Token0 && tokenOut == pool.Token1:
+	case tokenIn == pool.Key.Currency0 && tokenOut == pool.Key.Currency1:
 		return true, nil
-	case tokenIn == pool.Token1 && tokenOut == pool.Token0:
+	case tokenIn == pool.Key.Currency1 && tokenOut == pool.Key.Currency0:
 		return false, nil
 	default:
-		return false, fmt.Errorf("tokens %s/%s do not match pool %s/%s", tokenIn.Hex(), tokenOut.Hex(), pool.Token0.Hex(), pool.Token1.Hex())
+		return false, fmt.Errorf("tokens %s/%s do not match pool %s/%s", tokenIn.Hex(), tokenOut.Hex(), pool.Key.Currency0.Hex(), pool.Key.Currency1.Hex())
 	}
-}
-
-func resolveSqrtPriceLimit(zeroForOne bool, sqrtPriceLimitX96 *big.Int) (*big.Int, error) {
-	if sqrtPriceLimitX96 != nil {
-		if sqrtPriceLimitX96.Sign() <= 0 {
-			return nil, fmt.Errorf("sqrt price limit must be positive")
-		}
-		return new(big.Int).Set(sqrtPriceLimitX96), nil
-	}
-	if zeroForOne {
-		return new(big.Int).Add(minSqrtRatio, big.NewInt(1)), nil
-	}
-	return new(big.Int).Sub(maxSqrtRatio, big.NewInt(1)), nil
 }

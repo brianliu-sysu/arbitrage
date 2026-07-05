@@ -1,15 +1,15 @@
-package quote
+package univ3
 
 import "github.com/ethereum/go-ethereum/common"
 
-// RouteHop is a single hop in a swap route.
+// RouteHop is a single hop in a V3 swap route.
 type RouteHop struct {
 	PoolAddress common.Address
 	TokenIn     common.Address
 	TokenOut    common.Address
 }
 
-// Route represents a token swap path through one or more pools.
+// Route represents a token swap path through one or more V3 pools.
 type Route struct {
 	TokenIn  common.Address
 	TokenOut common.Address

@@ -1,26 +1,22 @@
-package quote
+package univ4
 
 import (
 	"fmt"
 
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v4"
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// PoolEdge describes a pool connection in the routing graph.
+// PoolEdge describes a pool connection in the V4 routing graph.
 type PoolEdge struct {
-	PoolAddress common.Address
-	Token0      common.Address
-	Token1      common.Address
+	PoolID marketv4.PoolID
+	Token0 common.Address
+	Token1 common.Address
 }
 
 // PoolGraph provides pool connectivity for route discovery.
 type PoolGraph interface {
 	Edges() []PoolEdge
-}
-
-// PathFinder discovers swap routes between two tokens.
-type PathFinder interface {
-	FindRoutes(tokenIn, tokenOut common.Address) ([]Route, error)
 }
 
 // RouteService finds routes through a pool graph without quoting them.
@@ -81,9 +77,9 @@ func (rs *RouteService) FindRoutes(tokenIn, tokenOut common.Address) ([]Route, e
 			}
 
 			hop := RouteHop{
-				PoolAddress: edge.pool,
-				TokenIn:     current.token,
-				TokenOut:    nextToken,
+				PoolID:   edge.pool,
+				TokenIn:  current.token,
+				TokenOut: nextToken,
 			}
 			nextRoute := Route{
 				TokenIn:  tokenIn,
@@ -114,7 +110,7 @@ func (rs *RouteService) FindRoutes(tokenIn, tokenOut common.Address) ([]Route, e
 }
 
 type adjacencyEdge struct {
-	pool common.Address
+	pool marketv4.PoolID
 	a    common.Address
 	b    common.Address
 }
@@ -130,7 +126,7 @@ func buildAdjacency(edges []PoolEdge) map[common.Address][]adjacencyEdge {
 	adjacency := make(map[common.Address][]adjacencyEdge)
 	for _, edge := range edges {
 		link := adjacencyEdge{
-			pool: edge.PoolAddress,
+			pool: edge.PoolID,
 			a:    edge.Token0,
 			b:    edge.Token1,
 		}

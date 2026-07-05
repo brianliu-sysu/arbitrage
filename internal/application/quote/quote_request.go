@@ -1,33 +1,38 @@
 package quoteapp
 
 import (
-	"math/big"
-
-	"github.com/ethereum/go-ethereum/common"
+	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
+	quotecombined "github.com/brianliu-sysu/uniswapv3/internal/application/quote/combined"
+	quoteuniv3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/univ3"
 )
 
-// QuoteMode selects exact-input or exact-output quoting.
-type QuoteMode int
+type (
+	// QuoteMode selects exact-input or exact-output quoting.
+	QuoteMode = quoteshared.QuoteMode
+
+	// QuoteRequest is the unified quote use case input.
+	QuoteRequest = quotecombined.Request
+
+	// QuoteResponse is the unified quote use case output.
+	QuoteResponse = quotecombined.Response
+
+	// RouteQuote captures the quote outcome for a single route candidate.
+	RouteQuote = quotecombined.RouteQuote
+
+	// QuoteV3AppService orchestrates V3-only route discovery and quoting.
+	QuoteV3AppService = quoteuniv3.AppService
+)
 
 const (
-	QuoteModeExactInput QuoteMode = iota + 1
-	QuoteModeExactOutput
+	QuoteModeExactInput  = quoteshared.QuoteModeExactInput
+	QuoteModeExactOutput = quoteshared.QuoteModeExactOutput
 )
 
-// QuoteRequest is the application-layer quote use case input.
-type QuoteRequest struct {
-	TokenIn     common.Address
-	TokenOut    common.Address
-	Mode        QuoteMode
-	AmountIn    *big.Int
-	AmountOut   *big.Int
-	PoolAddress *common.Address
-}
+// QuoteAppService orchestrates unified V3/V4 route discovery and quoting.
+type QuoteAppService = quotecombined.AppService
 
-func (r QuoteRequest) IsExactInput() bool {
-	return r.Mode == QuoteModeExactInput
-}
+// NewQuoteAppService creates a unified quote application service.
+var NewQuoteAppService = quotecombined.NewAppService
 
-func (r QuoteRequest) IsExactOutput() bool {
-	return r.Mode == QuoteModeExactOutput
-}
+// NewQuoteV3AppService creates a V3-only quote application service.
+var NewQuoteV3AppService = quoteuniv3.NewAppService

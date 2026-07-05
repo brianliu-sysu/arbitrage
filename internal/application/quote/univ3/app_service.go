@@ -1,11 +1,12 @@
-package quoteapp
+package quoteuniv3
 
 import (
 	"context"
 	"fmt"
 	"math/big"
 
-	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
+	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
+	quoteuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
 	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -16,26 +17,26 @@ type ReadinessChecker interface {
 	IsPoolReady(poolAddress common.Address) bool
 }
 
-// QuoteAppService orchestrates route discovery and quoting.
-type QuoteAppService struct {
+// AppService orchestrates V3 route discovery and quoting.
+type AppService struct {
 	pools     marketv3.PoolRepository
 	registry  marketv3.PoolRegistry
-	quotes    *domainquote.QuoteService
+	quotes    *quoteuniv3.QuoteService
 	readiness ReadinessChecker
 	maxHops   int
 }
 
-func NewQuoteAppService(
+func NewAppService(
 	pools marketv3.PoolRepository,
 	registry marketv3.PoolRegistry,
-	quotes *domainquote.QuoteService,
+	quotes *quoteuniv3.QuoteService,
 	readiness ReadinessChecker,
 	maxHops int,
-) *QuoteAppService {
+) *AppService {
 	if maxHops <= 0 {
 		maxHops = 3
 	}
-	return &QuoteAppService{
+	return &AppService{
 		pools:     pools,
 		registry:  registry,
 		quotes:    quotes,
@@ -44,25 +45,25 @@ func NewQuoteAppService(
 	}
 }
 
-// Quote executes the quote use case for the given request.
-func (s *QuoteAppService) Quote(ctx context.Context, req QuoteRequest) (QuoteResponse, error) {
+// Quote executes the V3 quote use case for the given request.
+func (s *AppService) Quote(ctx context.Context, req Request) (Response, error) {
 	if err := validateQuoteRequest(req); err != nil {
-		return QuoteResponse{}, err
+		return Response{}, err
 	}
 	if s.readiness != nil && !s.readiness.IsSystemReady() {
-		return QuoteResponse{}, fmt.Errorf("system is not ready for quoting")
+		return Response{}, fmt.Errorf("system is not ready for quoting")
 	}
 
 	if req.PoolAddress != nil {
 		return s.quoteSinglePool(ctx, req, *req.PoolAddress)
 	}
 	if req.IsExactOutput() {
-		return QuoteResponse{}, fmt.Errorf("multi-hop exact-output quotes are not supported")
+		return Response{}, fmt.Errorf("multi-hop exact-output quotes are not supported")
 	}
 	return s.quoteBestRoute(ctx, req)
 }
 
-func validateQuoteRequest(req QuoteRequest) error {
+func validateQuoteRequest(req Request) error {
 	if req.TokenIn == (common.Address{}) || req.TokenOut == (common.Address{}) {
 		return fmt.Errorf("tokenIn and tokenOut are required")
 	}
@@ -71,11 +72,11 @@ func validateQuoteRequest(req QuoteRequest) error {
 	}
 
 	switch req.Mode {
-	case QuoteModeExactInput:
+	case quoteshared.QuoteModeExactInput:
 		if req.AmountIn == nil || req.AmountIn.Sign() <= 0 {
 			return fmt.Errorf("amountIn must be positive for exact-input quotes")
 		}
-	case QuoteModeExactOutput:
+	case quoteshared.QuoteModeExactOutput:
 		if req.AmountOut == nil || req.AmountOut.Sign() <= 0 {
 			return fmt.Errorf("amountOut must be positive for exact-output quotes")
 		}
@@ -85,31 +86,31 @@ func validateQuoteRequest(req QuoteRequest) error {
 	return nil
 }
 
-func (s *QuoteAppService) quoteSinglePool(ctx context.Context, req QuoteRequest, poolAddress common.Address) (QuoteResponse, error) {
+func (s *AppService) quoteSinglePool(ctx context.Context, req Request, poolAddress common.Address) (Response, error) {
 	if s.readiness != nil && !s.readiness.IsPoolReady(poolAddress) {
-		return QuoteResponse{}, fmt.Errorf("pool %s is not ready", poolAddress.Hex())
+		return Response{}, fmt.Errorf("pool %s is not ready", poolAddress.Hex())
 	}
 
 	pool, err := s.pools.Get(ctx, poolAddress)
 	if err != nil {
-		return QuoteResponse{}, fmt.Errorf("load pool %s: %w", poolAddress.Hex(), err)
+		return Response{}, fmt.Errorf("load pool %s: %w", poolAddress.Hex(), err)
 	}
 	if pool == nil {
-		return QuoteResponse{}, fmt.Errorf("pool %s not found", poolAddress.Hex())
+		return Response{}, fmt.Errorf("pool %s not found", poolAddress.Hex())
 	}
 
-	var result domainquote.QuoteResult
+	var result quoteshared.QuoteResult
 	if req.IsExactInput() {
 		result, err = s.quotes.QuoteExactInput(pool, req.TokenIn, req.TokenOut, req.AmountIn)
 	} else {
 		result, err = s.quotes.QuoteExactOutput(pool, req.TokenIn, req.TokenOut, req.AmountOut)
 	}
 	if err != nil {
-		return QuoteResponse{}, fmt.Errorf("quote pool %s: %w", poolAddress.Hex(), err)
+		return Response{}, fmt.Errorf("quote pool %s: %w", poolAddress.Hex(), err)
 	}
 
-	route := domainquote.NewDirectRoute(poolAddress, req.TokenIn, req.TokenOut)
-	return QuoteResponse{
+	route := quoteuniv3.NewDirectRoute(poolAddress, req.TokenIn, req.TokenOut)
+	return Response{
 		TokenIn:   req.TokenIn,
 		TokenOut:  req.TokenOut,
 		AmountIn:  cloneBigInt(result.AmountIn),
@@ -125,19 +126,19 @@ func (s *QuoteAppService) quoteSinglePool(ctx context.Context, req QuoteRequest,
 	}, nil
 }
 
-func (s *QuoteAppService) quoteBestRoute(ctx context.Context, req QuoteRequest) (QuoteResponse, error) {
+func (s *AppService) quoteBestRoute(ctx context.Context, req Request) (Response, error) {
 	graph, err := s.buildPoolGraph(ctx)
 	if err != nil {
-		return QuoteResponse{}, err
+		return Response{}, err
 	}
 
-	routeService := domainquote.NewRouteService(graph, s.maxHops)
+	routeService := quoteuniv3.NewRouteService(graph, s.maxHops)
 	routes, err := routeService.FindRoutes(req.TokenIn, req.TokenOut)
 	if err != nil {
-		return QuoteResponse{}, fmt.Errorf("find routes: %w", err)
+		return Response{}, fmt.Errorf("find routes: %w", err)
 	}
 	if len(routes) == 0 {
-		return QuoteResponse{}, fmt.Errorf("no route found from %s to %s", req.TokenIn.Hex(), req.TokenOut.Hex())
+		return Response{}, fmt.Errorf("no route found from %s to %s", req.TokenIn.Hex(), req.TokenOut.Hex())
 	}
 
 	routeQuotes := make([]RouteQuote, 0, len(routes))
@@ -147,7 +148,7 @@ func (s *QuoteAppService) quoteBestRoute(ctx context.Context, req QuoteRequest) 
 	for _, route := range routes {
 		pools, err := s.loadRoutePools(ctx, route)
 		if err != nil {
-			return QuoteResponse{}, err
+			return Response{}, err
 		}
 		if err := s.ensureRouteReady(route); err != nil {
 			continue
@@ -173,10 +174,10 @@ func (s *QuoteAppService) quoteBestRoute(ctx context.Context, req QuoteRequest) 
 	}
 
 	if bestAmountOut == nil {
-		return QuoteResponse{}, fmt.Errorf("no quotable route found from %s to %s", req.TokenIn.Hex(), req.TokenOut.Hex())
+		return Response{}, fmt.Errorf("no quotable route found from %s to %s", req.TokenIn.Hex(), req.TokenOut.Hex())
 	}
 
-	return QuoteResponse{
+	return Response{
 		TokenIn:     req.TokenIn,
 		TokenOut:    req.TokenOut,
 		AmountIn:    cloneBigInt(best.AmountIn),
@@ -187,7 +188,7 @@ func (s *QuoteAppService) quoteBestRoute(ctx context.Context, req QuoteRequest) 
 	}, nil
 }
 
-func (s *QuoteAppService) buildPoolGraph(ctx context.Context) (domainquote.PoolGraph, error) {
+func (s *AppService) buildPoolGraph(ctx context.Context) (quoteuniv3.PoolGraph, error) {
 	if s.registry == nil {
 		return nil, fmt.Errorf("pool registry is nil")
 	}
@@ -197,7 +198,7 @@ func (s *QuoteAppService) buildPoolGraph(ctx context.Context) (domainquote.PoolG
 		return nil, fmt.Errorf("list pools: %w", err)
 	}
 
-	edges := make([]domainquote.PoolEdge, 0, len(addresses))
+	edges := make([]quoteuniv3.PoolEdge, 0, len(addresses))
 	for _, address := range addresses {
 		pool, err := s.pools.Get(ctx, address)
 		if err != nil {
@@ -206,16 +207,16 @@ func (s *QuoteAppService) buildPoolGraph(ctx context.Context) (domainquote.PoolG
 		if pool == nil {
 			continue
 		}
-		edges = append(edges, domainquote.PoolEdge{
+		edges = append(edges, quoteuniv3.PoolEdge{
 			PoolAddress: pool.Address,
 			Token0:      pool.Token0,
 			Token1:      pool.Token1,
 		})
 	}
-	return domainquote.NewStaticPoolGraph(edges), nil
+	return quoteuniv3.NewStaticPoolGraph(edges), nil
 }
 
-func (s *QuoteAppService) loadRoutePools(ctx context.Context, route domainquote.Route) (map[common.Address]*marketv3.Pool, error) {
+func (s *AppService) loadRoutePools(ctx context.Context, route quoteuniv3.Route) (map[common.Address]*marketv3.Pool, error) {
 	pools := make(map[common.Address]*marketv3.Pool, route.Len())
 	for _, hop := range route.Hops {
 		if _, ok := pools[hop.PoolAddress]; ok {
@@ -233,7 +234,7 @@ func (s *QuoteAppService) loadRoutePools(ctx context.Context, route domainquote.
 	return pools, nil
 }
 
-func (s *QuoteAppService) ensureRouteReady(route domainquote.Route) error {
+func (s *AppService) ensureRouteReady(route quoteuniv3.Route) error {
 	if s.readiness == nil {
 		return nil
 	}

@@ -11,9 +11,10 @@ import (
 	"testing"
 
 	quoteapp "github.com/brianliu-sysu/uniswapv3/internal/application/quote"
+	quoteuniv3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/univ3"
 	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
-	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
+	quoteuniv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
 	httpapi "github.com/brianliu-sysu/uniswapv3/internal/interfaces/http"
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -72,13 +73,13 @@ func (r staticRegistry) List(_ context.Context) ([]common.Address, error) {
 	return append([]common.Address(nil), r.addresses...), nil
 }
 
-func (r staticRegistry) Add(_ context.Context, _ common.Address) error      { return nil }
+func (r staticRegistry) Add(_ context.Context, _ common.Address) error    { return nil }
 func (r staticRegistry) Remove(_ context.Context, _ common.Address) error { return nil }
 
 type alwaysReady struct{}
 
-func (alwaysReady) IsSystemReady() bool              { return true }
-func (alwaysReady) IsPoolReady(_ common.Address) bool { return true }
+func (alwaysReady) IsSystemReady() bool                   { return true }
+func (alwaysReady) IsPoolReady(_ common.Address) bool     { return true }
 
 func testToken(index byte) common.Address {
 	return common.HexToAddress(fmt.Sprintf("0x000000000000000000000000000000000000000%x", index))
@@ -98,13 +99,14 @@ func setupQuotedPool(address, token0, token1 common.Address) *marketv3.Pool {
 	return pool
 }
 
-func newQuoteRouter(app *quoteapp.QuoteAppService) http.Handler {
+func newQuoteRouter(v3 *quoteuniv3.AppService) http.Handler {
 	return httpapi.NewRouter(httpapi.Handlers{
-		Quote: httpapi.NewQuoteHandler(app),
+		Health:  httpapi.NewHealthHandler(),
+		QuoteV3: httpapi.NewQuoteV3Handler(v3),
 	})
 }
 
-func TestQuoteHandlerReturnsQuoteJSON(t *testing.T) {
+func TestQuoteV3HandlerReturnsQuoteJSON(t *testing.T) {
 	token0 := testToken(2)
 	token1 := testToken(3)
 	poolAddr := testToken(1)
@@ -115,10 +117,10 @@ func TestQuoteHandlerReturnsQuoteJSON(t *testing.T) {
 		t.Fatalf("save pool: %v", err)
 	}
 
-	app := quoteapp.NewQuoteAppService(
+	app := quoteapp.NewQuoteV3AppService(
 		repo,
 		staticRegistry{addresses: []common.Address{poolAddr}},
-		domainquote.NewQuoteService(),
+		quoteuniv3domain.NewQuoteService(),
 		alwaysReady{},
 		3,
 	)
@@ -134,7 +136,7 @@ func TestQuoteHandlerReturnsQuoteJSON(t *testing.T) {
 		t.Fatalf("marshal request: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/quote", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/univ3/quote", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -154,10 +156,12 @@ func TestQuoteHandlerReturnsQuoteJSON(t *testing.T) {
 	}
 }
 
-func TestQuoteHandlerRejectsInvalidJSON(t *testing.T) {
-	router := newQuoteRouter(quoteapp.NewQuoteAppService(nil, nil, domainquote.NewQuoteService(), nil, 3))
+func TestQuoteV3HandlerRejectsInvalidJSON(t *testing.T) {
+	router := newQuoteRouter(quoteapp.NewQuoteV3AppService(
+		nil, nil, quoteuniv3domain.NewQuoteService(), nil, 3,
+	))
 
-	req := httptest.NewRequest(http.MethodPost, "/quote", bytes.NewReader([]byte("{")))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/univ3/quote", bytes.NewReader([]byte("{")))
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -166,16 +170,31 @@ func TestQuoteHandlerRejectsInvalidJSON(t *testing.T) {
 	}
 }
 
-func TestQuoteHandlerRejectsNonPost(t *testing.T) {
+func TestQuoteV3HandlerRejectsNonPost(t *testing.T) {
 	router := httpapi.NewRouter(httpapi.Handlers{
-		Quote: httpapi.NewQuoteHandler(nil),
+		QuoteV3: httpapi.NewQuoteV3Handler(nil),
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/quote", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/univ3/quote", nil)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected status 404, got %d", rec.Code)
+	}
+}
+
+func TestQuoteV4HandlerReturnsNotConfiguredWhenNil(t *testing.T) {
+	router := httpapi.NewRouter(httpapi.Handlers{
+		QuoteV4: httpapi.NewQuoteV4Handler(nil),
+	})
+
+	body := bytes.NewReader([]byte(`{"tokenIn":"0x0000000000000000000000000000000000000002","tokenOut":"0x0000000000000000000000000000000000000003","amountIn":"1"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/univ4/quote", body)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status 503, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }

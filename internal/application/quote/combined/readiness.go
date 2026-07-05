@@ -1,0 +1,41 @@
+package combined
+
+import (
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v4"
+	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/v3"
+	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/v4"
+	"github.com/ethereum/go-ethereum/common"
+)
+
+// SyncReadiness adapts V3 and V4 sync readiness services for unified quoting.
+type SyncReadiness struct {
+	V3 *syncv3.ReadinessService
+	V4 *syncv4.ReadinessService
+}
+
+func (r *SyncReadiness) IsSystemReady() bool {
+	if r == nil {
+		return true
+	}
+	if r.V3 != nil && !r.V3.IsSystemReady() {
+		return false
+	}
+	if r.V4 != nil && !r.V4.IsSystemReady() {
+		return false
+	}
+	return true
+}
+
+func (r *SyncReadiness) IsV3PoolReady(poolAddress common.Address) bool {
+	if r == nil || r.V3 == nil {
+		return false
+	}
+	return r.V3.IsPoolReady(poolAddress)
+}
+
+func (r *SyncReadiness) IsV4PoolReady(poolID marketv4.PoolID) bool {
+	if r == nil || r.V4 == nil {
+		return false
+	}
+	return r.V4.IsPoolReady(poolID)
+}

@@ -9,11 +9,15 @@ import (
 	"time"
 
 	arbitrageapp "github.com/brianliu-sysu/uniswapv3/internal/application/arbitrage"
-	quoteapp "github.com/brianliu-sysu/uniswapv3/internal/application/quote"
+	quotecombined "github.com/brianliu-sysu/uniswapv3/internal/application/quote/combined"
+	quoteuniv3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/univ3"
+	quoteuniv4 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/univ4"
 	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/v3"
 	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/v4"
 	"github.com/brianliu-sysu/uniswapv3/internal/config"
-	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
+	quoteuniv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
+	quoteuniv4domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ4"
+	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	chaininfra "github.com/brianliu-sysu/uniswapv3/internal/infrastructure/blockchain"
 	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/logging"
 	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/persistence"
@@ -53,7 +57,9 @@ func Module(params Params) fx.Option {
 			provideArbitrageServices,
 			newSyncOrchestrator,
 			newSyncV4Orchestrator,
-			newQuoteAppService,
+			newQuoteV3AppService,
+			newQuoteV4AppService,
+			newQuoteCombinedAppService,
 			newHTTPRouter,
 		),
 		fx.Invoke(registerLoggerLifecycle, registerSyncLifecycle, registerHTTPLifecycle),
@@ -163,7 +169,7 @@ func newRuntimeBundle(
 		Logger:              logger,
 		Pools:               store.Pools,
 		Registry:            poolRegistry,
-		Quotes:              domainquote.NewQuoteService(),
+		Quotes:              quoteuniv3domain.NewQuoteService(),
 		Readiness:           syncServices.Readiness,
 		Repository:          store.Opportunities,
 		Strategies:          strategies,
@@ -212,28 +218,89 @@ func newSyncV4Orchestrator(services *syncv4.Services, chain *chaininfra.Services
 	return services.NewOrchestrator(chain.Client)
 }
 
-func newQuoteAppService(
+func newQuoteV3AppService(
 	cfg config.Config,
 	store *persistence.Services,
 	poolRegistry *registry.CompositeRegistry,
 	syncServices *syncv3.Services,
-) *quoteapp.QuoteAppService {
+) *quoteuniv3.AppService {
 	maxHops := cfg.Quote.MaxHops
 	if maxHops <= 0 {
 		maxHops = 3
 	}
-	return quoteapp.NewQuoteAppService(
+	return quoteuniv3.NewAppService(
 		store.Pools,
 		poolRegistry,
-		domainquote.NewQuoteService(),
+		quoteuniv3domain.NewQuoteService(),
 		syncServices.Readiness,
 		maxHops,
 	)
 }
 
-func newHTTPRouter(quoteService *quoteapp.QuoteAppService) *gin.Engine {
+func newQuoteV4AppService(
+	cfg config.Config,
+	store *persistence.Services,
+	v4PoolRegistry *registry.CompositeV4Registry,
+	syncV4Services *syncv4.Services,
+) *quoteuniv4.AppService {
+	if syncV4Services == nil || v4PoolRegistry == nil {
+		return nil
+	}
+	maxHops := cfg.Quote.MaxHops
+	if maxHops <= 0 {
+		maxHops = 3
+	}
+	return quoteuniv4.NewAppService(
+		store.V4Pools,
+		v4PoolRegistry,
+		quoteuniv4domain.NewQuoteService(),
+		syncV4Services.Readiness,
+		maxHops,
+	)
+}
+
+func newQuoteCombinedAppService(
+	cfg config.Config,
+	store *persistence.Services,
+	poolRegistry *registry.CompositeRegistry,
+	v4PoolRegistry *registry.CompositeV4Registry,
+	syncServices *syncv3.Services,
+	syncV4Services *syncv4.Services,
+) *quotecombined.AppService {
+	maxHops := cfg.Quote.MaxHops
+	if maxHops <= 0 {
+		maxHops = 3
+	}
+
+	readiness := &quotecombined.SyncReadiness{V3: syncServices.Readiness}
+	if syncV4Services != nil {
+		readiness.V4 = syncV4Services.Readiness
+	}
+
+	return quotecombined.NewAppService(
+		store.Pools,
+		store.V4Pools,
+		poolRegistry,
+		v4PoolRegistry,
+		quoteunified.NewQuoteService(
+			quoteuniv3domain.NewQuoteService(),
+			quoteuniv4domain.NewQuoteService(),
+		),
+		readiness,
+		maxHops,
+	)
+}
+
+func newHTTPRouter(
+	quoteCombined *quotecombined.AppService,
+	quoteV3 *quoteuniv3.AppService,
+	quoteV4 *quoteuniv4.AppService,
+) *gin.Engine {
 	return httpapi.NewRouter(httpapi.Handlers{
-		Quote: httpapi.NewQuoteHandler(quoteService),
+		Health:        httpapi.NewHealthHandler(),
+		QuoteCombined: httpapi.NewQuoteCombinedHandler(quoteCombined),
+		QuoteV3:       httpapi.NewQuoteV3Handler(quoteV3),
+		QuoteV4:       httpapi.NewQuoteV4Handler(quoteV4),
 	})
 }
 
@@ -338,7 +405,13 @@ func registerHTTPLifecycle(lifecycle fx.Lifecycle, cfg config.Config, logger *za
 
 func (h *httpLifecycle) start(_ context.Context) error {
 	go func() {
-		h.logger.Info("starting http server", zap.String("addr", h.server.Addr))
+		h.logger.Info("starting http server",
+			zap.String("addr", h.server.Addr),
+			zap.String("health", "GET /health, GET /api/v1/health"),
+			zap.String("quote_cross_pool", "POST /api/v1/quote"),
+			zap.String("quote_v3", "POST /api/v1/univ3/quote"),
+			zap.String("quote_v4", "POST /api/v1/univ4/quote"),
+		)
 		if err := h.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			h.logger.Error("http server stopped", zap.Error(err))
 		}

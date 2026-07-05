@@ -1,4 +1,4 @@
-package quoteapp_test
+package quoteuniv3_test
 
 import (
 	"context"
@@ -7,7 +7,8 @@ import (
 	"testing"
 
 	quoteapp "github.com/brianliu-sysu/uniswapv3/internal/application/quote"
-	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
+	quoteuniv3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/univ3"
+	quoteuniv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
 	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	"github.com/ethereum/go-ethereum/common"
@@ -67,13 +68,13 @@ func (r staticRegistry) List(_ context.Context) ([]common.Address, error) {
 	return append([]common.Address(nil), r.addresses...), nil
 }
 
-func (r staticRegistry) Add(_ context.Context, _ common.Address) error  { return nil }
+func (r staticRegistry) Add(_ context.Context, _ common.Address) error    { return nil }
 func (r staticRegistry) Remove(_ context.Context, _ common.Address) error { return nil }
 
 type alwaysReady struct{}
 
-func (alwaysReady) IsSystemReady() bool { return true }
-func (alwaysReady) IsPoolReady(_ common.Address) bool { return true }
+func (alwaysReady) IsSystemReady() bool                   { return true }
+func (alwaysReady) IsPoolReady(_ common.Address) bool     { return true }
 
 func testToken(index byte) common.Address {
 	return common.HexToAddress(fmt.Sprintf("0x000000000000000000000000000000000000000%x", index))
@@ -93,7 +94,7 @@ func setupQuotedPool(address, token0, token1 common.Address) *marketv3.Pool {
 	return pool
 }
 
-func TestQuoteAppServiceSinglePoolExactInput(t *testing.T) {
+func TestAppServiceSinglePoolExactInput(t *testing.T) {
 	token0 := testToken(2)
 	token1 := testToken(3)
 	poolAddr := testToken(1)
@@ -104,15 +105,15 @@ func TestQuoteAppServiceSinglePoolExactInput(t *testing.T) {
 		t.Fatalf("save pool: %v", err)
 	}
 
-	service := quoteapp.NewQuoteAppService(
+	service := quoteuniv3.NewAppService(
 		repo,
 		staticRegistry{addresses: []common.Address{poolAddr}},
-		domainquote.NewQuoteService(),
+		quoteuniv3domain.NewQuoteService(),
 		alwaysReady{},
 		3,
 	)
 
-	resp, err := service.Quote(context.Background(), quoteapp.QuoteRequest{
+	resp, err := service.Quote(context.Background(), quoteuniv3.Request{
 		TokenIn:     token0,
 		TokenOut:    token1,
 		Mode:        quoteapp.QuoteModeExactInput,
@@ -130,7 +131,7 @@ func TestQuoteAppServiceSinglePoolExactInput(t *testing.T) {
 	}
 }
 
-func TestQuoteAppServiceFindsBestMultiHopRoute(t *testing.T) {
+func TestAppServiceFindsBestMultiHopRoute(t *testing.T) {
 	tokenA := testToken(2)
 	tokenB := testToken(3)
 	tokenC := testToken(4)
@@ -139,9 +140,9 @@ func TestQuoteAppServiceFindsBestMultiHopRoute(t *testing.T) {
 
 	repo := newMemoryPoolRepo()
 	for _, item := range []struct {
-		addr                    common.Address
-		token0, token1          common.Address
-		liquidity               int64
+		addr           common.Address
+		token0, token1 common.Address
+		liquidity      int64
 	}{
 		{poolAB, tokenA, tokenB, 10_000_000_000_000},
 		{poolBC, tokenB, tokenC, 1_000_000_000_000},
@@ -153,15 +154,15 @@ func TestQuoteAppServiceFindsBestMultiHopRoute(t *testing.T) {
 		}
 	}
 
-	service := quoteapp.NewQuoteAppService(
+	service := quoteuniv3.NewAppService(
 		repo,
 		staticRegistry{addresses: []common.Address{poolAB, poolBC}},
-		domainquote.NewQuoteService(),
+		quoteuniv3domain.NewQuoteService(),
 		alwaysReady{},
 		3,
 	)
 
-	resp, err := service.Quote(context.Background(), quoteapp.QuoteRequest{
+	resp, err := service.Quote(context.Background(), quoteuniv3.Request{
 		TokenIn:  tokenA,
 		TokenOut: tokenC,
 		Mode:     quoteapp.QuoteModeExactInput,
@@ -178,16 +179,16 @@ func TestQuoteAppServiceFindsBestMultiHopRoute(t *testing.T) {
 	}
 }
 
-func TestQuoteAppServiceRejectsWhenSystemNotReady(t *testing.T) {
-	service := quoteapp.NewQuoteAppService(
+func TestAppServiceRejectsWhenSystemNotReady(t *testing.T) {
+	service := quoteuniv3.NewAppService(
 		newMemoryPoolRepo(),
 		staticRegistry{},
-		domainquote.NewQuoteService(),
+		quoteuniv3domain.NewQuoteService(),
 		notReadyChecker{},
 		3,
 	)
 
-	_, err := service.Quote(context.Background(), quoteapp.QuoteRequest{
+	_, err := service.Quote(context.Background(), quoteuniv3.Request{
 		TokenIn:  testToken(2),
 		TokenOut: testToken(3),
 		Mode:     quoteapp.QuoteModeExactInput,
@@ -200,5 +201,5 @@ func TestQuoteAppServiceRejectsWhenSystemNotReady(t *testing.T) {
 
 type notReadyChecker struct{}
 
-func (notReadyChecker) IsSystemReady() bool                   { return false }
+func (notReadyChecker) IsSystemReady() bool               { return false }
 func (notReadyChecker) IsPoolReady(_ common.Address) bool { return false }
