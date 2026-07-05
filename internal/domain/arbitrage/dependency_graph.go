@@ -3,33 +3,38 @@ package arbitrage
 import (
 	"sort"
 
-	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
+	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v4"
 	"github.com/ethereum/go-ethereum/common"
 )
 
 // RouteRef indexes a monitored route and its pool dependencies.
 type RouteRef struct {
 	ID    string
-	Route domainquote.Route
+	Route quoteunified.Route
 }
 
-// Pools returns the unique pool addresses used by the route.
-func (r RouteRef) Pools() []common.Address {
+// Pools returns the unique pool refs used by the route.
+func (r RouteRef) Pools() []PoolRef {
 	if len(r.Route.Hops) == 0 {
 		return nil
 	}
 
-	seen := make(map[common.Address]struct{}, len(r.Route.Hops))
-	pools := make([]common.Address, 0, len(r.Route.Hops))
+	seen := make(map[string]struct{}, len(r.Route.Hops))
+	pools := make([]PoolRef, 0, len(r.Route.Hops))
 	for _, hop := range r.Route.Hops {
-		if _, ok := seen[hop.PoolAddress]; ok {
+		ref := PoolRefFromHop(hop)
+		if ref.Key() == "" {
 			continue
 		}
-		seen[hop.PoolAddress] = struct{}{}
-		pools = append(pools, hop.PoolAddress)
+		if _, ok := seen[ref.Key()]; ok {
+			continue
+		}
+		seen[ref.Key()] = struct{}{}
+		pools = append(pools, ref)
 	}
 	sort.Slice(pools, func(i, j int) bool {
-		return pools[i].Hex() < pools[j].Hex()
+		return pools[i].Key() < pools[j].Key()
 	})
 	return pools
 }
@@ -37,13 +42,13 @@ func (r RouteRef) Pools() []common.Address {
 // DependencyGraph tracks which routes are affected when pool state changes.
 type DependencyGraph struct {
 	routes       map[string]RouteRef
-	poolToRoutes map[common.Address]map[string]struct{}
+	poolToRoutes map[string]map[string]struct{}
 }
 
 func NewDependencyGraph() *DependencyGraph {
 	return &DependencyGraph{
 		routes:       make(map[string]RouteRef),
-		poolToRoutes: make(map[common.Address]map[string]struct{}),
+		poolToRoutes: make(map[string]map[string]struct{}),
 	}
 }
 
@@ -55,10 +60,10 @@ func (g *DependencyGraph) Register(route RouteRef) {
 
 	if existing, ok := g.routes[route.ID]; ok {
 		for _, pool := range existing.Pools() {
-			if ids, ok := g.poolToRoutes[pool]; ok {
+			if ids, ok := g.poolToRoutes[pool.Key()]; ok {
 				delete(ids, route.ID)
 				if len(ids) == 0 {
-					delete(g.poolToRoutes, pool)
+					delete(g.poolToRoutes, pool.Key())
 				}
 			}
 		}
@@ -66,10 +71,14 @@ func (g *DependencyGraph) Register(route RouteRef) {
 
 	g.routes[route.ID] = route
 	for _, pool := range route.Pools() {
-		if _, ok := g.poolToRoutes[pool]; !ok {
-			g.poolToRoutes[pool] = make(map[string]struct{})
+		key := pool.Key()
+		if key == "" {
+			continue
 		}
-		g.poolToRoutes[pool][route.ID] = struct{}{}
+		if _, ok := g.poolToRoutes[key]; !ok {
+			g.poolToRoutes[key] = make(map[string]struct{})
+		}
+		g.poolToRoutes[key][route.ID] = struct{}{}
 	}
 }
 
@@ -80,10 +89,10 @@ func (g *DependencyGraph) Remove(routeID string) {
 		return
 	}
 	for _, pool := range route.Pools() {
-		if ids, ok := g.poolToRoutes[pool]; ok {
+		if ids, ok := g.poolToRoutes[pool.Key()]; ok {
 			delete(ids, routeID)
 			if len(ids) == 0 {
-				delete(g.poolToRoutes, pool)
+				delete(g.poolToRoutes, pool.Key())
 			}
 		}
 	}
@@ -91,15 +100,23 @@ func (g *DependencyGraph) Remove(routeID string) {
 }
 
 // AffectedRoutes returns routes that depend on any of the changed pools.
-func (g *DependencyGraph) AffectedRoutes(changedPools []common.Address) []RouteRef {
-	if len(changedPools) == 0 {
+func (g *DependencyGraph) AffectedRoutes(v3Pools []common.Address, v4Pools []marketv4.PoolID) []RouteRef {
+	if len(v3Pools) == 0 && len(v4Pools) == 0 {
 		return nil
+	}
+
+	changedKeys := make([]string, 0, len(v3Pools)+len(v4Pools))
+	for _, pool := range v3Pools {
+		changedKeys = append(changedKeys, PoolRefFromV3(pool).Key())
+	}
+	for _, pool := range v4Pools {
+		changedKeys = append(changedKeys, PoolRefFromV4(pool).Key())
 	}
 
 	seen := make(map[string]struct{})
 	routes := make([]RouteRef, 0)
-	for _, pool := range changedPools {
-		for routeID := range g.poolToRoutes[pool] {
+	for _, key := range changedKeys {
+		for routeID := range g.poolToRoutes[key] {
 			if _, ok := seen[routeID]; ok {
 				continue
 			}

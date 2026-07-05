@@ -6,8 +6,9 @@ import (
 	"math/big"
 
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
-	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
+	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v4"
 	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap"
 )
@@ -16,8 +17,10 @@ import (
 type ServiceDeps struct {
 	Logger              *zap.Logger
 	Pools               marketv3.PoolRepository
+	V4Pools             marketv4.PoolRepository
 	Registry            marketv3.PoolRegistry
-	Quotes              *domainquote.QuoteService
+	V4Registry          marketv4.PoolRegistry
+	Quotes              *quoteunified.QuoteService
 	Gas                 domainarb.GasEstimator
 	Strategies          []domainarb.Strategy
 	Readiness           ReadinessChecker
@@ -26,7 +29,7 @@ type ServiceDeps struct {
 	MaxAmount           *big.Int
 	OptimizerIterations int
 	Routes              []domainarb.RouteRef
-	PoolGraph           domainquote.PoolGraph
+	PoolGraph           quoteunified.PoolGraph
 }
 
 // Services bundles arbitrage application services.
@@ -68,6 +71,7 @@ func NewServices(deps ServiceDeps) *Services {
 		Scan: scan,
 		Opportunities: NewOpportunityService(
 			deps.Pools,
+			deps.V4Pools,
 			deps.Quotes,
 			gas,
 			deps.Strategies,
@@ -82,8 +86,14 @@ func NewServices(deps ServiceDeps) *Services {
 
 func registerTriangleRoutes(scan *ScanService, deps ServiceDeps) {
 	graph := deps.PoolGraph
-	if graph == nil && deps.Registry != nil && deps.Pools != nil {
-		if built, err := BuildPoolGraph(context.Background(), deps.Registry, deps.Pools); err == nil {
+	if graph == nil {
+		if built, err := BuildUnifiedPoolGraph(
+			context.Background(),
+			deps.Registry,
+			deps.Pools,
+			deps.V4Registry,
+			deps.V4Pools,
+		); err == nil {
 			graph = built
 		}
 	}
@@ -95,53 +105,8 @@ func registerTriangleRoutes(scan *ScanService, deps ServiceDeps) {
 		if strategy.Kind != domainarb.StrategyKindTriangle {
 			continue
 		}
-		scan.RegisterTriangleRoutes(graph, strategy.StartToken)
+		scan.RegisterUnifiedTriangleRoutes(graph, strategy.StartToken)
 	}
-}
-
-// BuildPoolGraph builds a routing graph from tracked pools.
-func BuildPoolGraph(ctx context.Context, registry marketv3.PoolRegistry, pools marketv3.PoolRepository) (domainquote.PoolGraph, error) {
-	if registry == nil {
-		return nil, fmt.Errorf("pool registry is nil")
-	}
-	if pools == nil {
-		return nil, fmt.Errorf("pool repository is nil")
-	}
-
-	addresses, err := registry.List(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list pools: %w", err)
-	}
-
-	edges := make([]domainquote.PoolEdge, 0, len(addresses))
-	for _, address := range addresses {
-		pool, err := pools.Get(ctx, address)
-		if err != nil {
-			return nil, fmt.Errorf("load pool %s: %w", address.Hex(), err)
-		}
-		if pool == nil {
-			continue
-		}
-		edges = append(edges, domainquote.PoolEdge{
-			PoolAddress: pool.Address,
-			Token0:      pool.Token0,
-			Token1:      pool.Token1,
-		})
-	}
-	return domainquote.NewStaticPoolGraph(edges), nil
-}
-
-// OnPoolsChanged implements sync ChangedPoolsListener.
-func (s *Services) OnPoolsChanged(ctx context.Context, blockNumber uint64, pools []common.Address) error {
-	routes := s.Scan.FindAffected(pools)
-	opportunities, err := s.Opportunities.Generate(ctx, GenerateRequest{
-		BlockNumber: blockNumber,
-		Routes:      routes,
-	})
-	if err != nil {
-		return err
-	}
-	return s.Publish.Publish(ctx, opportunities)
 }
 
 // TriangleStrategies builds triangle strategies for the given start tokens.

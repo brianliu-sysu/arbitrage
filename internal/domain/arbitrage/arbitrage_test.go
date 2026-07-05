@@ -7,12 +7,17 @@ import (
 	"testing"
 	"time"
 
-	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
+	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v4"
 	"github.com/ethereum/go-ethereum/common"
 )
 
 func testToken(index byte) common.Address {
 	return common.HexToAddress(fmt.Sprintf("0x000000000000000000000000000000000000000%x", index))
+}
+
+func testPoolID(index byte) marketv4.PoolID {
+	return marketv4.PoolID(common.HexToHash(fmt.Sprintf("0x%064x", index)))
 }
 
 func TestEvaluatorComputesNetProfit(t *testing.T) {
@@ -22,7 +27,7 @@ func TestEvaluatorComputesNetProfit(t *testing.T) {
 	result := evaluator.Evaluate(EvaluationInput{
 		Strategy:    strategy,
 		BlockNumber: 100,
-		Route:       domainquote.NewDirectRoute(testToken(9), testToken(1), testToken(2)),
+		Route:       quoteunified.NewDirectV3Route(testToken(9), testToken(1), testToken(2)),
 		AmountIn:    big.NewInt(1_000_000),
 		AmountOut:   big.NewInt(1_000_050),
 		GasCost:     big.NewInt(20),
@@ -84,28 +89,28 @@ func TestDependencyGraphAffectedRoutes(t *testing.T) {
 	graph := NewDependencyGraph()
 	routeA := RouteRef{
 		ID: "route-a",
-		Route: domainquote.Route{
+		Route: quoteunified.Route{
 			TokenIn:  testToken(1),
 			TokenOut: testToken(2),
-			Hops: []domainquote.RouteHop{
-				{PoolAddress: testToken(10), TokenIn: testToken(1), TokenOut: testToken(2)},
+			Hops: []quoteunified.RouteHop{
+				{Version: quoteunified.PoolVersionV3, PoolV3: testToken(10), TokenIn: testToken(1), TokenOut: testToken(2)},
 			},
 		},
 	}
 	routeB := RouteRef{
 		ID: "route-b",
-		Route: domainquote.Route{
+		Route: quoteunified.Route{
 			TokenIn:  testToken(2),
 			TokenOut: testToken(3),
-			Hops: []domainquote.RouteHop{
-				{PoolAddress: testToken(11), TokenIn: testToken(2), TokenOut: testToken(3)},
+			Hops: []quoteunified.RouteHop{
+				{Version: quoteunified.PoolVersionV3, PoolV3: testToken(11), TokenIn: testToken(2), TokenOut: testToken(3)},
 			},
 		},
 	}
 	graph.Register(routeA)
 	graph.Register(routeB)
 
-	affected := graph.AffectedRoutes([]common.Address{testToken(10)})
+	affected := graph.AffectedRoutes([]common.Address{testToken(10)}, nil)
 	if len(affected) != 1 || affected[0].ID != "route-a" {
 		t.Fatalf("expected route-a only, got %+v", affected)
 	}
@@ -127,7 +132,7 @@ func TestStaticGasEstimator(t *testing.T) {
 
 func TestNewOpportunity(t *testing.T) {
 	strategy := NewCycleStrategy("cycle-usdc", testToken(1), 3, big.NewInt(1))
-	route := domainquote.NewDirectRoute(testToken(9), testToken(1), testToken(2))
+	route := quoteunified.NewDirectV3Route(testToken(9), testToken(1), testToken(2))
 	evaluation := EvaluationResult{
 		AmountIn:    big.NewInt(1_000),
 		AmountOut:   big.NewInt(1_100),
@@ -155,17 +160,17 @@ func TestFindTriangleRoutes(t *testing.T) {
 	poolBC := testToken(11)
 	poolCA := testToken(12)
 
-	graph := domainquote.NewStaticPoolGraph([]domainquote.PoolEdge{
-		{PoolAddress: poolAB, Token0: tokenA, Token1: tokenB},
-		{PoolAddress: poolBC, Token0: tokenB, Token1: tokenC},
-		{PoolAddress: poolCA, Token0: tokenC, Token1: tokenA},
+	graph := quoteunified.NewStaticPoolGraph([]quoteunified.PoolEdge{
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolAB, Token0: tokenA, Token1: tokenB},
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolBC, Token0: tokenB, Token1: tokenC},
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolCA, Token0: tokenC, Token1: tokenA},
 	})
 
-	routes := FindTriangleRoutes(graph, tokenA)
+	routes := FindUnifiedTriangleRoutes(graph, tokenA)
 	if len(routes) != 2 {
 		t.Fatalf("expected 2 triangle routes, got %d", len(routes))
 	}
-	if !IsTriangleRoute(routes[0]) {
+	if !IsUnifiedTriangleRoute(routes[0]) {
 		t.Fatal("expected valid triangle route")
 	}
 	if !MatchesStrategy(NewTriangleStrategy("tri", tokenA, big.NewInt(1)), routes[0]) {
@@ -176,15 +181,69 @@ func TestFindTriangleRoutes(t *testing.T) {
 func TestTriangleStrategyRejectsTwoHopCycle(t *testing.T) {
 	tokenA := testToken(1)
 	tokenB := testToken(2)
-	route := domainquote.Route{
+	route := quoteunified.Route{
 		TokenIn:  tokenA,
 		TokenOut: tokenA,
-		Hops: []domainquote.RouteHop{
-			{PoolAddress: testToken(10), TokenIn: tokenA, TokenOut: tokenB},
-			{PoolAddress: testToken(10), TokenIn: tokenB, TokenOut: tokenA},
+		Hops: []quoteunified.RouteHop{
+			{Version: quoteunified.PoolVersionV3, PoolV3: testToken(10), TokenIn: tokenA, TokenOut: tokenB},
+			{Version: quoteunified.PoolVersionV3, PoolV3: testToken(10), TokenIn: tokenB, TokenOut: tokenA},
 		},
 	}
 	if MatchesStrategy(NewTriangleStrategy("tri", tokenA, big.NewInt(1)), route) {
 		t.Fatal("two-hop route should not match triangle strategy")
+	}
+}
+
+func TestFindUnifiedTriangleRoutesMixedPools(t *testing.T) {
+	tokenA := testToken(1)
+	tokenB := testToken(2)
+	tokenC := testToken(3)
+	poolAB := testToken(10)
+	poolCA := testToken(12)
+	poolBCID := testPoolID(11)
+
+	graph := quoteunified.NewStaticPoolGraph([]quoteunified.PoolEdge{
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolAB, Token0: tokenA, Token1: tokenB},
+		{Version: quoteunified.PoolVersionV4, PoolV4: poolBCID, Token0: tokenB, Token1: tokenC},
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolCA, Token0: tokenC, Token1: tokenA},
+	})
+
+	routes := FindUnifiedTriangleRoutes(graph, tokenA)
+	if len(routes) != 2 {
+		t.Fatalf("expected 2 mixed triangle routes, got %d", len(routes))
+	}
+	hasV4Hop := false
+	for _, route := range routes {
+		for _, hop := range route.Hops {
+			if hop.Version == quoteunified.PoolVersionV4 {
+				hasV4Hop = true
+			}
+		}
+	}
+	if !hasV4Hop {
+		t.Fatal("expected at least one route with a v4 hop")
+	}
+}
+
+func TestDependencyGraphAffectedRoutesV4(t *testing.T) {
+	poolBCID := testPoolID(11)
+	graph := NewDependencyGraph()
+	route := RouteRef{
+		ID: "mixed-tri",
+		Route: quoteunified.Route{
+			TokenIn:  testToken(1),
+			TokenOut: testToken(1),
+			Hops: []quoteunified.RouteHop{
+				{Version: quoteunified.PoolVersionV3, PoolV3: testToken(10), TokenIn: testToken(1), TokenOut: testToken(2)},
+				{Version: quoteunified.PoolVersionV4, PoolV4: poolBCID, TokenIn: testToken(2), TokenOut: testToken(3)},
+				{Version: quoteunified.PoolVersionV3, PoolV3: testToken(12), TokenIn: testToken(3), TokenOut: testToken(1)},
+			},
+		},
+	}
+	graph.Register(route)
+
+	affected := graph.AffectedRoutes(nil, []marketv4.PoolID{poolBCID})
+	if len(affected) != 1 || affected[0].ID != "mixed-tri" {
+		t.Fatalf("expected mixed-tri route, got %+v", affected)
 	}
 }

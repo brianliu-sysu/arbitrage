@@ -4,7 +4,7 @@ import (
 	"math/big"
 	"time"
 
-	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
+	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -22,9 +22,10 @@ type Opportunity struct {
 	ID          string
 	StrategyID  string
 	Status      OpportunityStatus
+	PoolRef     PoolRef
 	PoolAddress common.Address
 	BlockNumber uint64
-	Route       domainquote.Route
+	Route       quoteunified.Route
 	AmountIn    *big.Int
 	AmountOut   *big.Int
 	GrossProfit *big.Int
@@ -39,20 +40,23 @@ func NewOpportunity(
 	id string,
 	strategy Strategy,
 	blockNumber uint64,
-	route domainquote.Route,
+	route quoteunified.Route,
 	evaluation EvaluationResult,
 	gas GasEstimate,
 	createdAt time.Time,
 ) *Opportunity {
+	poolRef := PoolRef{}
 	poolAddress := common.Address{}
 	if len(route.Hops) > 0 {
-		poolAddress = route.Hops[0].PoolAddress
+		poolRef = PoolRefFromHop(route.Hops[0])
+		poolAddress = poolRef.PrimaryAddress()
 	}
 
 	return &Opportunity{
 		ID:          id,
 		StrategyID:  strategy.ID,
 		Status:      OpportunityStatusDiscovered,
+		PoolRef:     poolRef,
 		PoolAddress: poolAddress,
 		BlockNumber: blockNumber,
 		Route:       route,

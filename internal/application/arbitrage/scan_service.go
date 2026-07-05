@@ -3,6 +3,8 @@ package arbitrageapp
 import (
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
 	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
+	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v4"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -30,9 +32,9 @@ func (s *ScanService) RegisterRoute(route domainarb.RouteRef) {
 	s.graph.Register(route)
 }
 
-// FindAffected returns routes that depend on any changed pool.
-func (s *ScanService) FindAffected(changedPools []common.Address) []domainarb.RouteRef {
-	return s.graph.AffectedRoutes(changedPools)
+// FindAffected returns routes that depend on any changed V3 or V4 pool.
+func (s *ScanService) FindAffected(v3Pools []common.Address, v4Pools []marketv4.PoolID) []domainarb.RouteRef {
+	return s.graph.AffectedRoutes(v3Pools, v4Pools)
 }
 
 // Routes returns all registered routes.
@@ -40,14 +42,19 @@ func (s *ScanService) Routes() []domainarb.RouteRef {
 	return s.graph.Routes()
 }
 
-// RegisterTriangleRoutes discovers and registers A->B->C->A routes for a start token.
-func (s *ScanService) RegisterTriangleRoutes(graph domainquote.PoolGraph, startToken common.Address) int {
-	routes := domainarb.FindTriangleRoutes(graph, startToken)
+// RegisterUnifiedTriangleRoutes discovers and registers A->B->C->A routes on a unified graph.
+func (s *ScanService) RegisterUnifiedTriangleRoutes(graph quoteunified.PoolGraph, startToken common.Address) int {
+	routes := domainarb.FindUnifiedTriangleRoutes(graph, startToken)
 	for _, route := range routes {
 		s.RegisterRoute(domainarb.RouteRef{
-			ID:    domainarb.TriangleRouteID(route),
+			ID:    domainarb.UnifiedTriangleRouteIDWithPools(route),
 			Route: route,
 		})
 	}
 	return len(routes)
+}
+
+// RegisterTriangleRoutes discovers and registers triangle routes on a V3-only graph.
+func (s *ScanService) RegisterTriangleRoutes(graph domainquote.PoolGraph, startToken common.Address) int {
+	return s.RegisterUnifiedTriangleRoutes(domainarb.V3GraphToUnified(graph), startToken)
 }

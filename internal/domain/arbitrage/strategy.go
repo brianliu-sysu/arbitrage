@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"math/big"
 
-	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
+	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -74,19 +74,8 @@ func (s Strategy) Validate() error {
 }
 
 // MatchesStrategy reports whether a route satisfies the strategy constraints.
-func MatchesStrategy(strategy Strategy, route domainquote.Route) bool {
-	if route.TokenIn != strategy.StartToken || route.TokenOut != strategy.StartToken {
-		return false
-	}
-
-	switch strategy.Kind {
-	case StrategyKindCycle:
-		return route.Len() > 0 && route.Len() <= strategy.MaxHops
-	case StrategyKindTriangle:
-		return IsTriangleRoute(route)
-	default:
-		return false
-	}
+func MatchesStrategy(strategy Strategy, route quoteunified.Route) bool {
+	return MatchesUnifiedStrategy(strategy, route)
 }
 
 // MeetsMinimumProfit reports whether net profit satisfies the strategy threshold.

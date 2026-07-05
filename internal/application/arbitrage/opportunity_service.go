@@ -7,21 +7,24 @@ import (
 	"time"
 
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
-	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
+	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v4"
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// ReadinessChecker gates scanning on pool and system readiness.
+// ReadinessChecker gates scanning on pool and system readiness across protocols.
 type ReadinessChecker interface {
 	IsSystemReady() bool
-	IsPoolReady(poolAddress common.Address) bool
+	IsV3PoolReady(poolAddress common.Address) bool
+	IsV4PoolReady(poolID marketv4.PoolID) bool
 }
 
 // OpportunityService generates opportunities from affected routes.
 type OpportunityService struct {
-	pools      marketv3.PoolRepository
-	quotes     *domainquote.QuoteService
+	v3Pools    marketv3.PoolRepository
+	v4Pools    marketv4.PoolRepository
+	quotes     *quoteunified.QuoteService
 	evaluator  *domainarb.Evaluator
 	optimizer  *domainarb.Optimizer
 	gas        domainarb.GasEstimator
@@ -37,8 +40,9 @@ type GenerateRequest struct {
 }
 
 func NewOpportunityService(
-	pools marketv3.PoolRepository,
-	quotes *domainquote.QuoteService,
+	v3Pools marketv3.PoolRepository,
+	v4Pools marketv4.PoolRepository,
+	quotes *quoteunified.QuoteService,
 	gas domainarb.GasEstimator,
 	strategies []domainarb.Strategy,
 	readiness ReadinessChecker,
@@ -46,7 +50,8 @@ func NewOpportunityService(
 	optimizerIterations int,
 ) *OpportunityService {
 	return &OpportunityService{
-		pools:      pools,
+		v3Pools:    v3Pools,
+		v4Pools:    v4Pools,
 		quotes:     quotes,
 		evaluator:  domainarb.NewEvaluator(),
 		optimizer:  domainarb.NewOptimizer(minAmount, maxAmount, optimizerIterations),
@@ -149,35 +154,72 @@ func (s *OpportunityService) ensureRouteReady(routeRef domainarb.RouteRef) error
 		return nil
 	}
 	for _, hop := range routeRef.Route.Hops {
-		if !s.readiness.IsPoolReady(hop.PoolAddress) {
-			return fmt.Errorf("pool %s is not ready", hop.PoolAddress.Hex())
+		switch hop.Version {
+		case quoteunified.PoolVersionV3:
+			if !s.readiness.IsV3PoolReady(hop.PoolV3) {
+				return fmt.Errorf("v3 pool %s is not ready", hop.PoolV3.Hex())
+			}
+		case quoteunified.PoolVersionV4:
+			if !s.readiness.IsV4PoolReady(hop.PoolV4) {
+				return fmt.Errorf("v4 pool %s is not ready", hop.PoolV4.String())
+			}
+		default:
+			return fmt.Errorf("unsupported pool version %d", hop.Version)
 		}
 	}
 	return nil
 }
 
-func (s *OpportunityService) loadRoutePools(ctx context.Context, route domainquote.Route) (map[common.Address]*marketv3.Pool, error) {
-	pools := make(map[common.Address]*marketv3.Pool, route.Len())
-	for _, hop := range route.Hops {
-		if _, ok := pools[hop.PoolAddress]; ok {
-			continue
-		}
-		pool, err := s.pools.Get(ctx, hop.PoolAddress)
-		if err != nil {
-			return nil, fmt.Errorf("load pool %s: %w", hop.PoolAddress.Hex(), err)
-		}
-		if pool == nil {
-			return nil, fmt.Errorf("pool %s not found", hop.PoolAddress.Hex())
-		}
-		pools[hop.PoolAddress] = pool
+func (s *OpportunityService) loadRoutePools(ctx context.Context, route quoteunified.Route) (quoteunified.RoutePools, error) {
+	pools := quoteunified.RoutePools{
+		V3: make(map[common.Address]*marketv3.Pool),
+		V4: make(map[marketv4.PoolID]*marketv4.Pool),
 	}
+
+	for _, hop := range route.Hops {
+		switch hop.Version {
+		case quoteunified.PoolVersionV3:
+			if _, ok := pools.V3[hop.PoolV3]; ok {
+				continue
+			}
+			if s.v3Pools == nil {
+				return quoteunified.RoutePools{}, fmt.Errorf("v3 pool repository is nil")
+			}
+			pool, err := s.v3Pools.Get(ctx, hop.PoolV3)
+			if err != nil {
+				return quoteunified.RoutePools{}, fmt.Errorf("load v3 pool %s: %w", hop.PoolV3.Hex(), err)
+			}
+			if pool == nil {
+				return quoteunified.RoutePools{}, fmt.Errorf("v3 pool %s not found", hop.PoolV3.Hex())
+			}
+			pools.V3[hop.PoolV3] = pool
+		case quoteunified.PoolVersionV4:
+			if _, ok := pools.V4[hop.PoolV4]; ok {
+				continue
+			}
+			if s.v4Pools == nil {
+				return quoteunified.RoutePools{}, fmt.Errorf("v4 pool repository is nil")
+			}
+			pool, err := s.v4Pools.Get(ctx, hop.PoolV4)
+			if err != nil {
+				return quoteunified.RoutePools{}, fmt.Errorf("load v4 pool %s: %w", hop.PoolV4.String(), err)
+			}
+			if pool == nil {
+				return quoteunified.RoutePools{}, fmt.Errorf("v4 pool %s not found", hop.PoolV4.String())
+			}
+			pools.V4[hop.PoolV4] = pool
+		default:
+			return quoteunified.RoutePools{}, fmt.Errorf("unsupported pool version %d", hop.Version)
+		}
+	}
+
 	return pools, nil
 }
 
 type routeQuoter struct {
-	quotes *domainquote.QuoteService
-	pools  map[common.Address]*marketv3.Pool
-	route  domainquote.Route
+	quotes *quoteunified.QuoteService
+	pools  quoteunified.RoutePools
+	route  quoteunified.Route
 }
 
 func (q routeQuoter) QuoteAmountOut(amountIn *big.Int) (*big.Int, error) {

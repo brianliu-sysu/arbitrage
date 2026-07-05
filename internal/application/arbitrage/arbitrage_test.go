@@ -10,7 +10,11 @@ import (
 	arbitrageapp "github.com/brianliu-sysu/uniswapv3/internal/application/arbitrage"
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
 	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
+	quoteuniv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
+	quoteuniv4domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ4"
+	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v4"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -61,6 +65,49 @@ func (r *memoryPoolRepo) AdvanceSyncProgressMany(_ context.Context, addresses []
 	return nil
 }
 
+type memoryV4PoolRepo struct {
+	pools map[marketv4.PoolID]*marketv4.Pool
+}
+
+func newMemoryV4PoolRepo() *memoryV4PoolRepo {
+	return &memoryV4PoolRepo{pools: make(map[marketv4.PoolID]*marketv4.Pool)}
+}
+
+func (r *memoryV4PoolRepo) Save(_ context.Context, pool *marketv4.Pool) error {
+	r.pools[pool.ID] = pool.Clone()
+	return nil
+}
+
+func (r *memoryV4PoolRepo) Get(_ context.Context, id marketv4.PoolID) (*marketv4.Pool, error) {
+	pool, ok := r.pools[id]
+	if !ok {
+		return nil, nil
+	}
+	return pool.Clone(), nil
+}
+
+func (r *memoryV4PoolRepo) Delete(_ context.Context, id marketv4.PoolID) error {
+	delete(r.pools, id)
+	return nil
+}
+
+func (r *memoryV4PoolRepo) AdvanceSyncProgress(ctx context.Context, id marketv4.PoolID, blockNumber uint64) error {
+	return r.AdvanceSyncProgressMany(ctx, []marketv4.PoolID{id}, blockNumber)
+}
+
+func (r *memoryV4PoolRepo) AdvanceSyncProgressMany(_ context.Context, ids []marketv4.PoolID, blockNumber uint64) error {
+	for _, id := range ids {
+		pool, ok := r.pools[id]
+		if !ok || pool == nil {
+			return fmt.Errorf("pool %s not found", id.String())
+		}
+		if blockNumber > pool.LastBlockNumber {
+			pool.LastBlockNumber = blockNumber
+		}
+	}
+	return nil
+}
+
 type memoryOpportunityRepo struct {
 	items map[string]*domainarb.Opportunity
 }
@@ -94,8 +141,9 @@ func (r *memoryOpportunityRepo) Delete(_ context.Context, id string) error {
 
 type alwaysReady struct{}
 
-func (alwaysReady) IsSystemReady() bool              { return true }
-func (alwaysReady) IsPoolReady(_ common.Address) bool { return true }
+func (alwaysReady) IsSystemReady() bool                         { return true }
+func (alwaysReady) IsV3PoolReady(_ common.Address) bool         { return true }
+func (alwaysReady) IsV4PoolReady(_ marketv4.PoolID) bool        { return true }
 
 func testToken(index byte) common.Address {
 	return common.HexToAddress(fmt.Sprintf("0x000000000000000000000000000000000000000%x", index))
@@ -115,6 +163,33 @@ func setupQuotedPool(address, token0, token1 common.Address, liquidity int64) *m
 	return pool
 }
 
+func setupV4Pool(token0, token1 common.Address, liquidity int64) (*marketv4.Pool, marketv4.PoolID) {
+	key := marketv4.PoolKey{
+		Currency0:   token0,
+		Currency1:   token1,
+		Fee:         3000,
+		TickSpacing: 60,
+	}
+	id, err := marketv4.ComputePoolID(key)
+	if err != nil {
+		panic(err)
+	}
+
+	pool := marketv4.NewPool(id, key)
+	meta := marketv4.EventMeta{PoolID: id, BlockNumber: 1}
+	_ = pool.Apply(marketv4.NewInitializeEvent(meta, sqrtPriceAtTick0(), 0))
+	_ = pool.Apply(marketv4.NewModifyLiquidityEvent(meta, common.Address{}, -120, 120, big.NewInt(liquidity), common.Hash{}))
+	pool.Status = market.PoolStatusReady
+	return pool, id
+}
+
+func unifiedQuotes() *quoteunified.QuoteService {
+	return quoteunified.NewQuoteService(
+		quoteuniv3domain.NewQuoteService(),
+		quoteuniv4domain.NewQuoteService(),
+	)
+}
+
 func TestScanServiceFindsAffectedRoutes(t *testing.T) {
 	tokenA := testToken(2)
 	tokenB := testToken(3)
@@ -123,17 +198,17 @@ func TestScanServiceFindsAffectedRoutes(t *testing.T) {
 	scan := arbitrageapp.NewScanService(domainarb.NewDependencyGraph())
 	scan.RegisterRoute(domainarb.RouteRef{
 		ID: "cycle-ab",
-		Route: domainquote.Route{
+		Route: quoteunified.Route{
 			TokenIn:  tokenA,
 			TokenOut: tokenA,
-			Hops: []domainquote.RouteHop{
-				{PoolAddress: poolAB, TokenIn: tokenA, TokenOut: tokenB},
-				{PoolAddress: poolAB, TokenIn: tokenB, TokenOut: tokenA},
+			Hops: []quoteunified.RouteHop{
+				{Version: quoteunified.PoolVersionV3, PoolV3: poolAB, TokenIn: tokenA, TokenOut: tokenB},
+				{Version: quoteunified.PoolVersionV3, PoolV3: poolAB, TokenIn: tokenB, TokenOut: tokenA},
 			},
 		},
 	})
 
-	affected := scan.FindAffected([]common.Address{poolAB})
+	affected := scan.FindAffected([]common.Address{poolAB}, nil)
 	if len(affected) != 1 || affected[0].ID != "cycle-ab" {
 		t.Fatalf("expected cycle-ab route, got %+v", affected)
 	}
@@ -159,10 +234,38 @@ func TestScanServiceRegistersTriangleRoutes(t *testing.T) {
 		t.Fatalf("expected 2 triangle routes, got %d", count)
 	}
 
-	affected := scan.FindAffected([]common.Address{poolBC})
+	affected := scan.FindAffected([]common.Address{poolBC}, nil)
 	if len(affected) != 2 {
 		t.Fatalf("expected 2 affected triangle routes, got %+v", affected)
 	}
+}
+
+func TestScanServiceRegistersMixedTriangleRoutes(t *testing.T) {
+	tokenA := testToken(2)
+	tokenB := testToken(3)
+	tokenC := testToken(4)
+	poolAB := testToken(10)
+	poolCA := testToken(12)
+
+	poolBC, poolBCID := setupV4Pool(tokenB, tokenC, 1_000_000_000_000)
+
+	graph := quoteunified.NewStaticPoolGraph([]quoteunified.PoolEdge{
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolAB, Token0: tokenA, Token1: tokenB},
+		{Version: quoteunified.PoolVersionV4, PoolV4: poolBCID, Token0: tokenB, Token1: tokenC},
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolCA, Token0: tokenC, Token1: tokenA},
+	})
+
+	scan := arbitrageapp.NewScanService(domainarb.NewDependencyGraph())
+	count := scan.RegisterUnifiedTriangleRoutes(graph, tokenA)
+	if count != 2 {
+		t.Fatalf("expected 2 mixed triangle routes, got %d", count)
+	}
+
+	affected := scan.FindAffected(nil, []marketv4.PoolID{poolBCID})
+	if len(affected) != 2 {
+		t.Fatalf("expected 2 affected mixed triangle routes, got %+v", affected)
+	}
+	_ = poolBC
 }
 
 func TestServicesOnPoolsChangedRunsPipeline(t *testing.T) {
@@ -179,7 +282,7 @@ func TestServicesOnPoolsChangedRunsPipeline(t *testing.T) {
 	oppRepo := newMemoryOpportunityRepo()
 	services := arbitrageapp.NewServices(arbitrageapp.ServiceDeps{
 		Pools:   repo,
-		Quotes:  domainquote.NewQuoteService(),
+		Quotes:  unifiedQuotes(),
 		Gas:     domainarb.NewStaticGasEstimator(100_000, 80_000, big.NewInt(1)),
 		Strategies: []domainarb.Strategy{
 			domainarb.NewCycleStrategy("cycle-a", tokenA, 2, big.NewInt(1)),
@@ -192,12 +295,12 @@ func TestServicesOnPoolsChangedRunsPipeline(t *testing.T) {
 		Routes: []domainarb.RouteRef{
 			{
 				ID: "cycle-ab",
-				Route: domainquote.Route{
+				Route: quoteunified.Route{
 					TokenIn:  tokenA,
 					TokenOut: tokenA,
-					Hops: []domainquote.RouteHop{
-						{PoolAddress: poolAB, TokenIn: tokenA, TokenOut: tokenB},
-						{PoolAddress: poolAB, TokenIn: tokenB, TokenOut: tokenA},
+					Hops: []quoteunified.RouteHop{
+						{Version: quoteunified.PoolVersionV3, PoolV3: poolAB, TokenIn: tokenA, TokenOut: tokenB},
+						{Version: quoteunified.PoolVersionV3, PoolV3: poolAB, TokenIn: tokenB, TokenOut: tokenA},
 					},
 				},
 			},
@@ -225,7 +328,7 @@ func TestPublishServicePersistsOpportunity(t *testing.T) {
 		"opp-1",
 		domainarb.NewCycleStrategy("cycle-a", testToken(2), 2, big.NewInt(1)),
 		42,
-		domainquote.NewDirectRoute(testToken(10), testToken(2), testToken(3)),
+		quoteunified.NewDirectV3Route(testToken(10), testToken(2), testToken(3)),
 		domainarb.EvaluationResult{
 			AmountIn:    big.NewInt(1_000),
 			AmountOut:   big.NewInt(1_100),

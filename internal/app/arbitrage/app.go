@@ -165,12 +165,22 @@ func newRuntimeBundle(
 		strategies = nil
 	}
 
+	readiness := &quotecombined.SyncReadiness{V3: syncServices.Readiness}
+	if syncV4Services != nil {
+		readiness.V4 = syncV4Services.Readiness
+	}
+
 	arbitrageServices := arbitrageapp.NewServices(arbitrageapp.ServiceDeps{
 		Logger:              logger,
 		Pools:               store.Pools,
+		V4Pools:             store.V4Pools,
 		Registry:            poolRegistry,
-		Quotes:              quoteuniv3domain.NewQuoteService(),
-		Readiness:           syncServices.Readiness,
+		V4Registry:          v4PoolRegistry,
+		Quotes: quoteunified.NewQuoteService(
+			quoteuniv3domain.NewQuoteService(),
+			quoteuniv4domain.NewQuoteService(),
+		),
+		Readiness:           readiness,
 		Repository:          store.Opportunities,
 		Strategies:          strategies,
 		MinAmount:           triangleCfg.OptimizerMinAmount(),
@@ -179,6 +189,9 @@ func newRuntimeBundle(
 	})
 
 	syncServices.BlockApply.SetListener(arbitrageServices)
+	if syncV4Services != nil {
+		syncV4Services.BlockApply.SetListener(arbitrageapp.V4PoolListener{Services: arbitrageServices})
+	}
 	if cfg.TriangleArbitrageEnabled() {
 		logger.Info("triangle arbitrage enabled",
 			zap.Int("start_tokens", len(triangleCfg.StartTokens)),

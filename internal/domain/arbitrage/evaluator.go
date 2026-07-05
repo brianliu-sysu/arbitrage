@@ -3,14 +3,14 @@ package arbitrage
 import (
 	"math/big"
 
-	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
+	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 )
 
 // EvaluationInput contains the data required to evaluate a candidate route.
 type EvaluationInput struct {
 	Strategy    Strategy
 	BlockNumber uint64
-	Route       domainquote.Route
+	Route       quoteunified.Route
 	AmountIn    *big.Int
 	AmountOut   *big.Int
 	GasCost     *big.Int
