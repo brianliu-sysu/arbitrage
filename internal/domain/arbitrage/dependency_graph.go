@@ -100,14 +100,17 @@ func (g *DependencyGraph) Remove(routeID string) {
 }
 
 // AffectedRoutes returns routes that depend on any of the changed pools.
-func (g *DependencyGraph) AffectedRoutes(v3Pools []common.Address, v4Pools []marketv4.PoolID) []RouteRef {
-	if len(v3Pools) == 0 && len(v4Pools) == 0 {
+func (g *DependencyGraph) AffectedRoutes(v3Pools, pancakePools []common.Address, v4Pools []marketv4.PoolID) []RouteRef {
+	if len(v3Pools) == 0 && len(pancakePools) == 0 && len(v4Pools) == 0 {
 		return nil
 	}
 
-	changedKeys := make([]string, 0, len(v3Pools)+len(v4Pools))
+	changedKeys := make([]string, 0, len(v3Pools)+len(pancakePools)+len(v4Pools))
 	for _, pool := range v3Pools {
 		changedKeys = append(changedKeys, PoolRefFromV3(pool).Key())
+	}
+	for _, pool := range pancakePools {
+		changedKeys = append(changedKeys, PoolRefFromPancakeV3(pool).Key())
 	}
 	for _, pool := range v4Pools {
 		changedKeys = append(changedKeys, PoolRefFromV4(pool).Key())

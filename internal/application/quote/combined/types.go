@@ -5,7 +5,7 @@ import (
 
 	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
-	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
+	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -17,7 +17,7 @@ type Request struct {
 	AmountIn    *big.Int
 	AmountOut   *big.Int
 	PoolAddress *common.Address
-	PoolID      *marketv4.PoolID
+	PoolID      *marketuniv4.PoolID
 }
 
 func (r Request) IsExactInput() bool {

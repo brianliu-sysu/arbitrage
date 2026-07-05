@@ -147,6 +147,8 @@ func toRouteCombinedHTTPResponse(route quoteunified.Route) routeCombinedHTTPResp
 		switch hop.Version {
 		case quoteunified.PoolVersionV3:
 			item.PoolAddress = hop.PoolV3.Hex()
+		case quoteunified.PoolVersionPancakeV3:
+			item.PoolAddress = hop.PoolPancakeV3.Hex()
 		case quoteunified.PoolVersionV4:
 			item.PoolID = hop.PoolV4.String()
 		}

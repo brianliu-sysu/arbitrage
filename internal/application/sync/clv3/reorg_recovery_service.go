@@ -1,4 +1,4 @@
-package syncv3
+package clv3sync
 
 import (
 	"context"
@@ -6,7 +6,6 @@ import (
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
-	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -16,7 +15,7 @@ type ReorgRecoveryService struct {
 	config      Config
 	blocks      BlockReader
 	checkpoints blockchain.CheckpointRepository
-	pools       marketv3.PoolRepository
+	pools       PoolRepository
 	snapshots   *SnapshotService
 	fetcher     LogFetcher
 	parser      EventParser
@@ -28,7 +27,7 @@ func NewReorgRecoveryService(
 	config Config,
 	blocks BlockReader,
 	checkpoints blockchain.CheckpointRepository,
-	pools marketv3.PoolRepository,
+	pools PoolRepository,
 	snapshots *SnapshotService,
 	fetcher LogFetcher,
 	parser EventParser,

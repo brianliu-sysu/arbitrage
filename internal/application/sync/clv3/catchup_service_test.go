@@ -1,4 +1,4 @@
-package syncv3
+package clv3sync
 
 import (
 	"context"

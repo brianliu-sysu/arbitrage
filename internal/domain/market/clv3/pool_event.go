@@ -1,4 +1,4 @@
-package univ3
+package clv3
 
 import (
 	"math/big"
@@ -6,7 +6,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// EventKind identifies the type of on-chain V3 pool log.
+// EventKind identifies the type of on-chain concentrated-liquidity V3 pool log.
 type EventKind int
 
 const (
@@ -16,7 +16,7 @@ const (
 	EventKindBurn
 )
 
-// EventMeta holds common metadata for every V3 pool log.
+// EventMeta holds common metadata for every V3-style pool log.
 type EventMeta struct {
 	PoolAddress common.Address
 	BlockNumber uint64

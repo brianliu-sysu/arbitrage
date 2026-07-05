@@ -1,11 +1,11 @@
-package syncv3
+package clv3sync
 
 import (
 	"context"
 	"math/big"
 	"testing"
 
-	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
+	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -30,8 +30,8 @@ func (r *countingBootstrapReader) ReadBootstrapData(_ context.Context, _ common.
 	}, nil
 }
 
-func initializedPool(address common.Address, lastBlock uint64) *marketv3.Pool {
-	pool := marketv3.NewPool(address, common.Address{}, common.Address{}, 3000, 60)
+func initializedPool(address common.Address, lastBlock uint64) *marketclv3.Pool {
+	pool := marketclv3.NewPool(address, common.Address{}, common.Address{}, 3000, 60)
 	sqrtPrice, _ := new(big.Int).SetString("79228162514264337593543950336", 10)
 	pool.State.SqrtPriceX96 = sqrtPrice
 	pool.State.Tick = 0
@@ -48,7 +48,7 @@ func TestBootstrapRefreshesStalePoolFromChain(t *testing.T) {
 	poolRepo := &bootstrapPoolRepo{
 		pool: initializedPool(address, 9000),
 	}
-	service := NewBootstrapService(poolRepo, reader, nil, 1000)
+	service := NewBootstrapService(poolRepo, marketclv3.NewPool, reader, nil, 1000)
 
 	pool, err := service.Bootstrap(ctx, address, 10_001)
 	if err != nil {
@@ -76,7 +76,7 @@ func TestBootstrapSkipsChainRefreshWithinThreshold(t *testing.T) {
 	poolRepo := &bootstrapPoolRepo{
 		pool: initializedPool(address, 9500),
 	}
-	service := NewBootstrapService(poolRepo, reader, nil, 1000)
+	service := NewBootstrapService(poolRepo, marketclv3.NewPool, reader, nil, 1000)
 
 	pool, err := service.Bootstrap(ctx, address, 10_000)
 	if err != nil {
@@ -91,15 +91,15 @@ func TestBootstrapSkipsChainRefreshWithinThreshold(t *testing.T) {
 }
 
 type bootstrapPoolRepo struct {
-	pool *marketv3.Pool
+	pool *marketclv3.Pool
 }
 
-func (r *bootstrapPoolRepo) Save(_ context.Context, pool *marketv3.Pool) error {
+func (r *bootstrapPoolRepo) Save(_ context.Context, pool *marketclv3.Pool) error {
 	r.pool = pool.Clone()
 	return nil
 }
 
-func (r *bootstrapPoolRepo) Get(_ context.Context, _ common.Address) (*marketv3.Pool, error) {
+func (r *bootstrapPoolRepo) Get(_ context.Context, _ common.Address) (*marketclv3.Pool, error) {
 	if r.pool == nil {
 		return nil, nil
 	}

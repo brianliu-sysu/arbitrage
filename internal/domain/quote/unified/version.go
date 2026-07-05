@@ -5,15 +5,18 @@ type PoolVersion int
 
 const (
 	PoolVersionV3 PoolVersion = iota + 1
+	PoolVersionPancakeV3
 	PoolVersionV4
 )
 
 func (v PoolVersion) String() string {
 	switch v {
 	case PoolVersionV3:
-		return "v3"
+		return "univ3"
+	case PoolVersionPancakeV3:
+		return "pancakev3"
 	case PoolVersionV4:
-		return "v4"
+		return "univ4"
 	default:
 		return "unknown"
 	}

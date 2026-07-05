@@ -1,4 +1,4 @@
-package syncv3
+package clv3sync
 
 import (
 	"context"
@@ -58,7 +58,7 @@ func (o *SyncOrchestrator) Start(ctx context.Context) error {
 	})
 }
 
-// Services bundles the V3 sync application services for wiring.
+// Services bundles CLMM V3 sync application services for wiring.
 type Services struct {
 	Config     Config
 	Readiness  *ReadinessService
@@ -84,7 +84,7 @@ func NewServices(deps ServiceDeps) *Services {
 	readiness := NewReadinessService()
 	snapshotPolicy := SnapshotPolicy{BlockInterval: deps.Config.SnapshotInterval}
 	snapshots := NewSnapshotService(deps.Snapshots, snapshotPolicy)
-	bootstrap := NewBootstrapService(deps.Pools, deps.Bootstrap, snapshots, deps.Config.BootstrapStaleBlockThreshold)
+	bootstrap := NewBootstrapService(deps.Pools, deps.NewPool, deps.Bootstrap, snapshots, deps.Config.BootstrapStaleBlockThreshold)
 	lifecycle := NewPoolLifecycleService(deps.Registry, bootstrap, readiness)
 	blockApply := NewBlockApplyService(deps.Pools, deps.Checkpoints, snapshots, readiness, deps.Listener)
 	catchup := NewCatchupService(deps.Config, deps.Pools, deps.Checkpoints, deps.Fetcher, deps.Parser, blockApply, lifecycle, deps.Blocks)

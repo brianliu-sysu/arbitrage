@@ -36,6 +36,8 @@ func poolRefFromUnifiedEdge(edge quoteunified.PoolEdge) PoolRef {
 	switch edge.Version {
 	case quoteunified.PoolVersionV3:
 		return PoolRefFromV3(edge.PoolV3)
+	case quoteunified.PoolVersionPancakeV3:
+		return PoolRefFromPancakeV3(edge.PoolPancakeV3)
 	case quoteunified.PoolVersionV4:
 		return PoolRefFromV4(edge.PoolV4)
 	default:
@@ -113,6 +115,9 @@ func unifiedHop(edge unifiedTriangleEdge) quoteunified.RouteHop {
 	case quoteunified.PoolVersionV3:
 		hop.Version = quoteunified.PoolVersionV3
 		hop.PoolV3 = edge.poolRef.V3
+	case quoteunified.PoolVersionPancakeV3:
+		hop.Version = quoteunified.PoolVersionPancakeV3
+		hop.PoolPancakeV3 = edge.poolRef.PancakeV3
 	case quoteunified.PoolVersionV4:
 		hop.Version = quoteunified.PoolVersionV4
 		hop.PoolV4 = edge.poolRef.V4

@@ -2,21 +2,27 @@ package arbitrage
 
 import (
 	"fmt"
+	"strings"
 
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// PoolRef identifies a pool in either Uniswap V3 or V4.
+// PoolRef identifies a pool in Uniswap V3, PancakeSwap V3, or V4.
 type PoolRef struct {
-	Version quoteunified.PoolVersion
-	V3      common.Address
-	V4      marketv4.PoolID
+	Version   quoteunified.PoolVersion
+	V3        common.Address
+	PancakeV3 common.Address
+	V4        marketv4.PoolID
 }
 
 func PoolRefFromV3(address common.Address) PoolRef {
 	return PoolRef{Version: quoteunified.PoolVersionV3, V3: address}
+}
+
+func PoolRefFromPancakeV3(address common.Address) PoolRef {
+	return PoolRef{Version: quoteunified.PoolVersionPancakeV3, PancakeV3: address}
 }
 
 func PoolRefFromV4(id marketv4.PoolID) PoolRef {
@@ -27,6 +33,8 @@ func PoolRefFromHop(hop quoteunified.RouteHop) PoolRef {
 	switch hop.Version {
 	case quoteunified.PoolVersionV3:
 		return PoolRefFromV3(hop.PoolV3)
+	case quoteunified.PoolVersionPancakeV3:
+		return PoolRefFromPancakeV3(hop.PoolPancakeV3)
 	case quoteunified.PoolVersionV4:
 		return PoolRefFromV4(hop.PoolV4)
 	default:
@@ -39,6 +47,8 @@ func (p PoolRef) Key() string {
 	switch p.Version {
 	case quoteunified.PoolVersionV3:
 		return "v3:" + p.V3.Hex()
+	case quoteunified.PoolVersionPancakeV3:
+		return "pancakev3:" + p.PancakeV3.Hex()
 	case quoteunified.PoolVersionV4:
 		return "v4:" + p.V4.String()
 	default:
@@ -53,27 +63,34 @@ func (p PoolRef) String() string {
 	return "unknown"
 }
 
-// PrimaryAddress returns the V3 pool address when available.
+// PrimaryAddress returns the pool address when the ref is address-based.
 func (p PoolRef) PrimaryAddress() common.Address {
-	if p.Version == quoteunified.PoolVersionV3 {
+	switch p.Version {
+	case quoteunified.PoolVersionV3:
 		return p.V3
+	case quoteunified.PoolVersionPancakeV3:
+		return p.PancakeV3
+	default:
+		return common.Address{}
 	}
-	return common.Address{}
 }
 
 func poolRefFromKey(key string) (PoolRef, error) {
-	if len(key) < 4 {
-		return PoolRef{}, fmt.Errorf("invalid pool ref key %q", key)
-	}
-	switch key[:3] {
-	case "v3:":
-		addr := common.HexToAddress(key[3:])
+	switch {
+	case strings.HasPrefix(key, "pancakev3:"):
+		addr := common.HexToAddress(key[len("pancakev3:"):])
+		if addr == (common.Address{}) {
+			return PoolRef{}, fmt.Errorf("invalid pancakev3 pool ref key %q", key)
+		}
+		return PoolRefFromPancakeV3(addr), nil
+	case strings.HasPrefix(key, "v3:"):
+		addr := common.HexToAddress(key[len("v3:"):])
 		if addr == (common.Address{}) {
 			return PoolRef{}, fmt.Errorf("invalid v3 pool ref key %q", key)
 		}
 		return PoolRefFromV3(addr), nil
-	case "v4:":
-		hash := common.HexToHash(key[3:])
+	case strings.HasPrefix(key, "v4:"):
+		hash := common.HexToHash(key[len("v4:"):])
 		if hash == (common.Hash{}) {
 			return PoolRef{}, fmt.Errorf("invalid v4 pool ref key %q", key)
 		}

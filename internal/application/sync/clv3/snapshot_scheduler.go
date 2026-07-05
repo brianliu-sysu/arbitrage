@@ -1,24 +1,22 @@
-package syncv3
+package clv3sync
 
 import (
 	"context"
 	"fmt"
 	"time"
-
-	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 )
 
 // SnapshotScheduler periodically creates snapshots as a fallback safety net.
 type SnapshotScheduler struct {
 	config    Config
-	pools     marketv3.PoolRepository
+	pools     PoolRepository
 	snapshots *SnapshotService
 	lifecycle *PoolLifecycleService
 }
 
 func NewSnapshotScheduler(
 	config Config,
-	pools marketv3.PoolRepository,
+	pools PoolRepository,
 	snapshots *SnapshotService,
 	lifecycle *PoolLifecycleService,
 ) *SnapshotScheduler {

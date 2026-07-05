@@ -4,7 +4,7 @@ import (
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
 	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
-	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
+	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -32,9 +32,9 @@ func (s *ScanService) RegisterRoute(route domainarb.RouteRef) {
 	s.graph.Register(route)
 }
 
-// FindAffected returns routes that depend on any changed V3 or V4 pool.
-func (s *ScanService) FindAffected(v3Pools []common.Address, v4Pools []marketv4.PoolID) []domainarb.RouteRef {
-	return s.graph.AffectedRoutes(v3Pools, v4Pools)
+// FindAffected returns routes that depend on any changed Uniswap V3, Pancake V3, or V4 pool.
+func (s *ScanService) FindAffected(univ3Pools, pancakePools []common.Address, univ4Pools []marketuniv4.PoolID) []domainarb.RouteRef {
+	return s.graph.AffectedRoutes(univ3Pools, pancakePools, univ4Pools)
 }
 
 // Routes returns all registered routes.

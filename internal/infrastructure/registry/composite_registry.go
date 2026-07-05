@@ -16,7 +16,7 @@ type CompositeRegistry struct {
 	subgraphEnabled bool
 }
 
-func NewCompositeRegistry(cfg config.V3SyncConfig) *CompositeRegistry {
+func NewCompositeRegistry(cfg config.Univ3SyncConfig) *CompositeRegistry {
 	return &CompositeRegistry{
 		static:          staticAddresses(cfg.Pools),
 		subgraph:        NewSubgraphRegistry(cfg.Subgraph),

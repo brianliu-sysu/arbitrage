@@ -12,8 +12,9 @@ const apiV1Prefix = "/api/v1"
 type Handlers struct {
 	Health        *HealthHandler
 	QuoteCombined *QuoteCombinedHandler
-	QuoteV3       *QuoteV3Handler
-	QuoteV4       *QuoteV4Handler
+	QuoteV3        *QuoteV3Handler
+	QuoteV4        *QuoteV4Handler
+	QuotePancakeV3 *QuotePancakeV3Handler
 }
 
 // NewRouter registers HTTP routes on a Gin engine.
@@ -40,6 +41,9 @@ func NewRouter(handlers Handlers) *gin.Engine {
 		}
 		if handlers.QuoteV4 != nil {
 			v1.POST("/univ4/quote", handlers.QuoteV4.HandleQuote)
+		}
+		if handlers.QuotePancakeV3 != nil {
+			v1.POST("/pancakev3/quote", handlers.QuotePancakeV3.HandleQuote)
 		}
 	}
 

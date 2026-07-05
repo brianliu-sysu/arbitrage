@@ -1,4 +1,4 @@
-package syncv3
+package clv3sync
 
 import (
 	"context"
@@ -6,14 +6,14 @@ import (
 	"sort"
 
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
-	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
+	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	"github.com/ethereum/go-ethereum/common"
 )
 
 // BlockApplyService applies pool events for a single block.
 type BlockApplyService struct {
-	pools       marketv3.PoolRepository
+	pools       PoolRepository
 	checkpoints blockchain.CheckpointRepository
 	snapshots   *SnapshotService
 	readiness   *ReadinessService
@@ -21,7 +21,7 @@ type BlockApplyService struct {
 }
 
 func NewBlockApplyService(
-	pools marketv3.PoolRepository,
+	pools PoolRepository,
 	checkpoints blockchain.CheckpointRepository,
 	snapshots *SnapshotService,
 	readiness *ReadinessService,
@@ -50,7 +50,7 @@ func (s *BlockApplyService) SetListener(listener ChangedPoolsListener) {
 type ApplyBlockRequest struct {
 	BlockNumber      uint64
 	BlockHash        common.Hash
-	Events           []marketv3.PoolEvent
+	Events           []marketclv3.PoolEvent
 	TrackedPools     []common.Address
 	SuppressListener bool
 }
@@ -175,8 +175,8 @@ func (s *BlockApplyService) MarkPoolsReady(ctx context.Context, poolAddresses []
 	return nil
 }
 
-func groupEventsByPool(events []marketv3.PoolEvent) map[common.Address][]marketv3.PoolEvent {
-	grouped := make(map[common.Address][]marketv3.PoolEvent)
+func groupEventsByPool(events []marketclv3.PoolEvent) map[common.Address][]marketclv3.PoolEvent {
+	grouped := make(map[common.Address][]marketclv3.PoolEvent)
 	for _, event := range events {
 		poolAddress := event.Meta.PoolAddress
 		grouped[poolAddress] = append(grouped[poolAddress], event)

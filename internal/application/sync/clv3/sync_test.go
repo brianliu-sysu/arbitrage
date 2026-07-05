@@ -1,4 +1,4 @@
-package syncv3_test
+package clv3sync_test
 
 import (
 	"context"
@@ -7,27 +7,27 @@ import (
 	"testing"
 	"time"
 
-	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ3"
+	clv3sync "github.com/brianliu-sysu/uniswapv3/internal/application/sync/clv3"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
-	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
+	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	"github.com/ethereum/go-ethereum/common"
 )
 
 type memoryPoolRepo struct {
-	pools map[common.Address]*marketv3.Pool
+	pools map[common.Address]*marketclv3.Pool
 }
 
 func newMemoryPoolRepo() *memoryPoolRepo {
-	return &memoryPoolRepo{pools: make(map[common.Address]*marketv3.Pool)}
+	return &memoryPoolRepo{pools: make(map[common.Address]*marketclv3.Pool)}
 }
 
-func (r *memoryPoolRepo) Save(_ context.Context, pool *marketv3.Pool) error {
+func (r *memoryPoolRepo) Save(_ context.Context, pool *marketclv3.Pool) error {
 	r.pools[pool.Address] = pool.Clone()
 	return nil
 }
 
-func (r *memoryPoolRepo) Get(_ context.Context, address common.Address) (*marketv3.Pool, error) {
+func (r *memoryPoolRepo) Get(_ context.Context, address common.Address) (*marketclv3.Pool, error) {
 	pool, ok := r.pools[address]
 	if !ok {
 		return nil, nil
@@ -98,19 +98,19 @@ func (r *memoryCheckpointRepo) Delete(_ context.Context, poolAddress common.Addr
 }
 
 type memorySnapshotRepo struct {
-	snapshots map[common.Address][]*marketv3.Snapshot
+	snapshots map[common.Address][]*marketclv3.Snapshot
 }
 
 func newMemorySnapshotRepo() *memorySnapshotRepo {
-	return &memorySnapshotRepo{snapshots: make(map[common.Address][]*marketv3.Snapshot)}
+	return &memorySnapshotRepo{snapshots: make(map[common.Address][]*marketclv3.Snapshot)}
 }
 
-func (r *memorySnapshotRepo) Save(_ context.Context, snapshot *marketv3.Snapshot) error {
+func (r *memorySnapshotRepo) Save(_ context.Context, snapshot *marketclv3.Snapshot) error {
 	r.snapshots[snapshot.PoolAddress] = append(r.snapshots[snapshot.PoolAddress], snapshot)
 	return nil
 }
 
-func (r *memorySnapshotRepo) GetLatest(_ context.Context, poolAddress common.Address) (*marketv3.Snapshot, error) {
+func (r *memorySnapshotRepo) GetLatest(_ context.Context, poolAddress common.Address) (*marketclv3.Snapshot, error) {
 	items := r.snapshots[poolAddress]
 	if len(items) == 0 {
 		return nil, nil
@@ -118,7 +118,7 @@ func (r *memorySnapshotRepo) GetLatest(_ context.Context, poolAddress common.Add
 	return items[len(items)-1], nil
 }
 
-func (r *memorySnapshotRepo) GetAtBlock(_ context.Context, poolAddress common.Address, blockNumber uint64) (*marketv3.Snapshot, error) {
+func (r *memorySnapshotRepo) GetAtBlock(_ context.Context, poolAddress common.Address, blockNumber uint64) (*marketclv3.Snapshot, error) {
 	for i := len(r.snapshots[poolAddress]) - 1; i >= 0; i-- {
 		if r.snapshots[poolAddress][i].BlockNumber == blockNumber {
 			return r.snapshots[poolAddress][i], nil
@@ -129,7 +129,7 @@ func (r *memorySnapshotRepo) GetAtBlock(_ context.Context, poolAddress common.Ad
 
 func (r *memorySnapshotRepo) DeleteAfterBlock(_ context.Context, poolAddress common.Address, blockNumber uint64) error {
 	items := r.snapshots[poolAddress]
-	kept := make([]*marketv3.Snapshot, 0, len(items))
+	kept := make([]*marketclv3.Snapshot, 0, len(items))
 	for _, snapshot := range items {
 		if snapshot.BlockNumber <= blockNumber {
 			kept = append(kept, snapshot)
@@ -169,9 +169,9 @@ func (r *memoryRegistry) Remove(_ context.Context, address common.Address) error
 
 type stubBootstrapReader struct{}
 
-func (stubBootstrapReader) ReadBootstrapData(_ context.Context, poolAddress common.Address, _ uint64) (*syncv3.BootstrapData, error) {
+func (stubBootstrapReader) ReadBootstrapData(_ context.Context, poolAddress common.Address, _ uint64) (*clv3sync.BootstrapData, error) {
 	sqrtPrice, _ := new(big.Int).SetString("79228162514264337593543950336", 10)
-	return &syncv3.BootstrapData{
+	return &clv3sync.BootstrapData{
 		TickSpacing: 60,
 		Fee:         3000,
 		State: market.PoolState{
@@ -185,30 +185,30 @@ func (stubBootstrapReader) ReadBootstrapData(_ context.Context, poolAddress comm
 }
 
 type stubLogFetcher struct {
-	events []marketv3.PoolEvent
+	events []marketclv3.PoolEvent
 }
 
-func (f *stubLogFetcher) FetchLogs(_ context.Context, filter syncv3.LogFilter) ([]syncv3.RawLog, error) {
+func (f *stubLogFetcher) FetchLogs(_ context.Context, filter clv3sync.LogFilter) ([]clv3sync.RawLog, error) {
 	_ = filter
 	return nil, nil
 }
 
 type countingLogFetcher struct {
 	calls      int
-	lastFilter syncv3.LogFilter
+	lastFilter clv3sync.LogFilter
 }
 
-func (f *countingLogFetcher) FetchLogs(_ context.Context, filter syncv3.LogFilter) ([]syncv3.RawLog, error) {
+func (f *countingLogFetcher) FetchLogs(_ context.Context, filter clv3sync.LogFilter) ([]clv3sync.RawLog, error) {
 	f.calls++
 	f.lastFilter = filter
 	return nil, nil
 }
 
 type stubParser struct {
-	events []marketv3.PoolEvent
+	events []marketclv3.PoolEvent
 }
 
-func (p *stubParser) ParsePoolEvents(_ []syncv3.RawLog) ([]marketv3.PoolEvent, error) {
+func (p *stubParser) ParsePoolEvents(_ []clv3sync.RawLog) ([]marketclv3.PoolEvent, error) {
 	return p.events, nil
 }
 
@@ -247,11 +247,11 @@ func TestBlockApplyServiceApplyBlock(t *testing.T) {
 	poolRepo := newMemoryPoolRepo()
 	checkpointRepo := newMemoryCheckpointRepo()
 	snapshotRepo := newMemorySnapshotRepo()
-	readiness := syncv3.NewReadinessService()
+	readiness := clv3sync.NewReadinessService()
 
-	pool := marketv3.NewPool(testPoolAddress(), common.Address{}, common.Address{}, 3000, 60)
+	pool := marketclv3.NewPool(testPoolAddress(), common.Address{}, common.Address{}, 3000, 60)
 	sqrtPrice, _ := new(big.Int).SetString("79228162514264337593543950336", 10)
-	if err := pool.Apply(marketv3.NewInitializeEvent(marketv3.EventMeta{
+	if err := pool.Apply(marketclv3.NewInitializeEvent(marketclv3.EventMeta{
 		PoolAddress: testPoolAddress(),
 		BlockNumber: 1,
 	}, sqrtPrice, 0)); err != nil {
@@ -262,20 +262,20 @@ func TestBlockApplyServiceApplyBlock(t *testing.T) {
 		t.Fatalf("save pool: %v", err)
 	}
 
-	snapshots := syncv3.NewSnapshotService(snapshotRepo, syncv3.SnapshotPolicy{BlockInterval: 1})
-	blockApply := syncv3.NewBlockApplyService(poolRepo, checkpointRepo, snapshots, readiness, nil)
+	snapshots := clv3sync.NewSnapshotService(snapshotRepo, clv3sync.SnapshotPolicy{BlockInterval: 1})
+	blockApply := clv3sync.NewBlockApplyService(poolRepo, checkpointRepo, snapshots, readiness, nil)
 
-	swapEvent := marketv3.NewSwapEvent(
-		marketv3.EventMeta{PoolAddress: testPoolAddress(), BlockNumber: 2},
+	swapEvent := marketclv3.NewSwapEvent(
+		marketclv3.EventMeta{PoolAddress: testPoolAddress(), BlockNumber: 2},
 		common.Address{}, common.Address{},
 		big.NewInt(-1), big.NewInt(1),
 		sqrtPrice, big.NewInt(1000), 0,
 	)
 
-	result, err := blockApply.ApplyBlock(ctx, syncv3.ApplyBlockRequest{
+	result, err := blockApply.ApplyBlock(ctx, clv3sync.ApplyBlockRequest{
 		BlockNumber: 2,
 		BlockHash:   common.HexToHash("0x2"),
-		Events:      []marketv3.PoolEvent{swapEvent},
+		Events:      []marketclv3.PoolEvent{swapEvent},
 	})
 	if err != nil {
 		t.Fatalf("apply block: %v", err)
@@ -308,17 +308,17 @@ func TestBlockApplyServiceSuppressListener(t *testing.T) {
 	ctx := context.Background()
 	poolRepo := newMemoryPoolRepo()
 	checkpointRepo := newMemoryCheckpointRepo()
-	readiness := syncv3.NewReadinessService()
+	readiness := clv3sync.NewReadinessService()
 	listener := &recordingListener{}
 
-	pool := marketv3.NewPool(testPoolAddress(), common.Address{}, common.Address{}, 3000, 60)
+	pool := marketclv3.NewPool(testPoolAddress(), common.Address{}, common.Address{}, 3000, 60)
 	pool.LastBlockNumber = 1
 	if err := poolRepo.Save(ctx, pool); err != nil {
 		t.Fatalf("save pool: %v", err)
 	}
 
-	blockApply := syncv3.NewBlockApplyService(poolRepo, checkpointRepo, nil, readiness, listener)
-	_, err := blockApply.ApplyBlock(ctx, syncv3.ApplyBlockRequest{
+	blockApply := clv3sync.NewBlockApplyService(poolRepo, checkpointRepo, nil, readiness, listener)
+	_, err := blockApply.ApplyBlock(ctx, clv3sync.ApplyBlockRequest{
 		BlockNumber:      2,
 		BlockHash:        common.HexToHash("0x2"),
 		TrackedPools:     []common.Address{testPoolAddress()},
@@ -331,7 +331,7 @@ func TestBlockApplyServiceSuppressListener(t *testing.T) {
 		t.Fatalf("expected listener suppressed, got %d calls", listener.calls)
 	}
 
-	_, err = blockApply.ApplyBlock(ctx, syncv3.ApplyBlockRequest{
+	_, err = blockApply.ApplyBlock(ctx, clv3sync.ApplyBlockRequest{
 		BlockNumber:  3,
 		BlockHash:    common.HexToHash("0x3"),
 		TrackedPools: []common.Address{testPoolAddress()},
@@ -347,10 +347,10 @@ func TestBlockApplyServiceSuppressListener(t *testing.T) {
 func TestBlockApplyServiceMarkPoolsReady(t *testing.T) {
 	ctx := context.Background()
 	poolRepo := newMemoryPoolRepo()
-	readiness := syncv3.NewReadinessService()
-	blockApply := syncv3.NewBlockApplyService(poolRepo, newMemoryCheckpointRepo(), nil, readiness, nil)
+	readiness := clv3sync.NewReadinessService()
+	blockApply := clv3sync.NewBlockApplyService(poolRepo, newMemoryCheckpointRepo(), nil, readiness, nil)
 
-	pool := marketv3.NewPool(testPoolAddress(), common.Address{}, common.Address{}, 3000, 60)
+	pool := marketclv3.NewPool(testPoolAddress(), common.Address{}, common.Address{}, 3000, 60)
 	pool.Status = market.PoolStatusCatchingUp
 	if err := poolRepo.Save(ctx, pool); err != nil {
 		t.Fatalf("save pool: %v", err)
@@ -378,18 +378,19 @@ func TestCatchupServiceSkipsWhenPoolAheadOfCheckpoint(t *testing.T) {
 	checkpointRepo := newMemoryCheckpointRepo()
 	registry := newMemoryRegistry(testPoolAddress())
 
-	services := syncv3.NewServices(syncv3.ServiceDeps{
-		Config:      syncv3.DefaultConfig(),
+	services := clv3sync.NewServices(clv3sync.ServiceDeps{
+		Config:      clv3sync.DefaultConfig(),
 		Pools:       poolRepo,
 		Checkpoints: checkpointRepo,
 		Registry:    registry,
+		NewPool:     marketclv3.NewPool,
 		Fetcher:     &stubLogFetcher{},
 		Parser:      &stubParser{},
 		Blocks:      newStubBlockReader(blockchain.BlockHeader{Number: 200, Hash: common.HexToHash("0x200")}),
 		Bootstrap:   stubBootstrapReader{},
 	})
 
-	pool := marketv3.NewPool(testPoolAddress(), common.Address{}, common.Address{}, 3000, 60)
+	pool := marketclv3.NewPool(testPoolAddress(), common.Address{}, common.Address{}, 3000, 60)
 	sqrtPrice, _ := new(big.Int).SetString("79228162514264337593543950336", 10)
 	pool.State.SqrtPriceX96 = sqrtPrice
 	pool.State.Tick = 0
@@ -420,15 +421,16 @@ func TestCatchupServiceCatchUpPool(t *testing.T) {
 	poolRepo := newMemoryPoolRepo()
 	checkpointRepo := newMemoryCheckpointRepo()
 	snapshotRepo := newMemorySnapshotRepo()
-	readiness := syncv3.NewReadinessService()
+	readiness := clv3sync.NewReadinessService()
 	registry := newMemoryRegistry(testPoolAddress())
 
-	services := syncv3.NewServices(syncv3.ServiceDeps{
-		Config:      syncv3.DefaultConfig(),
+	services := clv3sync.NewServices(clv3sync.ServiceDeps{
+		Config:      clv3sync.DefaultConfig(),
 		Pools:       poolRepo,
 		Checkpoints: checkpointRepo,
 		Snapshots:   snapshotRepo,
 		Registry:    registry,
+		NewPool:     marketclv3.NewPool,
 		Fetcher:     &stubLogFetcher{},
 		Parser:      &stubParser{},
 		Blocks: newStubBlockReader(
@@ -464,12 +466,13 @@ func TestCatchupServiceCatchUpAllBatchesPools(t *testing.T) {
 	registry := newMemoryRegistry(poolA, poolB, poolC)
 	fetcher := &countingLogFetcher{}
 
-	services := syncv3.NewServices(syncv3.ServiceDeps{
-		Config:      syncv3.DefaultConfig(),
+	services := clv3sync.NewServices(clv3sync.ServiceDeps{
+		Config:      clv3sync.DefaultConfig(),
 		Pools:       poolRepo,
 		Checkpoints: checkpointRepo,
 		Snapshots:   newMemorySnapshotRepo(),
 		Registry:    registry,
+		NewPool:     marketclv3.NewPool,
 		Fetcher:     fetcher,
 		Parser:      &stubParser{},
 		Blocks: newStubBlockReader(
@@ -504,7 +507,7 @@ func TestCatchupServiceCatchUpAllBatchesPools(t *testing.T) {
 }
 
 func TestReadinessServicePoolLevel(t *testing.T) {
-	readiness := syncv3.NewReadinessService()
+	readiness := clv3sync.NewReadinessService()
 	pool := testPoolAddress()
 
 	readiness.SetSystemReady(true)
@@ -526,14 +529,15 @@ func TestSnapshotSchedulerRunOnce(t *testing.T) {
 	ctx := context.Background()
 	poolRepo := newMemoryPoolRepo()
 	snapshotRepo := newMemorySnapshotRepo()
-	readiness := syncv3.NewReadinessService()
+	readiness := clv3sync.NewReadinessService()
 	registry := newMemoryRegistry(testPoolAddress())
 
-	services := syncv3.NewServices(syncv3.ServiceDeps{
+	services := clv3sync.NewServices(clv3sync.ServiceDeps{
 		Pools:       poolRepo,
 		Checkpoints: newMemoryCheckpointRepo(),
 		Snapshots:   snapshotRepo,
 		Registry:    registry,
+		NewPool:     marketclv3.NewPool,
 		Bootstrap:   stubBootstrapReader{},
 	})
 
@@ -541,7 +545,7 @@ func TestSnapshotSchedulerRunOnce(t *testing.T) {
 		t.Fatalf("start pool: %v", err)
 	}
 
-	scheduler := syncv3.NewSnapshotScheduler(syncv3.Config{SnapshotFallback: time.Minute}, poolRepo, services.Snapshot, services.Lifecycle)
+	scheduler := clv3sync.NewSnapshotScheduler(clv3sync.Config{SnapshotFallback: time.Minute}, poolRepo, services.Snapshot, services.Lifecycle)
 	if err := scheduler.RunOnce(ctx); err != nil {
 		t.Fatalf("run snapshot scheduler: %v", err)
 	}
@@ -560,11 +564,12 @@ func TestHeadSyncServiceHandleHead(t *testing.T) {
 	snapshotRepo := newMemorySnapshotRepo()
 	registry := newMemoryRegistry(testPoolAddress())
 
-	services := syncv3.NewServices(syncv3.ServiceDeps{
+	services := clv3sync.NewServices(clv3sync.ServiceDeps{
 		Pools:       poolRepo,
 		Checkpoints: checkpointRepo,
 		Snapshots:   snapshotRepo,
 		Registry:    registry,
+		NewPool:     marketclv3.NewPool,
 		Fetcher:     &stubLogFetcher{},
 		Parser:      &stubParser{},
 		Bootstrap:   stubBootstrapReader{},

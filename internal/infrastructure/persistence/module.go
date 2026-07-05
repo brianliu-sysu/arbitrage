@@ -6,10 +6,12 @@ import (
 	"os"
 
 	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ3"
+	syncpancakev3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/pancakev3"
 	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ4"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
+	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/persistence/memory"
 	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/persistence/postgres"
@@ -23,10 +25,13 @@ type Config struct {
 
 // Services bundles repository implementations.
 type Services struct {
-	Pools         marketv3.PoolRepository
-	Snapshots     marketv3.SnapshotRepository
-	Checkpoints   blockchain.CheckpointRepository
-	Opportunities arbitrage.OpportunityRepository
+	Pools           marketv3.PoolRepository
+	Snapshots       marketv3.SnapshotRepository
+	Checkpoints     blockchain.CheckpointRepository
+	PancakePools    marketpancake.PoolRepository
+	PancakeSnapshots marketpancake.SnapshotRepository
+	PancakeCheckpoints blockchain.CheckpointRepository
+	Opportunities   arbitrage.OpportunityRepository
 	V4Pools       marketv4.PoolRepository
 	V4Snapshots   marketv4.SnapshotRepository
 	V4Checkpoints blockchain.V4CheckpointRepository
@@ -36,10 +41,13 @@ type Services struct {
 }
 
 type memoryBundle struct {
-	pools         *memory.PoolRepository
-	snapshots     *memory.SnapshotRepository
-	checkpoints   *memory.CheckpointRepository
-	opportunities *memory.OpportunityRepository
+	pools              *memory.PoolRepository
+	snapshots          *memory.SnapshotRepository
+	checkpoints        *memory.CheckpointRepository
+	pancakePools       *memory.PancakePoolRepository
+	pancakeSnapshots   *memory.PancakeSnapshotRepository
+	pancakeCheckpoints *memory.CheckpointRepository
+	opportunities      *memory.OpportunityRepository
 	v4Pools       *memory.V4PoolRepository
 	v4Snapshots   *memory.V4SnapshotRepository
 	v4Checkpoints *memory.V4CheckpointRepository
@@ -48,19 +56,25 @@ type memoryBundle struct {
 // MemoryServices returns in-memory repositories for local development and tests.
 func MemoryServices() *Services {
 	bundle := &memoryBundle{
-		pools:         memory.NewPoolRepository(),
-		snapshots:     memory.NewSnapshotRepository(),
-		checkpoints:   memory.NewCheckpointRepository(),
-		opportunities: memory.NewOpportunityRepository(),
-		v4Pools:       memory.NewV4PoolRepository(),
-		v4Snapshots:   memory.NewV4SnapshotRepository(),
-		v4Checkpoints: memory.NewV4CheckpointRepository(),
+		pools:              memory.NewPoolRepository(),
+		snapshots:          memory.NewSnapshotRepository(),
+		checkpoints:        memory.NewCheckpointRepository(),
+		pancakePools:       memory.NewPancakePoolRepository(),
+		pancakeSnapshots:   memory.NewPancakeSnapshotRepository(),
+		pancakeCheckpoints: memory.NewCheckpointRepository(),
+		opportunities:      memory.NewOpportunityRepository(),
+		v4Pools:            memory.NewV4PoolRepository(),
+		v4Snapshots:        memory.NewV4SnapshotRepository(),
+		v4Checkpoints:      memory.NewV4CheckpointRepository(),
 	}
 	return &Services{
-		Pools:         bundle.pools,
-		Snapshots:     bundle.snapshots,
-		Checkpoints:   bundle.checkpoints,
-		Opportunities: bundle.opportunities,
+		Pools:              bundle.pools,
+		Snapshots:          bundle.snapshots,
+		Checkpoints:        bundle.checkpoints,
+		PancakePools:       bundle.pancakePools,
+		PancakeSnapshots:   bundle.pancakeSnapshots,
+		PancakeCheckpoints: bundle.pancakeCheckpoints,
+		Opportunities:      bundle.opportunities,
 		V4Pools:       bundle.v4Pools,
 		V4Snapshots:   bundle.v4Snapshots,
 		V4Checkpoints: bundle.v4Checkpoints,
@@ -80,10 +94,13 @@ func NewServices(ctx context.Context, cfg Config) (*Services, error) {
 	}
 
 	return &Services{
-		Pools:         postgres.NewPoolRepository(db),
-		Snapshots:     postgres.NewSnapshotRepository(db),
-		Checkpoints:   postgres.NewCheckpointRepository(db),
-		Opportunities: postgres.NewOpportunityRepository(db),
+		Pools:              postgres.NewPoolRepository(db),
+		Snapshots:          postgres.NewSnapshotRepository(db),
+		Checkpoints:        postgres.NewCheckpointRepository(db),
+		PancakePools:       memory.NewPancakePoolRepository(),
+		PancakeSnapshots:   memory.NewPancakeSnapshotRepository(),
+		PancakeCheckpoints: memory.NewCheckpointRepository(),
+		Opportunities:      postgres.NewOpportunityRepository(db),
 		V4Pools:       memory.NewV4PoolRepository(),
 		V4Snapshots:   memory.NewV4SnapshotRepository(),
 		V4Checkpoints: memory.NewV4CheckpointRepository(),
@@ -97,6 +114,19 @@ func (s *Services) SyncDeps() syncv3.ServiceDeps {
 		Pools:       s.Pools,
 		Snapshots:   s.Snapshots,
 		Checkpoints: s.Checkpoints,
+	}
+	if s.Postgres != nil {
+		deps.Health = append(deps.Health, s.Postgres)
+	}
+	return deps
+}
+
+// SyncPancakeV3Deps returns repositories for PancakeSwap V3 sync application wiring.
+func (s *Services) SyncPancakeV3Deps() syncpancakev3.ServiceDeps {
+	deps := syncpancakev3.ServiceDeps{
+		Pools:       s.PancakePools,
+		Snapshots:   s.PancakeSnapshots,
+		Checkpoints: s.PancakeCheckpoints,
 	}
 	if s.Postgres != nil {
 		deps.Health = append(deps.Health, s.Postgres)

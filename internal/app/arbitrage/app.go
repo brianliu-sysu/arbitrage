@@ -11,11 +11,14 @@ import (
 	arbitrageapp "github.com/brianliu-sysu/uniswapv3/internal/application/arbitrage"
 	quotecombined "github.com/brianliu-sysu/uniswapv3/internal/application/quote/combined"
 	quoteuniv3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/univ3"
+	quotepancakev3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/pancakev3"
 	quoteuniv4 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/univ4"
 	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ3"
+	syncpancakev3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/pancakev3"
 	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ4"
 	"github.com/brianliu-sysu/uniswapv3/internal/config"
 	quoteuniv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
+	quotepancakev3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/pancakev3"
 	quoteuniv4domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ4"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	chaininfra "github.com/brianliu-sysu/uniswapv3/internal/infrastructure/blockchain"
@@ -50,14 +53,18 @@ func Module(params Params) fx.Option {
 			newPersistence,
 			newBlockchain,
 			newPoolRegistry,
+			newPancakePoolRegistry,
 			newV4PoolRegistry,
 			newRuntimeBundle,
 			provideSyncServices,
+			provideSyncPancakeServices,
 			provideSyncV4Services,
 			provideArbitrageServices,
 			newSyncOrchestrator,
+			newSyncPancakeOrchestrator,
 			newSyncV4Orchestrator,
 			newQuoteV3AppService,
+			newQuotePancakeV3AppService,
 			newQuoteV4AppService,
 			newQuoteCombinedAppService,
 			newHTTPRouter,
@@ -105,20 +112,28 @@ func newBlockchain(cfg config.Config) (*chaininfra.Services, error) {
 }
 
 func newPoolRegistry(cfg config.Config) *registry.CompositeRegistry {
-	return registry.NewCompositeRegistry(cfg.Sync.V3)
+	return registry.NewCompositeRegistry(cfg.Sync.Univ3)
+}
+
+func newPancakePoolRegistry(cfg config.Config) *registry.PancakeCompositeRegistry {
+	if !cfg.Sync.PancakeV3.IsActive() {
+		return nil
+	}
+	return registry.NewPancakeCompositeRegistry(cfg.Sync.PancakeV3)
 }
 
 func newV4PoolRegistry(cfg config.Config) (*registry.CompositeV4Registry, error) {
-	if !cfg.Sync.V4.IsActive() {
+	if !cfg.Sync.Univ4.IsActive() {
 		return nil, nil
 	}
-	return registry.NewCompositeV4Registry(cfg.Sync.V4)
+	return registry.NewCompositeV4Registry(cfg.Sync.Univ4)
 }
 
 type runtimeBundle struct {
-	Sync      *syncv3.Services
-	SyncV4    *syncv4.Services
-	Arbitrage *arbitrageapp.Services
+	Sync         *syncv3.Services
+	SyncPancake  *syncpancakev3.Services
+	SyncV4       *syncv4.Services
+	Arbitrage    *arbitrageapp.Services
 }
 
 func newRuntimeBundle(
@@ -127,6 +142,7 @@ func newRuntimeBundle(
 	store *persistence.Services,
 	chain *chaininfra.Services,
 	poolRegistry *registry.CompositeRegistry,
+	pancakePoolRegistry *registry.PancakeCompositeRegistry,
 	v4PoolRegistry *registry.CompositeV4Registry,
 ) (*runtimeBundle, error) {
 	deps := chain.SyncDeps()
@@ -142,10 +158,27 @@ func newRuntimeBundle(
 
 	syncServices := syncv3.NewServices(deps)
 
+	var syncPancakeServices *syncpancakev3.Services
+	if cfg.Sync.PancakeV3.IsActive() {
+		if pancakePoolRegistry == nil {
+			return nil, fmt.Errorf("pancake pool registry is required when sync.pancakev3 is enabled")
+		}
+		pancakeDeps := chain.SyncPancakeV3Deps()
+		pancakePersist := store.SyncPancakeV3Deps()
+		pancakeDeps.Config = cfg.SyncConfig()
+		pancakeDeps.Pools = pancakePersist.Pools
+		pancakeDeps.Snapshots = pancakePersist.Snapshots
+		pancakeDeps.Checkpoints = pancakePersist.Checkpoints
+		pancakeDeps.Registry = pancakePoolRegistry
+		pancakeDeps.Health = append(pancakeDeps.Health, pancakePersist.Health...)
+		pancakeDeps.Listener = syncpancakev3.NopChangedPoolsListener{}
+		syncPancakeServices = syncpancakev3.NewServices(pancakeDeps)
+	}
+
 	var syncV4Services *syncv4.Services
-	if cfg.Sync.V4.IsActive() {
+	if cfg.Sync.Univ4.IsActive() {
 		if v4PoolRegistry == nil {
-			return nil, fmt.Errorf("v4 pool registry is required when sync.v4 is enabled")
+			return nil, fmt.Errorf("univ4 pool registry is required when sync.univ4 is enabled")
 		}
 		v4Deps := chain.SyncV4Deps()
 		v4Persist := store.SyncV4Deps()
@@ -166,6 +199,9 @@ func newRuntimeBundle(
 	}
 
 	readiness := &quotecombined.SyncReadiness{V3: syncServices.Readiness}
+	if syncPancakeServices != nil {
+		readiness.Pancake = syncPancakeServices.Readiness
+	}
 	if syncV4Services != nil {
 		readiness.V4 = syncV4Services.Readiness
 	}
@@ -173,11 +209,14 @@ func newRuntimeBundle(
 	arbitrageServices := arbitrageapp.NewServices(arbitrageapp.ServiceDeps{
 		Logger:              logger,
 		Pools:               store.Pools,
+		PancakePools:        store.PancakePools,
 		V4Pools:             store.V4Pools,
 		Registry:            poolRegistry,
+		PancakeRegistry:     pancakePoolRegistry,
 		V4Registry:          v4PoolRegistry,
 		Quotes: quoteunified.NewQuoteService(
 			quoteuniv3domain.NewQuoteService(),
+			quotepancakev3domain.NewQuoteService(),
 			quoteuniv4domain.NewQuoteService(),
 		),
 		Readiness:           readiness,
@@ -189,6 +228,9 @@ func newRuntimeBundle(
 	})
 
 	syncServices.BlockApply.SetListener(arbitrageServices)
+	if syncPancakeServices != nil {
+		syncPancakeServices.BlockApply.SetListener(arbitrageapp.PancakePoolListener{Services: arbitrageServices})
+	}
 	if syncV4Services != nil {
 		syncV4Services.BlockApply.SetListener(arbitrageapp.V4PoolListener{Services: arbitrageServices})
 	}
@@ -202,14 +244,19 @@ func newRuntimeBundle(
 	}
 
 	return &runtimeBundle{
-		Sync:      syncServices,
-		SyncV4:    syncV4Services,
-		Arbitrage: arbitrageServices,
+		Sync:        syncServices,
+		SyncPancake: syncPancakeServices,
+		SyncV4:      syncV4Services,
+		Arbitrage:   arbitrageServices,
 	}, nil
 }
 
 func provideSyncServices(bundle *runtimeBundle) *syncv3.Services {
 	return bundle.Sync
+}
+
+func provideSyncPancakeServices(bundle *runtimeBundle) *syncpancakev3.Services {
+	return bundle.SyncPancake
 }
 
 func provideSyncV4Services(bundle *runtimeBundle) *syncv4.Services {
@@ -221,6 +268,13 @@ func provideArbitrageServices(bundle *runtimeBundle) *arbitrageapp.Services {
 }
 
 func newSyncOrchestrator(services *syncv3.Services, chain *chaininfra.Services) *syncv3.SyncOrchestrator {
+	return services.NewOrchestrator(chain.Client)
+}
+
+func newSyncPancakeOrchestrator(services *syncpancakev3.Services, chain *chaininfra.Services) *syncpancakev3.SyncOrchestrator {
+	if services == nil {
+		return nil
+	}
 	return services.NewOrchestrator(chain.Client)
 }
 
@@ -246,6 +300,28 @@ func newQuoteV3AppService(
 		poolRegistry,
 		quoteuniv3domain.NewQuoteService(),
 		syncServices.Readiness,
+		maxHops,
+	)
+}
+
+func newQuotePancakeV3AppService(
+	cfg config.Config,
+	store *persistence.Services,
+	pancakePoolRegistry *registry.PancakeCompositeRegistry,
+	syncPancakeServices *syncpancakev3.Services,
+) *quotepancakev3.AppService {
+	if !cfg.Sync.PancakeV3.IsActive() || syncPancakeServices == nil || pancakePoolRegistry == nil {
+		return nil
+	}
+	maxHops := cfg.Quote.MaxHops
+	if maxHops <= 0 {
+		maxHops = 3
+	}
+	return quotepancakev3.NewAppService(
+		store.PancakePools,
+		pancakePoolRegistry,
+		quotepancakev3domain.NewQuoteService(),
+		syncPancakeServices.Readiness,
 		maxHops,
 	)
 }
@@ -276,8 +352,10 @@ func newQuoteCombinedAppService(
 	cfg config.Config,
 	store *persistence.Services,
 	poolRegistry *registry.CompositeRegistry,
+	pancakePoolRegistry *registry.PancakeCompositeRegistry,
 	v4PoolRegistry *registry.CompositeV4Registry,
 	syncServices *syncv3.Services,
+	syncPancakeServices *syncpancakev3.Services,
 	syncV4Services *syncv4.Services,
 ) *quotecombined.AppService {
 	maxHops := cfg.Quote.MaxHops
@@ -286,17 +364,23 @@ func newQuoteCombinedAppService(
 	}
 
 	readiness := &quotecombined.SyncReadiness{V3: syncServices.Readiness}
+	if syncPancakeServices != nil {
+		readiness.Pancake = syncPancakeServices.Readiness
+	}
 	if syncV4Services != nil {
 		readiness.V4 = syncV4Services.Readiness
 	}
 
 	return quotecombined.NewAppService(
 		store.Pools,
+		store.PancakePools,
 		store.V4Pools,
 		poolRegistry,
+		pancakePoolRegistry,
 		v4PoolRegistry,
 		quoteunified.NewQuoteService(
 			quoteuniv3domain.NewQuoteService(),
+			quotepancakev3domain.NewQuoteService(),
 			quoteuniv4domain.NewQuoteService(),
 		),
 		readiness,
@@ -307,24 +391,27 @@ func newQuoteCombinedAppService(
 func newHTTPRouter(
 	quoteCombined *quotecombined.AppService,
 	quoteV3 *quoteuniv3.AppService,
+	quotePancakeV3 *quotepancakev3.AppService,
 	quoteV4 *quoteuniv4.AppService,
 ) *gin.Engine {
 	return httpapi.NewRouter(httpapi.Handlers{
-		Health:        httpapi.NewHealthHandler(),
-		QuoteCombined: httpapi.NewQuoteCombinedHandler(quoteCombined),
-		QuoteV3:       httpapi.NewQuoteV3Handler(quoteV3),
-		QuoteV4:       httpapi.NewQuoteV4Handler(quoteV4),
+		Health:         httpapi.NewHealthHandler(),
+		QuoteCombined:  httpapi.NewQuoteCombinedHandler(quoteCombined),
+		QuoteV3:        httpapi.NewQuoteV3Handler(quoteV3),
+		QuotePancakeV3: httpapi.NewQuotePancakeV3Handler(quotePancakeV3),
+		QuoteV4:        httpapi.NewQuoteV4Handler(quoteV4),
 	})
 }
 
 type syncLifecycle struct {
-	cancel         context.CancelFunc
-	orchestrator   *syncv3.SyncOrchestrator
-	orchestratorV4 *syncv4.SyncOrchestrator
-	chain          *chaininfra.Services
-	store          *persistence.Services
-	cfg            config.Config
-	logger         *zap.Logger
+	cancel              context.CancelFunc
+	orchestrator        *syncv3.SyncOrchestrator
+	orchestratorPancake *syncpancakev3.SyncOrchestrator
+	orchestratorV4      *syncv4.SyncOrchestrator
+	chain               *chaininfra.Services
+	store               *persistence.Services
+	cfg                 config.Config
+	logger              *zap.Logger
 }
 
 func registerSyncLifecycle(
@@ -332,17 +419,19 @@ func registerSyncLifecycle(
 	cfg config.Config,
 	logger *zap.Logger,
 	orchestrator *syncv3.SyncOrchestrator,
+	orchestratorPancake *syncpancakev3.SyncOrchestrator,
 	orchestratorV4 *syncv4.SyncOrchestrator,
 	chain *chaininfra.Services,
 	store *persistence.Services,
 ) {
 	runner := &syncLifecycle{
-		orchestrator:   orchestrator,
-		orchestratorV4: orchestratorV4,
-		chain:          chain,
-		store:          store,
-		cfg:            cfg,
-		logger:         logger,
+		orchestrator:        orchestrator,
+		orchestratorPancake: orchestratorPancake,
+		orchestratorV4:      orchestratorV4,
+		chain:               chain,
+		store:               store,
+		cfg:                 cfg,
+		logger:              logger,
 	}
 	lifecycle.Append(fx.Hook{
 		OnStart: runner.start,
@@ -357,12 +446,15 @@ func (r *syncLifecycle) start(_ context.Context) error {
 	r.logger.Info("starting pool sync",
 		zap.String("persistence", r.store.BackendName()),
 		zap.Bool("memory_mode", r.cfg.MemoryMode()),
-		zap.Bool("v3", r.cfg.Sync.V3.IsActive()),
-		zap.Bool("v3_subgraph", r.cfg.Sync.V3.Subgraph.IsEnabled()),
-		zap.Int("v3_pools", len(r.cfg.Sync.V3.Pools)),
-		zap.Bool("v4", r.cfg.Sync.V4.IsActive()),
-		zap.Int("v4_poolmanager_pools", len(r.cfg.Sync.V4.PoolManager.Pools)),
-		zap.Bool("v4_subgraph", r.cfg.Sync.V4.Subgraph.IsEnabled()),
+		zap.Bool("univ3", r.cfg.Sync.Univ3.IsActive()),
+		zap.Bool("univ3_subgraph", r.cfg.Sync.Univ3.Subgraph.IsEnabled()),
+		zap.Int("univ3_pools", len(r.cfg.Sync.Univ3.Pools)),
+		zap.Bool("pancakev3", r.cfg.Sync.PancakeV3.IsActive()),
+		zap.Bool("pancakev3_subgraph", r.cfg.Sync.PancakeV3.Subgraph.IsEnabled()),
+		zap.Int("pancakev3_pools", len(r.cfg.Sync.PancakeV3.Pools)),
+		zap.Bool("univ4", r.cfg.Sync.Univ4.IsActive()),
+		zap.Int("univ4_poolmanager_pools", len(r.cfg.Sync.Univ4.PoolManager.Pools)),
+		zap.Bool("univ4_subgraph", r.cfg.Sync.Univ4.Subgraph.IsEnabled()),
 	)
 
 	go func() {
@@ -370,6 +462,14 @@ func (r *syncLifecycle) start(_ context.Context) error {
 			r.logger.Error("v3 pool sync stopped", zap.Error(err))
 		}
 	}()
+
+	if r.orchestratorPancake != nil {
+		go func() {
+			if err := r.orchestratorPancake.Start(runCtx); err != nil && !errors.Is(err, context.Canceled) {
+				r.logger.Error("pancakev3 pool sync stopped", zap.Error(err))
+			}
+		}()
+	}
 
 	if r.orchestratorV4 != nil {
 		go func() {
@@ -423,6 +523,7 @@ func (h *httpLifecycle) start(_ context.Context) error {
 			zap.String("health", "GET /health, GET /api/v1/health"),
 			zap.String("quote_cross_pool", "POST /api/v1/quote"),
 			zap.String("quote_v3", "POST /api/v1/univ3/quote"),
+			zap.String("quote_pancakev3", "POST /api/v1/pancakev3/quote"),
 			zap.String("quote_v4", "POST /api/v1/univ4/quote"),
 		)
 		if err := h.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

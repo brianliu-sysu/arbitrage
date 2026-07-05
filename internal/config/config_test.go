@@ -17,7 +17,7 @@ persistence:
   database:
     url: postgres://localhost/univ3
 sync:
-  v3:
+  univ3:
     enabled: true
     pools:
       - address: "0x88e6A0c2dDD26FEEb64F039a2c41296Fb728693B"
@@ -27,7 +27,7 @@ sync:
       endpoint: "https://example.com/subgraph"
       first: 50
       fee_tiers: [500, 3000]
-  v4:
+  univ4:
     enabled: false
     poolmanager:
       pools: []
@@ -45,8 +45,8 @@ sync:
 	if len(cfg.StaticPoolAddresses()) != 1 {
 		t.Fatalf("expected 1 static pool")
 	}
-	if !cfg.Sync.V3.IsActive() {
-		t.Fatal("expected v3 sync active")
+	if !cfg.Sync.Univ3.IsActive() {
+		t.Fatal("expected univ3 sync active")
 	}
 	if !cfg.SubgraphPoolSource().IsEnabled() {
 		t.Fatal("expected subgraph source enabled")
@@ -63,12 +63,12 @@ func TestLoadMemoryModeConfig(t *testing.T) {
 persistence:
   memory: true
 sync:
-  v3:
+  univ3:
     enabled: true
     pools:
       - address: "0x88e6A0c2dDD26FEEb64F039a2c41296Fb728693B"
         fee: 500
-  v4:
+  univ4:
     enabled: false
     poolmanager:
       pools: []

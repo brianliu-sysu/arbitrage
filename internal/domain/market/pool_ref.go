@@ -14,8 +14,17 @@ type PoolRef struct {
 	PoolID   common.Hash
 }
 
+func PoolRefFromUniswapV3(address common.Address) PoolRef {
+	return PoolRef{Protocol: ProtocolUniswapV3, Address: address}
+}
+
+// PoolRefFromV3 returns a pool ref for Uniswap V3.
 func PoolRefFromV3(address common.Address) PoolRef {
-	return PoolRef{Protocol: ProtocolV3, Address: address}
+	return PoolRefFromUniswapV3(address)
+}
+
+func PoolRefFromPancakeV3(address common.Address) PoolRef {
+	return PoolRef{Protocol: ProtocolPancakeV3, Address: address}
 }
 
 func PoolRefFromV4(poolID common.Hash) PoolRef {
@@ -24,16 +33,27 @@ func PoolRefFromV4(poolID common.Hash) PoolRef {
 
 func (r PoolRef) IsZero() bool {
 	return r.Protocol == ProtocolUnknown ||
-		(r.Protocol == ProtocolV3 && r.Address == (common.Address{})) ||
+		(isAddressProtocol(r.Protocol) && r.Address == (common.Address{})) ||
 		(r.Protocol == ProtocolV4 && r.PoolID == (common.Hash{}))
+}
+
+func isAddressProtocol(protocol Protocol) bool {
+	switch protocol {
+	case ProtocolUniswapV3, ProtocolPancakeV3:
+		return true
+	default:
+		return false
+	}
 }
 
 func (r PoolRef) String() string {
 	switch r.Protocol {
-	case ProtocolV3:
-		return fmt.Sprintf("v3:%s", r.Address.Hex())
+	case ProtocolUniswapV3:
+		return fmt.Sprintf("univ3:%s", r.Address.Hex())
+	case ProtocolPancakeV3:
+		return fmt.Sprintf("pancakev3:%s", r.Address.Hex())
 	case ProtocolV4:
-		return fmt.Sprintf("v4:%s", r.PoolID.Hex())
+		return fmt.Sprintf("univ4:%s", r.PoolID.Hex())
 	default:
 		return "unknown"
 	}

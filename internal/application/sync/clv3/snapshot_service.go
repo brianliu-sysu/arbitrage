@@ -1,11 +1,11 @@
-package syncv3
+package clv3sync
 
 import (
 	"context"
 	"time"
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
-	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
+	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -13,12 +13,12 @@ type SnapshotPolicy = syncapp.SnapshotPolicy
 
 // SnapshotService creates and restores pool snapshots.
 type SnapshotService struct {
-	snapshots marketv3.SnapshotRepository
+	snapshots SnapshotRepository
 	policy    SnapshotPolicy
 	clock     func() time.Time
 }
 
-func NewSnapshotService(snapshots marketv3.SnapshotRepository, policy SnapshotPolicy) *SnapshotService {
+func NewSnapshotService(snapshots SnapshotRepository, policy SnapshotPolicy) *SnapshotService {
 	return &SnapshotService{
 		snapshots: snapshots,
 		policy:    policy,
@@ -26,16 +26,16 @@ func NewSnapshotService(snapshots marketv3.SnapshotRepository, policy SnapshotPo
 	}
 }
 
-func (s *SnapshotService) LoadLatest(ctx context.Context, poolAddress common.Address) (*marketv3.Snapshot, error) {
+func (s *SnapshotService) LoadLatest(ctx context.Context, poolAddress common.Address) (*marketclv3.Snapshot, error) {
 	return s.snapshots.GetLatest(ctx, poolAddress)
 }
 
-func (s *SnapshotService) Create(ctx context.Context, pool *marketv3.Pool, blockNumber uint64) error {
-	snapshot := marketv3.NewSnapshot(pool, blockNumber, s.clock().UTC())
+func (s *SnapshotService) Create(ctx context.Context, pool *marketclv3.Pool, blockNumber uint64) error {
+	snapshot := marketclv3.NewSnapshot(pool, blockNumber, s.clock().UTC())
 	return s.snapshots.Save(ctx, snapshot)
 }
 
-func (s *SnapshotService) MaybeCreateSnapshot(ctx context.Context, pool *marketv3.Pool, blockNumber uint64) error {
+func (s *SnapshotService) MaybeCreateSnapshot(ctx context.Context, pool *marketclv3.Pool, blockNumber uint64) error {
 	latest, err := s.snapshots.GetLatest(ctx, pool.Address)
 	if err != nil {
 		return err
@@ -51,7 +51,7 @@ func (s *SnapshotService) MaybeCreateSnapshot(ctx context.Context, pool *marketv
 	return s.Create(ctx, pool, blockNumber)
 }
 
-func (s *SnapshotService) RestorePool(ctx context.Context, pool *marketv3.Pool) (*marketv3.Snapshot, error) {
+func (s *SnapshotService) RestorePool(ctx context.Context, pool *marketclv3.Pool) (*marketclv3.Snapshot, error) {
 	snapshot, err := s.snapshots.GetLatest(ctx, pool.Address)
 	if err != nil {
 		return nil, err

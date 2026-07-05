@@ -5,6 +5,7 @@ import (
 	"math/big"
 
 	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
+	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -65,12 +66,27 @@ func CloneSnapshot(snapshot *marketv3.Snapshot) *marketv3.Snapshot {
 	if snapshot == nil {
 		return nil
 	}
-	return &marketv3.Snapshot{
-		PoolAddress: snapshot.PoolAddress,
-		BlockNumber: snapshot.BlockNumber,
-		State:       snapshot.State.Clone(),
-		Ticks:       snapshot.Ticks.Clone(),
-		Bitmap:      snapshot.Bitmap.Clone(),
-		CreatedAt:   snapshot.CreatedAt,
+	cloned := *snapshot
+	cloned.State = snapshot.State.Clone()
+	cloned.Ticks = snapshot.Ticks.Clone()
+	cloned.Bitmap = snapshot.Bitmap.Clone()
+	return &cloned
+}
+
+func ClonePancakePool(pool *marketpancake.Pool) *marketpancake.Pool {
+	if pool == nil {
+		return nil
 	}
+	return pool.Clone()
+}
+
+func ClonePancakeSnapshot(snapshot *marketpancake.Snapshot) *marketpancake.Snapshot {
+	if snapshot == nil {
+		return nil
+	}
+	cloned := *snapshot
+	cloned.State = snapshot.State.Clone()
+	cloned.Ticks = snapshot.Ticks.Clone()
+	cloned.Bitmap = snapshot.Bitmap.Clone()
+	return &cloned
 }

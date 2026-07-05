@@ -29,7 +29,7 @@ sync:
   catchup_header_concurrency: 16 # Maximum number of empty block headers to fetch concurrently
   bootstrap_stale_block_threshold: 1000
 
-  v3:
+  univ3:
     enabled: true
     pools:
       - address: "0x88e6A0c2dDD26FEEb64F039a2c41296Fb728693B"
@@ -48,7 +48,24 @@ sync:
       token1: ""
       fee_tiers: [500, 3000, 10000]
 
-  v4:
+  pancakev3:
+    enabled: false
+    pools: []
+    subgraph:
+      enabled: false
+      endpoint: ""
+      refresh_interval: 10m
+      first: 100
+      skip: 0
+      order_by: volume24h
+      order_direction: desc
+      min_total_value_locked_usd: "1000000"
+      min_volume_24h_usd: "200000"
+      token0: ""
+      token1: ""
+      fee_tiers: [500, 2500, 10000]
+
+  univ4:
     enabled: false
     poolmanager:
       pools: []

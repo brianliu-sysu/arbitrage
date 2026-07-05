@@ -5,8 +5,10 @@ import (
 	"math/big"
 
 	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
+	quotepancakev3 "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/pancakev3"
 	quoteuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
 	quoteuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ4"
+	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
 	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/common"
@@ -14,34 +16,49 @@ import (
 
 // RoutePools holds loaded pool state keyed by protocol-specific identifiers.
 type RoutePools struct {
-	V3 map[common.Address]*marketv3.Pool
-	V4 map[marketv4.PoolID]*marketv4.Pool
+	V3        map[common.Address]*marketv3.Pool
+	PancakeV3 map[common.Address]*marketpancake.Pool
+	V4        map[marketv4.PoolID]*marketv4.Pool
 }
 
-// QuoteService quotes swaps along unified routes by dispatching to V3 or V4 math.
+// QuoteService quotes swaps along unified routes by dispatching to V3-style or V4 math.
 type QuoteService struct {
-	v3 *quoteuniv3.QuoteService
-	v4 *quoteuniv4.QuoteService
+	v3      *quoteuniv3.QuoteService
+	pancake *quotepancakev3.QuoteService
+	v4      *quoteuniv4.QuoteService
 }
 
-func NewQuoteService(v3 *quoteuniv3.QuoteService, v4 *quoteuniv4.QuoteService) *QuoteService {
+func NewQuoteService(v3 *quoteuniv3.QuoteService, pancake *quotepancakev3.QuoteService, v4 *quoteuniv4.QuoteService) *QuoteService {
 	if v3 == nil {
 		v3 = quoteuniv3.NewQuoteService()
+	}
+	if pancake == nil {
+		pancake = quotepancakev3.NewQuoteService()
 	}
 	if v4 == nil {
 		v4 = quoteuniv4.NewQuoteService()
 	}
-	return &QuoteService{v3: v3, v4: v4}
+	return &QuoteService{v3: v3, pancake: pancake, v4: v4}
 }
 
-// QuoteExactInput quotes an exact-input swap on a single V3 pool.
+// QuoteExactInput quotes an exact-input swap on a single Uniswap V3 pool.
 func (s *QuoteService) QuoteExactInputV3(pool *marketv3.Pool, tokenIn, tokenOut common.Address, amountIn *big.Int) (quoteshared.QuoteResult, error) {
 	return s.v3.QuoteExactInput(pool, tokenIn, tokenOut, amountIn)
 }
 
-// QuoteExactOutput quotes an exact-output swap on a single V3 pool.
+// QuoteExactOutput quotes an exact-output swap on a single Uniswap V3 pool.
 func (s *QuoteService) QuoteExactOutputV3(pool *marketv3.Pool, tokenIn, tokenOut common.Address, amountOut *big.Int) (quoteshared.QuoteResult, error) {
 	return s.v3.QuoteExactOutput(pool, tokenIn, tokenOut, amountOut)
+}
+
+// QuoteExactInputPancakeV3 quotes an exact-input swap on a single PancakeSwap V3 pool.
+func (s *QuoteService) QuoteExactInputPancakeV3(pool *marketpancake.Pool, tokenIn, tokenOut common.Address, amountIn *big.Int) (quoteshared.QuoteResult, error) {
+	return s.pancake.QuoteExactInput(pool, tokenIn, tokenOut, amountIn)
+}
+
+// QuoteExactOutputPancakeV3 quotes an exact-output swap on a single PancakeSwap V3 pool.
+func (s *QuoteService) QuoteExactOutputPancakeV3(pool *marketpancake.Pool, tokenIn, tokenOut common.Address, amountOut *big.Int) (quoteshared.QuoteResult, error) {
+	return s.pancake.QuoteExactOutput(pool, tokenIn, tokenOut, amountOut)
 }
 
 // QuoteExactInputV4 quotes an exact-input swap on a single V4 pool.
@@ -86,13 +103,19 @@ func (s *QuoteService) quoteHop(pools RoutePools, hop RouteHop, amountIn *big.In
 	case PoolVersionV3:
 		pool := pools.V3[hop.PoolV3]
 		if pool == nil {
-			return quoteshared.QuoteResult{}, fmt.Errorf("v3 pool %s not found", hop.PoolV3.Hex())
+			return quoteshared.QuoteResult{}, fmt.Errorf("univ3 pool %s not found", hop.PoolV3.Hex())
 		}
 		return s.v3.QuoteExactInput(pool, hop.TokenIn, hop.TokenOut, amountIn)
+	case PoolVersionPancakeV3:
+		pool := pools.PancakeV3[hop.PoolPancakeV3]
+		if pool == nil {
+			return quoteshared.QuoteResult{}, fmt.Errorf("pancakev3 pool %s not found", hop.PoolPancakeV3.Hex())
+		}
+		return s.pancake.QuoteExactInput(pool, hop.TokenIn, hop.TokenOut, amountIn)
 	case PoolVersionV4:
 		pool := pools.V4[hop.PoolV4]
 		if pool == nil {
-			return quoteshared.QuoteResult{}, fmt.Errorf("v4 pool %s not found", hop.PoolV4.String())
+			return quoteshared.QuoteResult{}, fmt.Errorf("univ4 pool %s not found", hop.PoolV4.String())
 		}
 		return s.v4.QuoteExactInput(pool, hop.TokenIn, hop.TokenOut, amountIn)
 	default:

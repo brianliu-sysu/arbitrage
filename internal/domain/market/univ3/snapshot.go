@@ -3,40 +3,19 @@ package univ3
 import (
 	"time"
 
-	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
-	"github.com/ethereum/go-ethereum/common"
+	"github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
 )
 
-// Snapshot is a point-in-time copy of V3 pool market state at a block height.
-type Snapshot struct {
-	PoolAddress common.Address
-	BlockNumber uint64
-	State       market.PoolState
-	Ticks       market.TickTable
-	Bitmap      market.TickBitmap
-	CreatedAt   time.Time
-}
+// Snapshot is a point-in-time copy of Uniswap V3 pool market state at a block height.
+type Snapshot = clv3.Snapshot
 
 func NewSnapshot(pool *Pool, blockNumber uint64, createdAt time.Time) *Snapshot {
-	if pool == nil {
-		return nil
-	}
-	return &Snapshot{
-		PoolAddress: pool.Address,
-		BlockNumber: blockNumber,
-		State:       pool.State.Clone(),
-		Ticks:       pool.Ticks.Clone(),
-		Bitmap:      pool.Bitmap.Clone(),
-		CreatedAt:   createdAt,
-	}
+	return clv3.NewSnapshot(&pool.Pool, blockNumber, createdAt)
 }
 
-func (s *Snapshot) RestoreTo(pool *Pool) {
-	if s == nil || pool == nil {
+func RestoreSnapshot(snapshot *Snapshot, pool *Pool) {
+	if snapshot == nil || pool == nil {
 		return
 	}
-	pool.State = s.State.Clone()
-	pool.Ticks = s.Ticks.Clone()
-	pool.Bitmap = s.Bitmap.Clone()
-	pool.LastBlockNumber = s.BlockNumber
+	snapshot.RestoreTo(&pool.Pool)
 }

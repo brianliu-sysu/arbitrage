@@ -170,7 +170,7 @@ func TestSnapshotRestore(t *testing.T) {
 	pool.State.Liquidity = big.NewInt(0)
 
 	restored := NewPool(testPoolAddress(), common.Address{}, common.Address{}, 3000, 60)
-	snapshot.RestoreTo(restored)
+	RestoreSnapshot(snapshot, restored)
 	if restored.State.Liquidity.Cmp(amount) != 0 {
 		t.Fatalf("expected restored liquidity %s, got %s", amount, restored.State.Liquidity)
 	}
@@ -198,8 +198,8 @@ func TestPoolRef(t *testing.T) {
 	address := testPoolAddress()
 	pool := NewPool(address, common.Address{}, common.Address{}, 3000, 60)
 	ref := pool.Ref()
-	if ref.Protocol != market.ProtocolV3 {
-		t.Fatalf("expected v3 protocol, got %s", ref.Protocol)
+	if ref.Protocol != market.ProtocolUniswapV3 {
+		t.Fatalf("expected univ3 protocol, got %s", ref.Protocol)
 	}
 	if ref.Address != address {
 		t.Fatalf("expected address %s, got %s", address, ref.Address)

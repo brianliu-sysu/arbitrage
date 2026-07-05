@@ -6,7 +6,7 @@ import (
 	"math/big"
 	"strings"
 
-	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ3"
+	clv3sync "github.com/brianliu-sysu/uniswapv3/internal/application/sync/clv3"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
@@ -31,7 +31,7 @@ func NewPoolReader(client *EthClient, multicall *Multicall) (*PoolReader, error)
 	}, nil
 }
 
-func (r *PoolReader) ReadBootstrapData(ctx context.Context, poolAddress common.Address, blockNumber uint64) (*syncv3.BootstrapData, error) {
+func (r *PoolReader) ReadBootstrapData(ctx context.Context, poolAddress common.Address, blockNumber uint64) (*clv3sync.BootstrapData, error) {
 	baseResults, err := r.readBaseState(ctx, poolAddress, blockNumber)
 	if err != nil {
 		return nil, err
@@ -42,7 +42,7 @@ func (r *PoolReader) ReadBootstrapData(ctx context.Context, poolAddress common.A
 		return nil, err
 	}
 
-	return &syncv3.BootstrapData{
+	return &clv3sync.BootstrapData{
 		Token0:      baseResults.token0,
 		Token1:      baseResults.token1,
 		Fee:         baseResults.fee,

@@ -93,19 +93,27 @@ type SyncConfig struct {
 	SnapshotInterval             uint64        `yaml:"snapshot_interval"`
 	SnapshotFallback             time.Duration `yaml:"snapshot_fallback"`
 	ReorgMaxDepth                uint64        `yaml:"reorg_max_depth"`
-	V3                           V3SyncConfig  `yaml:"v3"`
-	V4                           V4SyncConfig  `yaml:"v4"`
+	Univ3                        Univ3SyncConfig      `yaml:"univ3"`
+	PancakeV3                    PancakeV3SyncConfig  `yaml:"pancakev3"`
+	Univ4                        Univ4SyncConfig      `yaml:"univ4"`
 }
 
-// V3SyncConfig configures Uniswap V3 pool sync sources.
-type V3SyncConfig struct {
-	Enabled  bool                 `yaml:"enabled"`
-	Pools    []StaticPoolConfig   `yaml:"pools"`
-	Subgraph SubgraphPoolConfig   `yaml:"subgraph"`
+// Univ3SyncConfig configures Uniswap V3 pool sync sources.
+type Univ3SyncConfig struct {
+	Enabled  bool               `yaml:"enabled"`
+	Pools    []StaticPoolConfig `yaml:"pools"`
+	Subgraph SubgraphPoolConfig `yaml:"subgraph"`
 }
 
-// V4SyncConfig configures Uniswap V4 pool sync sources.
-type V4SyncConfig struct {
+// PancakeV3SyncConfig configures PancakeSwap V3 pool sync sources.
+type PancakeV3SyncConfig struct {
+	Enabled  bool               `yaml:"enabled"`
+	Pools    []StaticPoolConfig `yaml:"pools"`
+	Subgraph SubgraphPoolConfig `yaml:"subgraph"`
+}
+
+// Univ4SyncConfig configures Uniswap V4 pool sync sources.
+type Univ4SyncConfig struct {
 	Enabled      bool                  `yaml:"enabled"`
 	PoolManager  V4PoolManagerConfig   `yaml:"poolmanager"`
 	Subgraph     V4SubgraphPoolConfig  `yaml:"subgraph"`
@@ -222,7 +230,7 @@ func Default() Config {
 			SnapshotInterval: 5000,
 			SnapshotFallback: 10 * time.Minute,
 			ReorgMaxDepth:    128,
-			V3: V3SyncConfig{
+			Univ3: Univ3SyncConfig{
 				Enabled: true,
 				Subgraph: SubgraphPoolConfig{
 					First:                  100,
@@ -233,7 +241,18 @@ func Default() Config {
 					RefreshInterval:        10 * time.Minute,
 				},
 			},
-			V4: V4SyncConfig{
+			PancakeV3: PancakeV3SyncConfig{
+				Enabled: false,
+				Subgraph: SubgraphPoolConfig{
+					First:                  100,
+					OrderBy:                "volume24h",
+					OrderDirection:         "desc",
+					MinTotalValueLockedUSD: "1000000",
+					MinVolume24hUSD:        "200000",
+					RefreshInterval:        10 * time.Minute,
+				},
+			},
+			Univ4: Univ4SyncConfig{
 				Subgraph: V4SubgraphPoolConfig{
 					SubgraphPoolConfig: SubgraphPoolConfig{
 						First:                  100,
@@ -297,28 +316,36 @@ func (c Config) Validate() error {
 	if !c.Persistence.Memory && c.Persistence.Database.URL == "" {
 		return fmt.Errorf("persistence.database.url is required unless persistence.memory is enabled")
 	}
-	if c.Sync.V3.Subgraph.Enabled && c.Sync.V3.Subgraph.Endpoint == "" {
-		return fmt.Errorf("sync.v3.subgraph.endpoint is required when subgraph is enabled")
+	if c.Sync.Univ3.Subgraph.Enabled && c.Sync.Univ3.Subgraph.Endpoint == "" {
+		return fmt.Errorf("sync.univ3.subgraph.endpoint is required when subgraph is enabled")
 	}
-	if c.Sync.V4.Subgraph.Enabled && c.Sync.V4.Subgraph.Endpoint == "" {
-		return fmt.Errorf("sync.v4.subgraph.endpoint is required when subgraph is enabled")
+	if c.Sync.PancakeV3.Subgraph.Enabled && c.Sync.PancakeV3.Subgraph.Endpoint == "" {
+		return fmt.Errorf("sync.pancakev3.subgraph.endpoint is required when subgraph is enabled")
 	}
-	for i, pool := range c.Sync.V3.Pools {
+	if c.Sync.Univ4.Subgraph.Enabled && c.Sync.Univ4.Subgraph.Endpoint == "" {
+		return fmt.Errorf("sync.univ4.subgraph.endpoint is required when subgraph is enabled")
+	}
+	for i, pool := range c.Sync.Univ3.Pools {
 		if pool.Address == "" {
-			return fmt.Errorf("sync.v3.pools[%d].address is required", i)
+			return fmt.Errorf("sync.univ3.pools[%d].address is required", i)
 		}
 	}
-	for i, pool := range c.Sync.V4.PoolManager.Pools {
+	for i, pool := range c.Sync.PancakeV3.Pools {
+		if pool.Address == "" {
+			return fmt.Errorf("sync.pancakev3.pools[%d].address is required", i)
+		}
+	}
+	for i, pool := range c.Sync.Univ4.PoolManager.Pools {
 		if pool.Currency0 == "" || pool.Currency1 == "" {
-			return fmt.Errorf("sync.v4.poolmanager.pools[%d] requires currency0 and currency1", i)
+			return fmt.Errorf("sync.univ4.poolmanager.pools[%d] requires currency0 and currency1", i)
 		}
 	}
-	if c.Sync.V4.IsActive() {
+	if c.Sync.Univ4.IsActive() {
 		if c.Blockchain.PoolManagerAddress == "" {
-			return fmt.Errorf("blockchain.pool_manager_address is required when sync.v4 is enabled")
+			return fmt.Errorf("blockchain.pool_manager_address is required when sync.univ4 is enabled")
 		}
 		if c.Blockchain.StateViewAddress == "" {
-			return fmt.Errorf("blockchain.state_view_address is required when sync.v4 is enabled")
+			return fmt.Errorf("blockchain.state_view_address is required when sync.univ4 is enabled")
 		}
 	}
 	return nil
@@ -400,8 +427,8 @@ func (c Config) SyncConfig() syncapp.Config {
 }
 
 func (c Config) StaticPoolAddresses() []common.Address {
-	addresses := make([]common.Address, 0, len(c.Sync.V3.Pools))
-	for _, pool := range c.Sync.V3.Pools {
+	addresses := make([]common.Address, 0, len(c.Sync.Univ3.Pools))
+	for _, pool := range c.Sync.Univ3.Pools {
 		if pool.Address == "" {
 			continue
 		}
@@ -416,21 +443,28 @@ func (c Config) PoolAddresses() []common.Address {
 }
 
 func (c Config) SubgraphPoolSource() SubgraphPoolConfig {
-	return c.Sync.V3.Subgraph
+	return c.Sync.Univ3.Subgraph
 }
 
 func (c SubgraphPoolConfig) IsEnabled() bool {
 	return c.Enabled && c.Endpoint != ""
 }
 
-func (c V3SyncConfig) IsActive() bool {
+func (c Univ3SyncConfig) IsActive() bool {
 	if !c.Enabled {
 		return false
 	}
 	return len(c.Pools) > 0 || c.Subgraph.IsEnabled()
 }
 
-func (c V4SyncConfig) IsActive() bool {
+func (c PancakeV3SyncConfig) IsActive() bool {
+	if !c.Enabled {
+		return false
+	}
+	return len(c.Pools) > 0 || c.Subgraph.IsEnabled()
+}
+
+func (c Univ4SyncConfig) IsActive() bool {
 	if !c.Enabled {
 		return false
 	}

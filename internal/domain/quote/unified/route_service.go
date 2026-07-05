@@ -9,11 +9,12 @@ import (
 
 // PoolEdge describes a pool connection in the unified routing graph.
 type PoolEdge struct {
-	Version PoolVersion
-	PoolV3  common.Address
-	PoolV4  marketv4.PoolID
-	Token0  common.Address
-	Token1  common.Address
+	Version       PoolVersion
+	PoolV3        common.Address
+	PoolPancakeV3 common.Address
+	PoolV4        marketv4.PoolID
+	Token0        common.Address
+	Token1        common.Address
 }
 
 // PoolGraph provides pool connectivity for route discovery.
@@ -79,11 +80,12 @@ func (rs *RouteService) FindRoutes(tokenIn, tokenOut common.Address) ([]Route, e
 			}
 
 			hop := RouteHop{
-				Version:  edge.version,
-				PoolV3:   edge.poolV3,
-				PoolV4:   edge.poolV4,
-				TokenIn:  current.token,
-				TokenOut: nextToken,
+				Version:       edge.version,
+				PoolV3:        edge.poolV3,
+				PoolPancakeV3: edge.poolPancakeV3,
+				PoolV4:        edge.poolV4,
+				TokenIn:       current.token,
+				TokenOut:      nextToken,
 			}
 			nextRoute := Route{
 				TokenIn:  tokenIn,
@@ -114,11 +116,12 @@ func (rs *RouteService) FindRoutes(tokenIn, tokenOut common.Address) ([]Route, e
 }
 
 type adjacencyEdge struct {
-	version PoolVersion
-	poolV3  common.Address
-	poolV4  marketv4.PoolID
-	a       common.Address
-	b       common.Address
+	version       PoolVersion
+	poolV3        common.Address
+	poolPancakeV3 common.Address
+	poolV4        marketv4.PoolID
+	a             common.Address
+	b             common.Address
 }
 
 func (e adjacencyEdge) otherToken(token common.Address) common.Address {
@@ -132,11 +135,12 @@ func buildAdjacency(edges []PoolEdge) map[common.Address][]adjacencyEdge {
 	adjacency := make(map[common.Address][]adjacencyEdge)
 	for _, edge := range edges {
 		link := adjacencyEdge{
-			version: edge.Version,
-			poolV3:  edge.PoolV3,
-			poolV4:  edge.PoolV4,
-			a:       edge.Token0,
-			b:       edge.Token1,
+			version:       edge.Version,
+			poolV3:        edge.PoolV3,
+			poolPancakeV3: edge.PoolPancakeV3,
+			poolV4:        edge.PoolV4,
+			a:             edge.Token0,
+			b:             edge.Token1,
 		}
 		adjacency[edge.Token0] = append(adjacency[edge.Token0], link)
 		adjacency[edge.Token1] = append(adjacency[edge.Token1], link)

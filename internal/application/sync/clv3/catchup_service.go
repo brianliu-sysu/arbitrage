@@ -1,4 +1,4 @@
-package syncv3
+package clv3sync
 
 import (
 	"context"
@@ -7,14 +7,14 @@ import (
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
-	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
+	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
 	"github.com/ethereum/go-ethereum/common"
 )
 
 // CatchupService replays historical blocks from checkpoint to a target height.
 type CatchupService struct {
 	config      Config
-	pools       marketv3.PoolRepository
+	pools       PoolRepository
 	checkpoints blockchain.CheckpointRepository
 	fetcher     LogFetcher
 	parser      EventParser
@@ -25,7 +25,7 @@ type CatchupService struct {
 
 func NewCatchupService(
 	config Config,
-	pools marketv3.PoolRepository,
+	pools PoolRepository,
 	checkpoints blockchain.CheckpointRepository,
 	fetcher LogFetcher,
 	parser EventParser,
@@ -257,8 +257,8 @@ func trackedPoolsForBlock(
 	return tracked
 }
 
-func groupEventsByBlock(events []marketv3.PoolEvent) map[uint64][]marketv3.PoolEvent {
-	grouped := make(map[uint64][]marketv3.PoolEvent)
+func groupEventsByBlock(events []marketclv3.PoolEvent) map[uint64][]marketclv3.PoolEvent {
+	grouped := make(map[uint64][]marketclv3.PoolEvent)
 	for _, event := range events {
 		blockNumber := event.Meta.BlockNumber
 		grouped[blockNumber] = append(grouped[blockNumber], event)

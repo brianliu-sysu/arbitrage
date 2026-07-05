@@ -5,6 +5,7 @@ import (
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
 	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ3"
+	syncpancakev3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/pancakev3"
 	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -91,6 +92,18 @@ func (s *Services) Close() {
 // SyncDeps returns application sync dependencies backed by this package.
 func (s *Services) SyncDeps() syncv3.ServiceDeps {
 	return syncv3.ServiceDeps{
+		Fetcher:    s.LogFetcher,
+		Parser:     s.Parser,
+		Blocks:     s.Client,
+		Bootstrap:  s.PoolReader,
+		Subscriber: s.HeadSub,
+		Health:     []syncapp.HealthProbe{s.Client},
+	}
+}
+
+// SyncPancakeV3Deps returns application PancakeSwap V3 sync dependencies backed by this package.
+func (s *Services) SyncPancakeV3Deps() syncpancakev3.ServiceDeps {
+	return syncpancakev3.ServiceDeps{
 		Fetcher:    s.LogFetcher,
 		Parser:     s.Parser,
 		Blocks:     s.Client,

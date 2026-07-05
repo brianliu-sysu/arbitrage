@@ -1,25 +1,27 @@
-package syncv3
+package clv3sync
 
 import (
 	"context"
 	"fmt"
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
-	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
+	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	"github.com/ethereum/go-ethereum/common"
 )
 
 // BootstrapService cold-starts a pool from chain state or snapshot.
 type BootstrapService struct {
-	pools                 marketv3.PoolRepository
-	reader                PoolBootstrapReader
-	snapshot              *SnapshotService
-	staleBlockThreshold   uint64
+	pools               PoolRepository
+	newPool             PoolFactory
+	reader              PoolBootstrapReader
+	snapshot            *SnapshotService
+	staleBlockThreshold uint64
 }
 
 func NewBootstrapService(
-	pools marketv3.PoolRepository,
+	pools PoolRepository,
+	newPool PoolFactory,
 	reader PoolBootstrapReader,
 	snapshot *SnapshotService,
 	staleBlockThreshold uint64,
@@ -29,13 +31,14 @@ func NewBootstrapService(
 	}
 	return &BootstrapService{
 		pools:               pools,
+		newPool:             newPool,
 		reader:              reader,
 		snapshot:            snapshot,
 		staleBlockThreshold: staleBlockThreshold,
 	}
 }
 
-func (s *BootstrapService) Bootstrap(ctx context.Context, poolAddress common.Address, blockNumber uint64) (*marketv3.Pool, error) {
+func (s *BootstrapService) Bootstrap(ctx context.Context, poolAddress common.Address, blockNumber uint64) (*marketclv3.Pool, error) {
 	pool, err := s.pools.Get(ctx, poolAddress)
 	if err != nil {
 		return nil, fmt.Errorf("load pool: %w", err)
@@ -48,7 +51,7 @@ func (s *BootstrapService) Bootstrap(ctx context.Context, poolAddress common.Add
 		if err != nil {
 			return nil, fmt.Errorf("read bootstrap data: %w", err)
 		}
-		pool = marketv3.NewPool(poolAddress, data.Token0, data.Token1, data.Fee, data.TickSpacing)
+		pool = s.newPool(poolAddress, data.Token0, data.Token1, data.Fee, data.TickSpacing)
 		applyBootstrapData(pool, data)
 		pool.Status = market.PoolStatusBootstrapping
 		chainBootstrapped = true
@@ -96,7 +99,7 @@ func (s *BootstrapService) Bootstrap(ctx context.Context, poolAddress common.Add
 	return pool, nil
 }
 
-func applyBootstrapData(pool *marketv3.Pool, data *BootstrapData) {
+func applyBootstrapData(pool *marketclv3.Pool, data *BootstrapData) {
 	pool.State = data.State.Clone()
 	pool.Ticks = data.Ticks.Clone()
 	pool.Bitmap = data.Bitmap.Clone()

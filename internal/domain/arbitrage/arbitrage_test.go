@@ -110,7 +110,7 @@ func TestDependencyGraphAffectedRoutes(t *testing.T) {
 	graph.Register(routeA)
 	graph.Register(routeB)
 
-	affected := graph.AffectedRoutes([]common.Address{testToken(10)}, nil)
+	affected := graph.AffectedRoutes([]common.Address{testToken(10)}, nil, nil)
 	if len(affected) != 1 || affected[0].ID != "route-a" {
 		t.Fatalf("expected route-a only, got %+v", affected)
 	}
@@ -225,6 +225,66 @@ func TestFindUnifiedTriangleRoutesMixedPools(t *testing.T) {
 	}
 }
 
+func TestDependencyGraphAffectedRoutesPancakeV3(t *testing.T) {
+	poolBC := testToken(11)
+	graph := NewDependencyGraph()
+	route := RouteRef{
+		ID: "mixed-pancake",
+		Route: quoteunified.Route{
+			TokenIn:  testToken(1),
+			TokenOut: testToken(1),
+			Hops: []quoteunified.RouteHop{
+				{Version: quoteunified.PoolVersionV3, PoolV3: testToken(10), TokenIn: testToken(1), TokenOut: testToken(2)},
+				{Version: quoteunified.PoolVersionPancakeV3, PoolPancakeV3: poolBC, TokenIn: testToken(2), TokenOut: testToken(3)},
+				{Version: quoteunified.PoolVersionV3, PoolV3: testToken(12), TokenIn: testToken(3), TokenOut: testToken(1)},
+			},
+		},
+	}
+	graph.Register(route)
+
+	affected := graph.AffectedRoutes(nil, []common.Address{poolBC}, nil)
+	if len(affected) != 1 || affected[0].ID != "mixed-pancake" {
+		t.Fatalf("expected mixed-pancake route, got %+v", affected)
+	}
+
+	// Same address on univ3 must not match pancake route.
+	affectedV3 := graph.AffectedRoutes([]common.Address{poolBC}, nil, nil)
+	if len(affectedV3) != 0 {
+		t.Fatalf("expected no routes for univ3 key collision, got %+v", affectedV3)
+	}
+}
+
+func TestFindUnifiedTriangleRoutesWithPancakeV3(t *testing.T) {
+	tokenA := testToken(1)
+	tokenB := testToken(2)
+	tokenC := testToken(3)
+	poolAB := testToken(10)
+	poolBC := testToken(11)
+	poolCA := testToken(12)
+
+	graph := quoteunified.NewStaticPoolGraph([]quoteunified.PoolEdge{
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolAB, Token0: tokenA, Token1: tokenB},
+		{Version: quoteunified.PoolVersionPancakeV3, PoolPancakeV3: poolBC, Token0: tokenB, Token1: tokenC},
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolCA, Token0: tokenC, Token1: tokenA},
+	})
+
+	routes := FindUnifiedTriangleRoutes(graph, tokenA)
+	if len(routes) != 2 {
+		t.Fatalf("expected 2 mixed triangle routes, got %d", len(routes))
+	}
+	hasPancakeHop := false
+	for _, route := range routes {
+		for _, hop := range route.Hops {
+			if hop.Version == quoteunified.PoolVersionPancakeV3 {
+				hasPancakeHop = true
+			}
+		}
+	}
+	if !hasPancakeHop {
+		t.Fatal("expected at least one route with a pancakev3 hop")
+	}
+}
+
 func TestDependencyGraphAffectedRoutesV4(t *testing.T) {
 	poolBCID := testPoolID(11)
 	graph := NewDependencyGraph()
@@ -242,7 +302,7 @@ func TestDependencyGraphAffectedRoutesV4(t *testing.T) {
 	}
 	graph.Register(route)
 
-	affected := graph.AffectedRoutes(nil, []marketv4.PoolID{poolBCID})
+	affected := graph.AffectedRoutes(nil, nil, []marketv4.PoolID{poolBCID})
 	if len(affected) != 1 || affected[0].ID != "mixed-tri" {
 		t.Fatalf("expected mixed-tri route, got %+v", affected)
 	}

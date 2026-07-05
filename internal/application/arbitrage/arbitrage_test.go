@@ -11,28 +11,29 @@ import (
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
 	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
 	quoteuniv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
+	quotepancakev3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/pancakev3"
 	quoteuniv4domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ4"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
-	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
-	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
+	marketuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
+	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	"github.com/ethereum/go-ethereum/common"
 )
 
 type memoryPoolRepo struct {
-	pools map[common.Address]*marketv3.Pool
+	pools map[common.Address]*marketuniv3.Pool
 }
 
 func newMemoryPoolRepo() *memoryPoolRepo {
-	return &memoryPoolRepo{pools: make(map[common.Address]*marketv3.Pool)}
+	return &memoryPoolRepo{pools: make(map[common.Address]*marketuniv3.Pool)}
 }
 
-func (r *memoryPoolRepo) Save(_ context.Context, pool *marketv3.Pool) error {
+func (r *memoryPoolRepo) Save(_ context.Context, pool *marketuniv3.Pool) error {
 	r.pools[pool.Address] = pool.Clone()
 	return nil
 }
 
-func (r *memoryPoolRepo) Get(_ context.Context, address common.Address) (*marketv3.Pool, error) {
+func (r *memoryPoolRepo) Get(_ context.Context, address common.Address) (*marketuniv3.Pool, error) {
 	pool, ok := r.pools[address]
 	if !ok {
 		return nil, nil
@@ -66,19 +67,19 @@ func (r *memoryPoolRepo) AdvanceSyncProgressMany(_ context.Context, addresses []
 }
 
 type memoryV4PoolRepo struct {
-	pools map[marketv4.PoolID]*marketv4.Pool
+	pools map[marketuniv4.PoolID]*marketuniv4.Pool
 }
 
 func newMemoryV4PoolRepo() *memoryV4PoolRepo {
-	return &memoryV4PoolRepo{pools: make(map[marketv4.PoolID]*marketv4.Pool)}
+	return &memoryV4PoolRepo{pools: make(map[marketuniv4.PoolID]*marketuniv4.Pool)}
 }
 
-func (r *memoryV4PoolRepo) Save(_ context.Context, pool *marketv4.Pool) error {
+func (r *memoryV4PoolRepo) Save(_ context.Context, pool *marketuniv4.Pool) error {
 	r.pools[pool.ID] = pool.Clone()
 	return nil
 }
 
-func (r *memoryV4PoolRepo) Get(_ context.Context, id marketv4.PoolID) (*marketv4.Pool, error) {
+func (r *memoryV4PoolRepo) Get(_ context.Context, id marketuniv4.PoolID) (*marketuniv4.Pool, error) {
 	pool, ok := r.pools[id]
 	if !ok {
 		return nil, nil
@@ -86,16 +87,16 @@ func (r *memoryV4PoolRepo) Get(_ context.Context, id marketv4.PoolID) (*marketv4
 	return pool.Clone(), nil
 }
 
-func (r *memoryV4PoolRepo) Delete(_ context.Context, id marketv4.PoolID) error {
+func (r *memoryV4PoolRepo) Delete(_ context.Context, id marketuniv4.PoolID) error {
 	delete(r.pools, id)
 	return nil
 }
 
-func (r *memoryV4PoolRepo) AdvanceSyncProgress(ctx context.Context, id marketv4.PoolID, blockNumber uint64) error {
-	return r.AdvanceSyncProgressMany(ctx, []marketv4.PoolID{id}, blockNumber)
+func (r *memoryV4PoolRepo) AdvanceSyncProgress(ctx context.Context, id marketuniv4.PoolID, blockNumber uint64) error {
+	return r.AdvanceSyncProgressMany(ctx, []marketuniv4.PoolID{id}, blockNumber)
 }
 
-func (r *memoryV4PoolRepo) AdvanceSyncProgressMany(_ context.Context, ids []marketv4.PoolID, blockNumber uint64) error {
+func (r *memoryV4PoolRepo) AdvanceSyncProgressMany(_ context.Context, ids []marketuniv4.PoolID, blockNumber uint64) error {
 	for _, id := range ids {
 		pool, ok := r.pools[id]
 		if !ok || pool == nil {
@@ -143,7 +144,8 @@ type alwaysReady struct{}
 
 func (alwaysReady) IsSystemReady() bool                         { return true }
 func (alwaysReady) IsV3PoolReady(_ common.Address) bool         { return true }
-func (alwaysReady) IsV4PoolReady(_ marketv4.PoolID) bool        { return true }
+func (alwaysReady) IsPancakeV3PoolReady(_ common.Address) bool   { return true }
+func (alwaysReady) IsV4PoolReady(_ marketuniv4.PoolID) bool        { return true }
 
 func testToken(index byte) common.Address {
 	return common.HexToAddress(fmt.Sprintf("0x000000000000000000000000000000000000000%x", index))
@@ -154,31 +156,31 @@ func sqrtPriceAtTick0() *big.Int {
 	return v
 }
 
-func setupQuotedPool(address, token0, token1 common.Address, liquidity int64) *marketv3.Pool {
-	pool := marketv3.NewPool(address, token0, token1, 3000, 60)
-	meta := marketv3.EventMeta{PoolAddress: address, BlockNumber: 1}
-	_ = pool.Apply(marketv3.NewInitializeEvent(meta, sqrtPriceAtTick0(), 0))
-	_ = pool.Apply(marketv3.NewMintEvent(meta, common.Address{}, common.Address{}, -120, 120, big.NewInt(liquidity), big.NewInt(1), big.NewInt(1)))
+func setupQuotedPool(address, token0, token1 common.Address, liquidity int64) *marketuniv3.Pool {
+	pool := marketuniv3.NewPool(address, token0, token1, 3000, 60)
+	meta := marketuniv3.EventMeta{PoolAddress: address, BlockNumber: 1}
+	_ = pool.Apply(marketuniv3.NewInitializeEvent(meta, sqrtPriceAtTick0(), 0))
+	_ = pool.Apply(marketuniv3.NewMintEvent(meta, common.Address{}, common.Address{}, -120, 120, big.NewInt(liquidity), big.NewInt(1), big.NewInt(1)))
 	pool.Status = market.PoolStatusReady
 	return pool
 }
 
-func setupV4Pool(token0, token1 common.Address, liquidity int64) (*marketv4.Pool, marketv4.PoolID) {
-	key := marketv4.PoolKey{
+func setupV4Pool(token0, token1 common.Address, liquidity int64) (*marketuniv4.Pool, marketuniv4.PoolID) {
+	key := marketuniv4.PoolKey{
 		Currency0:   token0,
 		Currency1:   token1,
 		Fee:         3000,
 		TickSpacing: 60,
 	}
-	id, err := marketv4.ComputePoolID(key)
+	id, err := marketuniv4.ComputePoolID(key)
 	if err != nil {
 		panic(err)
 	}
 
-	pool := marketv4.NewPool(id, key)
-	meta := marketv4.EventMeta{PoolID: id, BlockNumber: 1}
-	_ = pool.Apply(marketv4.NewInitializeEvent(meta, sqrtPriceAtTick0(), 0))
-	_ = pool.Apply(marketv4.NewModifyLiquidityEvent(meta, common.Address{}, -120, 120, big.NewInt(liquidity), common.Hash{}))
+	pool := marketuniv4.NewPool(id, key)
+	meta := marketuniv4.EventMeta{PoolID: id, BlockNumber: 1}
+	_ = pool.Apply(marketuniv4.NewInitializeEvent(meta, sqrtPriceAtTick0(), 0))
+	_ = pool.Apply(marketuniv4.NewModifyLiquidityEvent(meta, common.Address{}, -120, 120, big.NewInt(liquidity), common.Hash{}))
 	pool.Status = market.PoolStatusReady
 	return pool, id
 }
@@ -186,6 +188,7 @@ func setupV4Pool(token0, token1 common.Address, liquidity int64) (*marketv4.Pool
 func unifiedQuotes() *quoteunified.QuoteService {
 	return quoteunified.NewQuoteService(
 		quoteuniv3domain.NewQuoteService(),
+		quotepancakev3domain.NewQuoteService(),
 		quoteuniv4domain.NewQuoteService(),
 	)
 }
@@ -208,7 +211,7 @@ func TestScanServiceFindsAffectedRoutes(t *testing.T) {
 		},
 	})
 
-	affected := scan.FindAffected([]common.Address{poolAB}, nil)
+	affected := scan.FindAffected([]common.Address{poolAB}, nil, nil)
 	if len(affected) != 1 || affected[0].ID != "cycle-ab" {
 		t.Fatalf("expected cycle-ab route, got %+v", affected)
 	}
@@ -234,7 +237,7 @@ func TestScanServiceRegistersTriangleRoutes(t *testing.T) {
 		t.Fatalf("expected 2 triangle routes, got %d", count)
 	}
 
-	affected := scan.FindAffected([]common.Address{poolBC}, nil)
+	affected := scan.FindAffected([]common.Address{poolBC}, nil, nil)
 	if len(affected) != 2 {
 		t.Fatalf("expected 2 affected triangle routes, got %+v", affected)
 	}
@@ -261,11 +264,40 @@ func TestScanServiceRegistersMixedTriangleRoutes(t *testing.T) {
 		t.Fatalf("expected 2 mixed triangle routes, got %d", count)
 	}
 
-	affected := scan.FindAffected(nil, []marketv4.PoolID{poolBCID})
+	affected := scan.FindAffected(nil, nil, []marketuniv4.PoolID{poolBCID})
 	if len(affected) != 2 {
 		t.Fatalf("expected 2 affected mixed triangle routes, got %+v", affected)
 	}
 	_ = poolBC
+}
+
+func TestScanServiceFindsAffectedPancakeRoutes(t *testing.T) {
+	tokenA := testToken(2)
+	tokenB := testToken(3)
+	poolAB := testToken(10)
+
+	scan := arbitrageapp.NewScanService(domainarb.NewDependencyGraph())
+	scan.RegisterRoute(domainarb.RouteRef{
+		ID: "cycle-pancake",
+		Route: quoteunified.Route{
+			TokenIn:  tokenA,
+			TokenOut: tokenA,
+			Hops: []quoteunified.RouteHop{
+				{Version: quoteunified.PoolVersionPancakeV3, PoolPancakeV3: poolAB, TokenIn: tokenA, TokenOut: tokenB},
+				{Version: quoteunified.PoolVersionPancakeV3, PoolPancakeV3: poolAB, TokenIn: tokenB, TokenOut: tokenA},
+			},
+		},
+	})
+
+	affected := scan.FindAffected(nil, []common.Address{poolAB}, nil)
+	if len(affected) != 1 || affected[0].ID != "cycle-pancake" {
+		t.Fatalf("expected cycle-pancake route, got %+v", affected)
+	}
+
+	notAffected := scan.FindAffected([]common.Address{poolAB}, nil, nil)
+	if len(notAffected) != 0 {
+		t.Fatalf("expected no univ3 matches for pancake pool, got %+v", notAffected)
+	}
 }
 
 func TestServicesOnPoolsChangedRunsPipeline(t *testing.T) {

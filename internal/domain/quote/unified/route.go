@@ -5,13 +5,14 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// RouteHop is a single hop that may use either a V3 or V4 pool.
+// RouteHop is a single hop that may use a V3-style or V4 pool.
 type RouteHop struct {
-	Version  PoolVersion
-	PoolV3   common.Address
-	PoolV4   marketv4.PoolID
-	TokenIn  common.Address
-	TokenOut common.Address
+	Version       PoolVersion
+	PoolV3        common.Address
+	PoolPancakeV3 common.Address
+	PoolV4        marketv4.PoolID
+	TokenIn       common.Address
+	TokenOut      common.Address
 }
 
 // Route represents a token swap path through V3 and/or V4 pools.
@@ -31,6 +32,20 @@ func NewDirectV3Route(pool common.Address, tokenIn, tokenOut common.Address) Rou
 			PoolV3:   pool,
 			TokenIn:  tokenIn,
 			TokenOut: tokenOut,
+		}},
+	}
+}
+
+// NewDirectPancakeV3Route builds a single-hop PancakeSwap V3 route.
+func NewDirectPancakeV3Route(pool common.Address, tokenIn, tokenOut common.Address) Route {
+	return Route{
+		TokenIn:  tokenIn,
+		TokenOut: tokenOut,
+		Hops: []RouteHop{{
+			Version:       PoolVersionPancakeV3,
+			PoolPancakeV3: pool,
+			TokenIn:       tokenIn,
+			TokenOut:      tokenOut,
 		}},
 	}
 }

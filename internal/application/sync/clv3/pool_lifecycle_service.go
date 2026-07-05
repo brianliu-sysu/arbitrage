@@ -1,17 +1,16 @@
-package syncv3
+package clv3sync
 
 import (
 	"context"
 	"fmt"
 	"sync"
 
-	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	"github.com/ethereum/go-ethereum/common"
 )
 
 // PoolLifecycleService manages tracked pools at runtime.
 type PoolLifecycleService struct {
-	registry  marketv3.PoolRegistry
+	registry  PoolRegistry
 	bootstrap *BootstrapService
 	readiness *ReadinessService
 
@@ -20,7 +19,7 @@ type PoolLifecycleService struct {
 }
 
 func NewPoolLifecycleService(
-	registry marketv3.PoolRegistry,
+	registry PoolRegistry,
 	bootstrap *BootstrapService,
 	readiness *ReadinessService,
 ) *PoolLifecycleService {

@@ -7,8 +7,9 @@ import (
 
 	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
-	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
-	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
+	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
+	marketuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
+	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -16,25 +17,30 @@ import (
 type ReadinessChecker interface {
 	IsSystemReady() bool
 	IsV3PoolReady(poolAddress common.Address) bool
-	IsV4PoolReady(poolID marketv4.PoolID) bool
+	IsPancakeV3PoolReady(poolAddress common.Address) bool
+	IsV4PoolReady(poolID marketuniv4.PoolID) bool
 }
 
-// AppService orchestrates unified V3/V4 route discovery and quoting.
+// AppService orchestrates unified V3/PancakeV3/V4 route discovery and quoting.
 type AppService struct {
-	v3Pools     marketv3.PoolRepository
-	v4Pools     marketv4.PoolRepository
-	v3Registry  marketv3.PoolRegistry
-	v4Registry  marketv4.PoolRegistry
-	quotes      *quoteunified.QuoteService
-	readiness   ReadinessChecker
-	maxHops     int
+	univ3Pools          marketuniv3.PoolRepository
+	pancakePools     marketpancake.PoolRepository
+	univ4Pools          marketuniv4.PoolRepository
+	v3Registry       marketuniv3.PoolRegistry
+	pancakeRegistry  marketpancake.PoolRegistry
+	v4Registry       marketuniv4.PoolRegistry
+	quotes           *quoteunified.QuoteService
+	readiness        ReadinessChecker
+	maxHops          int
 }
 
 func NewAppService(
-	v3Pools marketv3.PoolRepository,
-	v4Pools marketv4.PoolRepository,
-	v3Registry marketv3.PoolRegistry,
-	v4Registry marketv4.PoolRegistry,
+	univ3Pools marketuniv3.PoolRepository,
+	pancakePools marketpancake.PoolRepository,
+	univ4Pools marketuniv4.PoolRepository,
+	v3Registry marketuniv3.PoolRegistry,
+	pancakeRegistry marketpancake.PoolRegistry,
+	v4Registry marketuniv4.PoolRegistry,
 	quotes *quoteunified.QuoteService,
 	readiness ReadinessChecker,
 	maxHops int,
@@ -43,13 +49,15 @@ func NewAppService(
 		maxHops = 3
 	}
 	return &AppService{
-		v3Pools:    v3Pools,
-		v4Pools:    v4Pools,
-		v3Registry: v3Registry,
-		v4Registry: v4Registry,
-		quotes:     quotes,
-		readiness:  readiness,
-		maxHops:    maxHops,
+		univ3Pools:         univ3Pools,
+		pancakePools:    pancakePools,
+		univ4Pools:         univ4Pools,
+		v3Registry:      v3Registry,
+		pancakeRegistry: pancakeRegistry,
+		v4Registry:      v4Registry,
+		quotes:          quotes,
+		readiness:       readiness,
+		maxHops:         maxHops,
 	}
 }
 
@@ -63,7 +71,7 @@ func (s *AppService) Quote(ctx context.Context, req Request) (Response, error) {
 	}
 
 	if req.PoolAddress != nil {
-		return s.quoteSingleV3Pool(ctx, req, *req.PoolAddress)
+		return s.quoteSinglePoolByAddress(ctx, req, *req.PoolAddress)
 	}
 	if req.PoolID != nil {
 		return s.quoteSingleV4Pool(ctx, req, *req.PoolID)
@@ -100,20 +108,37 @@ func validateQuoteRequest(req Request) error {
 	return nil
 }
 
-func (s *AppService) quoteSingleV3Pool(ctx context.Context, req Request, poolAddress common.Address) (Response, error) {
+func (s *AppService) quoteSinglePoolByAddress(ctx context.Context, req Request, poolAddress common.Address) (Response, error) {
+	if s.univ3Pools != nil {
+		pool, err := s.univ3Pools.Get(ctx, poolAddress)
+		if err != nil {
+			return Response{}, fmt.Errorf("load pool %s: %w", poolAddress.Hex(), err)
+		}
+		if pool != nil {
+			return s.quoteSingleV3Pool(ctx, req, poolAddress, pool)
+		}
+	}
+
+	if s.pancakePools != nil {
+		pool, err := s.pancakePools.Get(ctx, poolAddress)
+		if err != nil {
+			return Response{}, fmt.Errorf("load pool %s: %w", poolAddress.Hex(), err)
+		}
+		if pool != nil {
+			return s.quoteSinglePancakeV3Pool(ctx, req, poolAddress, pool)
+		}
+	}
+
+	return Response{}, fmt.Errorf("pool %s not found", poolAddress.Hex())
+}
+
+func (s *AppService) quoteSingleV3Pool(ctx context.Context, req Request, poolAddress common.Address, pool *marketuniv3.Pool) (Response, error) {
 	if s.readiness != nil && !s.readiness.IsV3PoolReady(poolAddress) {
 		return Response{}, fmt.Errorf("pool %s is not ready", poolAddress.Hex())
 	}
 
-	pool, err := s.v3Pools.Get(ctx, poolAddress)
-	if err != nil {
-		return Response{}, fmt.Errorf("load pool %s: %w", poolAddress.Hex(), err)
-	}
-	if pool == nil {
-		return Response{}, fmt.Errorf("pool %s not found", poolAddress.Hex())
-	}
-
 	var result quoteshared.QuoteResult
+	var err error
 	if req.IsExactInput() {
 		result, err = s.quotes.QuoteExactInputV3(pool, req.TokenIn, req.TokenOut, req.AmountIn)
 	} else {
@@ -127,12 +152,33 @@ func (s *AppService) quoteSingleV3Pool(ctx context.Context, req Request, poolAdd
 	return newSinglePoolResponse(req, route, result), nil
 }
 
-func (s *AppService) quoteSingleV4Pool(ctx context.Context, req Request, poolID marketv4.PoolID) (Response, error) {
+func (s *AppService) quoteSinglePancakeV3Pool(ctx context.Context, req Request, poolAddress common.Address, pool *marketpancake.Pool) (Response, error) {
+	_ = ctx
+	if s.readiness != nil && !s.readiness.IsPancakeV3PoolReady(poolAddress) {
+		return Response{}, fmt.Errorf("pool %s is not ready", poolAddress.Hex())
+	}
+
+	var result quoteshared.QuoteResult
+	var err error
+	if req.IsExactInput() {
+		result, err = s.quotes.QuoteExactInputPancakeV3(pool, req.TokenIn, req.TokenOut, req.AmountIn)
+	} else {
+		result, err = s.quotes.QuoteExactOutputPancakeV3(pool, req.TokenIn, req.TokenOut, req.AmountOut)
+	}
+	if err != nil {
+		return Response{}, fmt.Errorf("quote pool %s: %w", poolAddress.Hex(), err)
+	}
+
+	route := quoteunified.NewDirectPancakeV3Route(poolAddress, req.TokenIn, req.TokenOut)
+	return newSinglePoolResponse(req, route, result), nil
+}
+
+func (s *AppService) quoteSingleV4Pool(ctx context.Context, req Request, poolID marketuniv4.PoolID) (Response, error) {
 	if s.readiness != nil && !s.readiness.IsV4PoolReady(poolID) {
 		return Response{}, fmt.Errorf("pool %s is not ready", poolID.String())
 	}
 
-	pool, err := s.v4Pools.Get(ctx, poolID)
+	pool, err := s.univ4Pools.Get(ctx, poolID)
 	if err != nil {
 		return Response{}, fmt.Errorf("load pool %s: %w", poolID.String(), err)
 	}
@@ -236,15 +282,15 @@ func (s *AppService) quoteBestRoute(ctx context.Context, req Request) (Response,
 func (s *AppService) buildPoolGraph(ctx context.Context) (quoteunified.PoolGraph, error) {
 	edges := make([]quoteunified.PoolEdge, 0)
 
-	if s.v3Registry != nil && s.v3Pools != nil {
+	if s.v3Registry != nil && s.univ3Pools != nil {
 		addresses, err := s.v3Registry.List(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("list v3 pools: %w", err)
+			return nil, fmt.Errorf("list univ3 pools: %w", err)
 		}
 		for _, address := range addresses {
-			pool, err := s.v3Pools.Get(ctx, address)
+			pool, err := s.univ3Pools.Get(ctx, address)
 			if err != nil {
-				return nil, fmt.Errorf("load v3 pool %s: %w", address.Hex(), err)
+				return nil, fmt.Errorf("load univ3 pool %s: %w", address.Hex(), err)
 			}
 			if pool == nil {
 				continue
@@ -258,15 +304,37 @@ func (s *AppService) buildPoolGraph(ctx context.Context) (quoteunified.PoolGraph
 		}
 	}
 
-	if s.v4Registry != nil && s.v4Pools != nil {
+	if s.pancakeRegistry != nil && s.pancakePools != nil {
+		addresses, err := s.pancakeRegistry.List(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list pancakev3 pools: %w", err)
+		}
+		for _, address := range addresses {
+			pool, err := s.pancakePools.Get(ctx, address)
+			if err != nil {
+				return nil, fmt.Errorf("load pancakev3 pool %s: %w", address.Hex(), err)
+			}
+			if pool == nil {
+				continue
+			}
+			edges = append(edges, quoteunified.PoolEdge{
+				Version:       quoteunified.PoolVersionPancakeV3,
+				PoolPancakeV3: pool.Address,
+				Token0:        pool.Token0,
+				Token1:        pool.Token1,
+			})
+		}
+	}
+
+	if s.v4Registry != nil && s.univ4Pools != nil {
 		poolIDs, err := s.v4Registry.List(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("list v4 pools: %w", err)
+			return nil, fmt.Errorf("list univ4 pools: %w", err)
 		}
 		for _, poolID := range poolIDs {
-			pool, err := s.v4Pools.Get(ctx, poolID)
+			pool, err := s.univ4Pools.Get(ctx, poolID)
 			if err != nil {
-				return nil, fmt.Errorf("load v4 pool %s: %w", poolID.String(), err)
+				return nil, fmt.Errorf("load univ4 pool %s: %w", poolID.String(), err)
 			}
 			if pool == nil {
 				continue
@@ -289,8 +357,9 @@ func (s *AppService) buildPoolGraph(ctx context.Context) (quoteunified.PoolGraph
 
 func (s *AppService) loadRoutePools(ctx context.Context, route quoteunified.Route) (quoteunified.RoutePools, error) {
 	pools := quoteunified.RoutePools{
-		V3: make(map[common.Address]*marketv3.Pool),
-		V4: make(map[marketv4.PoolID]*marketv4.Pool),
+		V3:        make(map[common.Address]*marketuniv3.Pool),
+		PancakeV3: make(map[common.Address]*marketpancake.Pool),
+		V4:        make(map[marketuniv4.PoolID]*marketuniv4.Pool),
 	}
 
 	for _, hop := range route.Hops {
@@ -299,24 +368,36 @@ func (s *AppService) loadRoutePools(ctx context.Context, route quoteunified.Rout
 			if _, ok := pools.V3[hop.PoolV3]; ok {
 				continue
 			}
-			pool, err := s.v3Pools.Get(ctx, hop.PoolV3)
+			pool, err := s.univ3Pools.Get(ctx, hop.PoolV3)
 			if err != nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("load v3 pool %s: %w", hop.PoolV3.Hex(), err)
+				return quoteunified.RoutePools{}, fmt.Errorf("load univ3 pool %s: %w", hop.PoolV3.Hex(), err)
 			}
 			if pool == nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("v3 pool %s not found", hop.PoolV3.Hex())
+				return quoteunified.RoutePools{}, fmt.Errorf("univ3 pool %s not found", hop.PoolV3.Hex())
 			}
 			pools.V3[hop.PoolV3] = pool
+		case quoteunified.PoolVersionPancakeV3:
+			if _, ok := pools.PancakeV3[hop.PoolPancakeV3]; ok {
+				continue
+			}
+			pool, err := s.pancakePools.Get(ctx, hop.PoolPancakeV3)
+			if err != nil {
+				return quoteunified.RoutePools{}, fmt.Errorf("load pancakev3 pool %s: %w", hop.PoolPancakeV3.Hex(), err)
+			}
+			if pool == nil {
+				return quoteunified.RoutePools{}, fmt.Errorf("pancakev3 pool %s not found", hop.PoolPancakeV3.Hex())
+			}
+			pools.PancakeV3[hop.PoolPancakeV3] = pool
 		case quoteunified.PoolVersionV4:
 			if _, ok := pools.V4[hop.PoolV4]; ok {
 				continue
 			}
-			pool, err := s.v4Pools.Get(ctx, hop.PoolV4)
+			pool, err := s.univ4Pools.Get(ctx, hop.PoolV4)
 			if err != nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("load v4 pool %s: %w", hop.PoolV4.String(), err)
+				return quoteunified.RoutePools{}, fmt.Errorf("load univ4 pool %s: %w", hop.PoolV4.String(), err)
 			}
 			if pool == nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("v4 pool %s not found", hop.PoolV4.String())
+				return quoteunified.RoutePools{}, fmt.Errorf("univ4 pool %s not found", hop.PoolV4.String())
 			}
 			pools.V4[hop.PoolV4] = pool
 		default:
@@ -335,11 +416,15 @@ func (s *AppService) ensureRouteReady(route quoteunified.Route) error {
 		switch hop.Version {
 		case quoteunified.PoolVersionV3:
 			if !s.readiness.IsV3PoolReady(hop.PoolV3) {
-				return fmt.Errorf("v3 pool %s is not ready", hop.PoolV3.Hex())
+				return fmt.Errorf("univ3 pool %s is not ready", hop.PoolV3.Hex())
+			}
+		case quoteunified.PoolVersionPancakeV3:
+			if !s.readiness.IsPancakeV3PoolReady(hop.PoolPancakeV3) {
+				return fmt.Errorf("pancakev3 pool %s is not ready", hop.PoolPancakeV3.Hex())
 			}
 		case quoteunified.PoolVersionV4:
 			if !s.readiness.IsV4PoolReady(hop.PoolV4) {
-				return fmt.Errorf("v4 pool %s is not ready", hop.PoolV4.String())
+				return fmt.Errorf("univ4 pool %s is not ready", hop.PoolV4.String())
 			}
 		default:
 			return fmt.Errorf("unsupported pool version %d", hop.Version)

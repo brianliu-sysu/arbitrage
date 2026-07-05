@@ -36,7 +36,7 @@ func poolEntryFromConfig(pool config.StaticV4PoolConfig, index int) (v4PoolEntry
 	}
 	id, err := marketv4.ComputePoolID(key)
 	if err != nil {
-		return v4PoolEntry{}, fmt.Errorf("sync.v4.poolmanager.pools[%d]: %w", index, err)
+		return v4PoolEntry{}, fmt.Errorf("sync.univ4.poolmanager.pools[%d]: %w", index, err)
 	}
 	return v4PoolEntry{id: id, key: key}, nil
 }

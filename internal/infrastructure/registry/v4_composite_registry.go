@@ -16,7 +16,7 @@ type CompositeV4Registry struct {
 	subgraphEnabled bool
 }
 
-func NewCompositeV4Registry(cfg config.V4SyncConfig) (*CompositeV4Registry, error) {
+func NewCompositeV4Registry(cfg config.Univ4SyncConfig) (*CompositeV4Registry, error) {
 	static, err := parseStaticV4Pools(cfg.PoolManager.Pools)
 	if err != nil {
 		return nil, err

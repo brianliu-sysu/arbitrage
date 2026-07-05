@@ -41,11 +41,14 @@ func TestQuoteCombinedHandlerReturnsMixedRouteJSON(t *testing.T) {
 
 	combined := quotecombined.NewAppService(
 		v3Repo,
+		nil,
 		v4Repo,
 		staticRegistry{addresses: []common.Address{poolAB}},
+		nil,
 		staticV4Registry{entries: map[marketv4.PoolID]marketv4.PoolKey{poolBCID: poolBC.Key}},
 		quoteunified.NewQuoteService(
 			quoteuniv3domain.NewQuoteService(),
+			nil,
 			quoteuniv4domain.NewQuoteService(),
 		),
 		combinedAlwaysReady{},
@@ -91,6 +94,7 @@ type combinedAlwaysReady struct{}
 
 func (combinedAlwaysReady) IsSystemReady() bool                  { return true }
 func (combinedAlwaysReady) IsV3PoolReady(_ common.Address) bool  { return true }
+func (combinedAlwaysReady) IsPancakeV3PoolReady(_ common.Address) bool { return true }
 func (combinedAlwaysReady) IsV4PoolReady(_ marketv4.PoolID) bool { return true }
 
 func setupV4Pool(token0, token1 common.Address, liquidity int64) (*marketv4.Pool, marketv4.PoolID) {
