@@ -71,6 +71,8 @@ sync:
       token0: ""
       token1: ""
       fee_tiers: [500, 3000, 10000]
+      hooks:
+        - "0x0000000000000000000000000000000000000000"
 
 http:
   enabled: true

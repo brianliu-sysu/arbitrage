@@ -19,7 +19,7 @@ import (
 
 // V4SubgraphRegistry loads V4 pool IDs and keys from a Uniswap V4 subgraph.
 type V4SubgraphRegistry struct {
-	cfg    config.SubgraphPoolConfig
+	cfg    config.V4SubgraphPoolConfig
 	client *http.Client
 	clock  func() time.Time
 
@@ -30,7 +30,7 @@ type V4SubgraphRegistry struct {
 	removed   map[marketv4.PoolID]struct{}
 }
 
-func NewV4SubgraphRegistry(cfg config.SubgraphPoolConfig) *V4SubgraphRegistry {
+func NewV4SubgraphRegistry(cfg config.V4SubgraphPoolConfig) *V4SubgraphRegistry {
 	if cfg.First <= 0 {
 		cfg.First = 100
 	}
@@ -42,6 +42,9 @@ func NewV4SubgraphRegistry(cfg config.SubgraphPoolConfig) *V4SubgraphRegistry {
 	}
 	if cfg.RefreshInterval <= 0 {
 		cfg.RefreshInterval = 10 * time.Minute
+	}
+	if len(cfg.Hooks) == 0 {
+		cfg.Hooks = config.DefaultV4SubgraphHooks()
 	}
 	return &V4SubgraphRegistry{
 		cfg:     cfg,
@@ -270,6 +273,17 @@ func (r *V4SubgraphRegistry) buildPoolWhereFilter() map[string]any {
 	}
 	if len(r.cfg.FeeTiers) > 0 {
 		where["feeTier_in"] = r.cfg.FeeTiers
+	}
+	hooks := make([]string, 0, len(r.cfg.ResolvedHooks()))
+	for _, hook := range r.cfg.ResolvedHooks() {
+		hook = strings.ToLower(strings.TrimSpace(hook))
+		if hook == "" {
+			continue
+		}
+		hooks = append(hooks, hook)
+	}
+	if len(hooks) > 0 {
+		where["hooks_in"] = hooks
 	}
 	return where
 }

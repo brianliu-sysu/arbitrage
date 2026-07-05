@@ -106,9 +106,9 @@ type V3SyncConfig struct {
 
 // V4SyncConfig configures Uniswap V4 pool sync sources.
 type V4SyncConfig struct {
-	Enabled      bool                 `yaml:"enabled"`
-	PoolManager  V4PoolManagerConfig  `yaml:"poolmanager"`
-	Subgraph     SubgraphPoolConfig   `yaml:"subgraph"`
+	Enabled      bool                  `yaml:"enabled"`
+	PoolManager  V4PoolManagerConfig   `yaml:"poolmanager"`
+	Subgraph     V4SubgraphPoolConfig  `yaml:"subgraph"`
 }
 
 // V4PoolManagerConfig lists V4 pools tracked via static PoolKey definitions.
@@ -145,6 +145,31 @@ type SubgraphPoolConfig struct {
 	Token0                   string        `yaml:"token0"`
 	Token1                 string        `yaml:"token1"`
 	FeeTiers               []uint32      `yaml:"fee_tiers"`
+}
+
+// DefaultV4HooksAddress is the zero address used for pools without custom hooks.
+const DefaultV4HooksAddress = "0x0000000000000000000000000000000000000000"
+
+// V4SubgraphPoolConfig discovers V4 pools from a Uniswap V4 subgraph.
+type V4SubgraphPoolConfig struct {
+	SubgraphPoolConfig `yaml:",inline"`
+	Hooks              []string `yaml:"hooks"`
+}
+
+func DefaultV4SubgraphHooks() []string {
+	return []string{DefaultV4HooksAddress}
+}
+
+func (c V4SubgraphPoolConfig) IsEnabled() bool {
+	return c.SubgraphPoolConfig.IsEnabled()
+}
+
+// ResolvedHooks returns configured hook addresses, defaulting to the zero hook.
+func (c V4SubgraphPoolConfig) ResolvedHooks() []string {
+	if len(c.Hooks) == 0 {
+		return DefaultV4SubgraphHooks()
+	}
+	return c.Hooks
 }
 
 type PoolConfig = StaticPoolConfig
@@ -206,6 +231,19 @@ func Default() Config {
 					MinTotalValueLockedUSD: "1000000",
 					MinVolume24hUSD:        "200000",
 					RefreshInterval:        10 * time.Minute,
+				},
+			},
+			V4: V4SyncConfig{
+				Subgraph: V4SubgraphPoolConfig{
+					SubgraphPoolConfig: SubgraphPoolConfig{
+						First:                  100,
+						OrderBy:                "volume24h",
+						OrderDirection:         "desc",
+						MinTotalValueLockedUSD: "1000000",
+						MinVolume24hUSD:        "200000",
+						RefreshInterval:        10 * time.Minute,
+					},
+					Hooks: DefaultV4SubgraphHooks(),
 				},
 			},
 		},

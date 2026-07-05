@@ -83,14 +83,14 @@ func (r *CompositeV4Registry) GetKey(ctx context.Context, id marketv4.PoolID) (m
 
 func (r *CompositeV4Registry) Add(ctx context.Context, id marketv4.PoolID, key marketv4.PoolKey) error {
 	if r.subgraph == nil {
-		r.subgraph = NewV4SubgraphRegistry(config.SubgraphPoolConfig{})
+		r.subgraph = NewV4SubgraphRegistry(config.V4SubgraphPoolConfig{})
 	}
 	return r.subgraph.Add(ctx, id, key)
 }
 
 func (r *CompositeV4Registry) Remove(ctx context.Context, id marketv4.PoolID) error {
 	if r.subgraph == nil {
-		r.subgraph = NewV4SubgraphRegistry(config.SubgraphPoolConfig{})
+		r.subgraph = NewV4SubgraphRegistry(config.V4SubgraphPoolConfig{})
 	}
 	return r.subgraph.Remove(ctx, id)
 }
