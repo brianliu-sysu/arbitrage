@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math/big"
 
-	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/v4"
+	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ4"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 )

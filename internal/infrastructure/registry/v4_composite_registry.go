@@ -6,7 +6,7 @@ import (
 	"sort"
 
 	"github.com/brianliu-sysu/uniswapv3/internal/config"
-	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v4"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 )
 
 // CompositeV4Registry merges poolmanager static pools with a V4 subgraph-backed registry.

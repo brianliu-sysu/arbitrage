@@ -5,7 +5,7 @@ import (
 	"sort"
 	"sync"
 
-	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v4"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 )
 
 // V4SnapshotRepository is an in-memory marketv4.SnapshotRepository.

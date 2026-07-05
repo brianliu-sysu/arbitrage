@@ -7,8 +7,8 @@ import (
 	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
 	quoteuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
 	quoteuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ4"
-	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
-	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v4"
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
 

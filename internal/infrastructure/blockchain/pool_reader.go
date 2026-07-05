@@ -6,7 +6,7 @@ import (
 	"math/big"
 	"strings"
 
-	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/v3"
+	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ3"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"

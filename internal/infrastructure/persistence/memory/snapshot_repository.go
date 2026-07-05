@@ -5,7 +5,7 @@ import (
 	"sort"
 	"sync"
 
-	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/persistence/codec"
 	"github.com/ethereum/go-ethereum/common"
 )

@@ -11,8 +11,8 @@ import (
 	quoteuniv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
 	quoteuniv4domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ4"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
-	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
-	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v4"
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	"github.com/ethereum/go-ethereum/common"
 )

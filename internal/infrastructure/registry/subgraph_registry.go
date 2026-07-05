@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/brianliu-sysu/uniswapv3/internal/config"
-	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	"github.com/ethereum/go-ethereum/common"
 )
 

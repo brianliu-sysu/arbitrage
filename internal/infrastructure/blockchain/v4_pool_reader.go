@@ -6,9 +6,9 @@ import (
 	"math/big"
 	"strings"
 
-	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/v4"
+	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ4"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
-	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v4"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 )

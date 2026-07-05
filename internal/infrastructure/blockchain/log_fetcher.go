@@ -6,7 +6,7 @@ import (
 	"math/big"
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
-	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/v3"
+	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ3"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 )

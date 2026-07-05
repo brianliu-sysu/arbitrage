@@ -1,9 +1,9 @@
 package combined
 
 import (
-	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v4"
-	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/v3"
-	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/v4"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
+	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ3"
+	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
 

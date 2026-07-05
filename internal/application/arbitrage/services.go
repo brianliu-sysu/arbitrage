@@ -7,8 +7,8 @@ import (
 
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
-	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
-	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v4"
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap"
 )

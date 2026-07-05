@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
-	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 )

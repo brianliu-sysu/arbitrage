@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"os"
 
-	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/v3"
-	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/v4"
+	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ3"
+	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ4"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
-	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
-	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v4"
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/persistence/memory"
 	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/persistence/postgres"
 )

@@ -4,8 +4,8 @@ import (
 	"fmt"
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
-	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/v3"
-	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/v4"
+	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ3"
+	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
 

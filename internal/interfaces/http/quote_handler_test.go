@@ -12,7 +12,7 @@ import (
 
 	quoteapp "github.com/brianliu-sysu/uniswapv3/internal/application/quote"
 	quoteuniv3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/univ3"
-	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/v3"
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	quoteuniv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
 	httpapi "github.com/brianliu-sysu/uniswapv3/internal/interfaces/http"
