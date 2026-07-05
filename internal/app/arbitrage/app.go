@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
-	"os"
 	"time"
 
 	arbitrageapp "github.com/brianliu-sysu/uniswapv3/internal/application/arbitrage"
@@ -92,11 +91,7 @@ func registerLoggerLifecycle(lifecycle fx.Lifecycle, logger *zap.Logger) {
 }
 
 func newPersistence(cfg config.Config) (*persistence.Services, error) {
-	pCfg := cfg.PersistenceConfig()
-	if os.Getenv("USE_MEMORY_DB") == "true" {
-		pCfg.UseMemory = true
-	}
-	return persistence.NewServices(context.Background(), pCfg)
+	return persistence.NewServices(context.Background(), cfg.PersistenceConfig())
 }
 
 func newBlockchain(cfg config.Config) (*chaininfra.Services, error) {
@@ -281,6 +276,7 @@ func (r *syncLifecycle) start(_ context.Context) error {
 
 	r.logger.Info("starting pool sync",
 		zap.String("persistence", r.store.BackendName()),
+		zap.Bool("memory_mode", r.cfg.MemoryMode()),
 		zap.Bool("v3", r.cfg.Sync.V3.IsActive()),
 		zap.Bool("v3_subgraph", r.cfg.Sync.V3.Subgraph.IsEnabled()),
 		zap.Int("v3_pools", len(r.cfg.Sync.V3.Pools)),

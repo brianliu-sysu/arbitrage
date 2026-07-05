@@ -5,11 +5,13 @@ rpc:
   url: "https://eth-mainnet.g.alchemy.com/v2/your-api-key"
   ws_url: wss://your-provider.example/v2/your-api-key  # Only used for subscribing to new blocks
 
-database:
-  url: "postgres://postgres:postgres@localhost:5432/arbitrage?sslmode=disable"
-
-redis:
-  url: "redis://localhost:6379/0"
+persistence:
+  # When true, store pools, snapshots, checkpoints, and opportunities in memory only.
+  memory: false
+  database:
+    url: "postgres://postgres:postgres@localhost:5432/arbitrage?sslmode=disable"
+  redis:
+    url: "redis://localhost:6379/0"
 
 blockchain:
   factory_address: "0x1F98431c8aD98523631AE4a59f267346ea31F984"

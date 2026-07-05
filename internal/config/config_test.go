@@ -12,8 +12,10 @@ func TestLoadSyncV3Config(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	content := `
-database:
-  url: postgres://localhost/univ3
+persistence:
+  memory: false
+  database:
+    url: postgres://localhost/univ3
 sync:
   v3:
     enabled: true
@@ -51,6 +53,46 @@ sync:
 	}
 	if cfg.SubgraphPoolSource().First != 50 {
 		t.Fatalf("expected subgraph first=50, got %d", cfg.SubgraphPoolSource().First)
+	}
+}
+
+func TestLoadMemoryModeConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+persistence:
+  memory: true
+sync:
+  v3:
+    enabled: true
+    pools:
+      - address: "0x88e6A0c2dDD26FEEb64F039a2c41296Fb728693B"
+        fee: 500
+  v4:
+    enabled: false
+    poolmanager:
+      pools: []
+    subgraph:
+      enabled: false
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if !cfg.MemoryMode() {
+		t.Fatal("expected memory mode enabled")
+	}
+
+	pCfg := cfg.PersistenceConfig()
+	if !pCfg.UseMemory {
+		t.Fatal("expected persistence config to use memory")
+	}
+	if pCfg.DatabaseURL != "" {
+		t.Fatalf("expected empty database url in memory mode, got %q", pCfg.DatabaseURL)
 	}
 }
 

@@ -40,12 +40,15 @@ func Run(params Params) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	databaseURL := cfg.Database.URL
+	databaseURL := cfg.DatabaseURL()
 	if params.DatabaseURL != "" {
 		databaseURL = params.DatabaseURL
 	}
+	if cfg.MemoryMode() {
+		return fmt.Errorf("database migrations are not available in persistence.memory mode")
+	}
 	if databaseURL == "" {
-		return fmt.Errorf("database url is required; set database.url in config or -database-url")
+		return fmt.Errorf("database url is required; set persistence.database.url in config or -database-url")
 	}
 
 	migrationsDir := params.MigrationsDir

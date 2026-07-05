@@ -125,9 +125,10 @@ func (s *Services) Close() {
 
 // ConfigFromEnv loads persistence config from environment variables.
 func ConfigFromEnv() Config {
+	useMemory := os.Getenv("USE_MEMORY_DB") == "true" || os.Getenv("USE_MEMORY_DB") == "1"
 	return Config{
 		DatabaseURL: os.Getenv("DATABASE_URL"),
-		UseMemory:   os.Getenv("USE_MEMORY_DB") == "true",
+		UseMemory:   useMemory,
 	}
 }
 

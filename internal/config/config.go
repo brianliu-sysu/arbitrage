@@ -18,8 +18,7 @@ import (
 type Config struct {
 	App        AppConfig        `yaml:"app"`
 	RPC        RPCConfig        `yaml:"rpc"`
-	Database   DatabaseConfig   `yaml:"database"`
-	Redis      RedisConfig      `yaml:"redis"`
+	Persistence PersistenceConfig `yaml:"persistence"`
 	Blockchain BlockchainConfig `yaml:"blockchain"`
 	Sync       SyncConfig       `yaml:"sync"`
 	HTTP       HTTPConfig       `yaml:"http"`
@@ -65,6 +64,17 @@ type DatabaseConfig struct {
 
 type RedisConfig struct {
 	URL string `yaml:"url"`
+}
+
+// PersistenceConfig selects the storage backend for pools, snapshots, and opportunities.
+type PersistenceConfig struct {
+	Memory   bool             `yaml:"memory"`
+	Database DatabaseConfig   `yaml:"database"`
+	Redis    RedisConfig      `yaml:"redis"`
+}
+
+func (c PersistenceConfig) MemoryMode() bool {
+	return c.Memory
 }
 
 type BlockchainConfig struct {
@@ -246,8 +256,8 @@ func Load(path string) (Config, error) {
 }
 
 func (c Config) Validate() error {
-	if c.Database.URL == "" {
-		return fmt.Errorf("database.url is required")
+	if !c.Persistence.Memory && c.Persistence.Database.URL == "" {
+		return fmt.Errorf("persistence.database.url is required unless persistence.memory is enabled")
 	}
 	if c.Sync.V3.Subgraph.Enabled && c.Sync.V3.Subgraph.Endpoint == "" {
 		return fmt.Errorf("sync.v3.subgraph.endpoint is required when subgraph is enabled")
@@ -277,10 +287,22 @@ func (c Config) Validate() error {
 }
 
 func (c Config) PersistenceConfig() persistence.Config {
-	return persistence.Config{
-		DatabaseURL: c.Database.URL,
-		UseMemory:   false,
+	useMemory := c.Persistence.Memory
+	if env := strings.TrimSpace(os.Getenv("USE_MEMORY_DB")); env != "" {
+		useMemory = env == "true" || env == "1"
 	}
+	return persistence.Config{
+		DatabaseURL: c.Persistence.Database.URL,
+		UseMemory:   useMemory,
+	}
+}
+
+func (c Config) MemoryMode() bool {
+	return c.PersistenceConfig().UseMemory
+}
+
+func (c Config) DatabaseURL() string {
+	return c.Persistence.Database.URL
 }
 
 func (c Config) BlockchainConfig() chaininfra.Config {
