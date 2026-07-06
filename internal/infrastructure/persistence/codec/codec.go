@@ -6,6 +6,7 @@ import (
 
 	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -81,6 +82,35 @@ func ClonePancakePool(pool *marketpancake.Pool) *marketpancake.Pool {
 }
 
 func ClonePancakeSnapshot(snapshot *marketpancake.Snapshot) *marketpancake.Snapshot {
+	if snapshot == nil {
+		return nil
+	}
+	cloned := *snapshot
+	cloned.State = snapshot.State.Clone()
+	cloned.Ticks = snapshot.Ticks.Clone()
+	cloned.Bitmap = snapshot.Bitmap.Clone()
+	return &cloned
+}
+
+func PoolIDToBytes(id marketv4.PoolID) []byte {
+	return id.Hash().Bytes()
+}
+
+func BytesToPoolID(raw []byte) marketv4.PoolID {
+	if len(raw) == 0 {
+		return marketv4.PoolID{}
+	}
+	return marketv4.PoolID(common.BytesToHash(raw))
+}
+
+func CloneV4Pool(pool *marketv4.Pool) *marketv4.Pool {
+	if pool == nil {
+		return nil
+	}
+	return pool.Clone()
+}
+
+func CloneV4Snapshot(snapshot *marketv4.Snapshot) *marketv4.Snapshot {
 	if snapshot == nil {
 		return nil
 	}

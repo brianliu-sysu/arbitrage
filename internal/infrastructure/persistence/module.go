@@ -97,14 +97,14 @@ func NewServices(ctx context.Context, cfg Config) (*Services, error) {
 		Pools:              postgres.NewPoolRepository(db),
 		Snapshots:          postgres.NewSnapshotRepository(db),
 		Checkpoints:        postgres.NewCheckpointRepository(db),
-		PancakePools:       memory.NewPancakePoolRepository(),
-		PancakeSnapshots:   memory.NewPancakeSnapshotRepository(),
-		PancakeCheckpoints: memory.NewCheckpointRepository(),
+		PancakePools:       postgres.NewPancakePoolRepository(db),
+		PancakeSnapshots:   postgres.NewPancakeSnapshotRepository(db),
+		PancakeCheckpoints: postgres.NewPancakeCheckpointRepository(db),
 		Opportunities:      postgres.NewOpportunityRepository(db),
-		V4Pools:       memory.NewV4PoolRepository(),
-		V4Snapshots:   memory.NewV4SnapshotRepository(),
-		V4Checkpoints: memory.NewV4CheckpointRepository(),
-		Postgres:      db,
+		V4Pools:            postgres.NewV4PoolRepository(db),
+		V4Snapshots:        postgres.NewV4SnapshotRepository(db),
+		V4Checkpoints:      postgres.NewV4CheckpointRepository(db),
+		Postgres:           db,
 	}, nil
 }
 
