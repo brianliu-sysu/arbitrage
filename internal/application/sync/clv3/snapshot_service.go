@@ -30,6 +30,25 @@ func (s *SnapshotService) LoadLatest(ctx context.Context, poolAddress common.Add
 	return s.snapshots.GetLatest(ctx, poolAddress)
 }
 
+// LoadAtOrBefore returns an exact snapshot at blockNumber, or the latest snapshot at or before it.
+func (s *SnapshotService) LoadAtOrBefore(ctx context.Context, poolAddress common.Address, blockNumber uint64) (*marketclv3.Snapshot, error) {
+	exact, err := s.snapshots.GetAtBlock(ctx, poolAddress, blockNumber)
+	if err != nil {
+		return nil, err
+	}
+	if exact != nil {
+		return exact, nil
+	}
+	latest, err := s.snapshots.GetLatest(ctx, poolAddress)
+	if err != nil {
+		return nil, err
+	}
+	if latest != nil && latest.BlockNumber > blockNumber {
+		return nil, nil
+	}
+	return latest, nil
+}
+
 func (s *SnapshotService) Create(ctx context.Context, pool *marketclv3.Pool, blockNumber uint64) error {
 	snapshot := marketclv3.NewSnapshot(pool, blockNumber, s.clock().UTC())
 	return s.snapshots.Save(ctx, snapshot)

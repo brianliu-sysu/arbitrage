@@ -59,6 +59,7 @@ func TestPoolsHandlerList(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil,
 	)
 
 	router := httpapi.NewRouter(httpapi.Handlers{

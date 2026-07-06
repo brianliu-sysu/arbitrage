@@ -6,6 +6,7 @@ import (
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
+	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -16,6 +17,7 @@ type ReorgRecoveryService struct {
 	blocks      BlockReader
 	checkpoints blockchain.CheckpointRepository
 	pools       PoolRepository
+	bootstrap   PoolBootstrapReader
 	snapshots   *SnapshotService
 	fetcher     LogFetcher
 	parser      EventParser
@@ -28,6 +30,7 @@ func NewReorgRecoveryService(
 	blocks BlockReader,
 	checkpoints blockchain.CheckpointRepository,
 	pools PoolRepository,
+	bootstrap PoolBootstrapReader,
 	snapshots *SnapshotService,
 	fetcher LogFetcher,
 	parser EventParser,
@@ -39,6 +42,7 @@ func NewReorgRecoveryService(
 		blocks:      blocks,
 		checkpoints: checkpoints,
 		pools:       pools,
+		bootstrap:   bootstrap,
 		snapshots:   snapshots,
 		fetcher:     fetcher,
 		parser:      parser,
@@ -67,19 +71,16 @@ func (s *ReorgRecoveryService) Recover(ctx context.Context, reorg blockchain.Reo
 			return fmt.Errorf("pool %s not found", poolAddress.Hex())
 		}
 
-		if snapshot, err := s.snapshots.LoadLatest(ctx, poolAddress); err != nil {
-			return fmt.Errorf("load snapshot for pool %s: %w", poolAddress.Hex(), err)
-		} else if snapshot != nil {
-			snapshot.RestoreTo(pool)
-		} else {
-			pool.LastBlockNumber = reorg.CommonAncestor
+		fromBlock, err := s.restorePoolState(ctx, pool, poolAddress, reorg.CommonAncestor)
+		if err != nil {
+			return fmt.Errorf("restore pool %s: %w", poolAddress.Hex(), err)
 		}
+
 		pool.Status = market.PoolStatusSyncing
 		if err := s.pools.Save(ctx, pool); err != nil {
 			return fmt.Errorf("save pool %s: %w", poolAddress.Hex(), err)
 		}
 
-		fromBlock := reorg.CommonAncestor + 1
 		toBlock := reorg.RemoteHead.Number
 		if fromBlock > toBlock {
 			continue
@@ -105,10 +106,10 @@ func (s *ReorgRecoveryService) Recover(ctx context.Context, reorg blockchain.Reo
 				return fmt.Errorf("load block header %d: %w", blockNumber, err)
 			}
 			if _, err := s.blockApply.ApplyBlock(ctx, ApplyBlockRequest{
-				BlockNumber:  blockNumber,
-				BlockHash:    header.Hash,
-				Events:       eventsByBlock[blockNumber],
-				TrackedPools: []common.Address{poolAddress},
+				BlockNumber:    blockNumber,
+				BlockHash:      header.Hash,
+				Events:         eventsByBlock[blockNumber],
+				TrackedPools:   []common.Address{poolAddress},
 			}); err != nil {
 				return fmt.Errorf("replay block %d for pool %s: %w", blockNumber, poolAddress.Hex(), err)
 			}
@@ -125,4 +126,33 @@ func (s *ReorgRecoveryService) Recover(ctx context.Context, reorg blockchain.Reo
 		s.readiness.SetPoolReady(poolAddress, true)
 	}
 	return nil
+}
+
+func (s *ReorgRecoveryService) restorePoolState(ctx context.Context, pool *marketclv3.Pool, poolAddress common.Address, ancestor uint64) (uint64, error) {
+	snapshot, err := s.snapshots.LoadAtOrBefore(ctx, poolAddress, ancestor)
+	if err != nil {
+		return 0, err
+	}
+	if snapshot != nil {
+		snapshot.RestoreTo(pool)
+		pool.LastBlockNumber = snapshot.BlockNumber
+		return syncapp.ReorgReplayFromBlock(snapshot.BlockNumber, ancestor, true), nil
+	}
+
+	if s.bootstrap != nil {
+		data, err := s.bootstrap.ReadBootstrapData(ctx, poolAddress, ancestor)
+		if err != nil {
+			return 0, fmt.Errorf("read chain bootstrap data: %w", err)
+		}
+		pool.Token0 = data.Token0
+		pool.Token1 = data.Token1
+		pool.Fee = data.Fee
+		pool.TickSpacing = data.TickSpacing
+		applyBootstrapData(pool, data)
+		pool.LastBlockNumber = ancestor
+		return syncapp.ReorgReplayFromBlock(0, ancestor, false), nil
+	}
+
+	pool.LastBlockNumber = ancestor
+	return syncapp.ReorgReplayFromBlock(0, ancestor, false), nil
 }

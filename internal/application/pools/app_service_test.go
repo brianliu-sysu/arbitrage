@@ -131,6 +131,7 @@ func TestAppServiceListPools(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil,
 	)
 
 	resp, err := service.List(context.Background())
@@ -156,6 +157,7 @@ func TestAppServiceListPools(t *testing.T) {
 		nil,
 		nil,
 		assetapp.NewTokenMetadataService(tokenRepo, nil),
+		nil,
 	)
 	resp, err = service.List(context.Background())
 	if err != nil {

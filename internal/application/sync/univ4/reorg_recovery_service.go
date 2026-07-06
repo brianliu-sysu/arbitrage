@@ -16,6 +16,8 @@ type ReorgRecoveryService struct {
 	blocks      BlockReader
 	checkpoints blockchain.V4CheckpointRepository
 	pools       marketv4.PoolRepository
+	registry    marketv4.PoolRegistry
+	bootstrap   PoolBootstrapReader
 	snapshots   *SnapshotService
 	fetcher     LogFetcher
 	parser      EventParser
@@ -28,6 +30,8 @@ func NewReorgRecoveryService(
 	blocks BlockReader,
 	checkpoints blockchain.V4CheckpointRepository,
 	pools marketv4.PoolRepository,
+	registry marketv4.PoolRegistry,
+	bootstrap PoolBootstrapReader,
 	snapshots *SnapshotService,
 	fetcher LogFetcher,
 	parser EventParser,
@@ -39,6 +43,8 @@ func NewReorgRecoveryService(
 		blocks:      blocks,
 		checkpoints: checkpoints,
 		pools:       pools,
+		registry:    registry,
+		bootstrap:   bootstrap,
 		snapshots:   snapshots,
 		fetcher:     fetcher,
 		parser:      parser,
@@ -67,19 +73,16 @@ func (s *ReorgRecoveryService) Recover(ctx context.Context, reorg blockchain.Reo
 			return fmt.Errorf("pool %s not found", poolID)
 		}
 
-		if snapshot, err := s.snapshots.LoadLatest(ctx, poolID); err != nil {
-			return fmt.Errorf("load snapshot for pool %s: %w", poolID, err)
-		} else if snapshot != nil {
-			snapshot.RestoreTo(pool)
-		} else {
-			pool.LastBlockNumber = reorg.CommonAncestor
+		fromBlock, err := s.restorePoolState(ctx, pool, poolID, reorg.CommonAncestor)
+		if err != nil {
+			return fmt.Errorf("restore pool %s: %w", poolID, err)
 		}
+
 		pool.Status = market.PoolStatusSyncing
 		if err := s.pools.Save(ctx, pool); err != nil {
 			return fmt.Errorf("save pool %s: %w", poolID, err)
 		}
 
-		fromBlock := reorg.CommonAncestor + 1
 		toBlock := reorg.RemoteHead.Number
 		if fromBlock > toBlock {
 			continue
@@ -125,4 +128,34 @@ func (s *ReorgRecoveryService) Recover(ctx context.Context, reorg blockchain.Reo
 		s.readiness.SetPoolReady(poolID, true)
 	}
 	return nil
+}
+
+func (s *ReorgRecoveryService) restorePoolState(ctx context.Context, pool *marketv4.Pool, poolID marketv4.PoolID, ancestor uint64) (uint64, error) {
+	snapshot, err := s.snapshots.LoadAtOrBefore(ctx, poolID, ancestor)
+	if err != nil {
+		return 0, err
+	}
+	if snapshot != nil {
+		snapshot.RestoreTo(pool)
+		pool.LastBlockNumber = snapshot.BlockNumber
+		return syncapp.ReorgReplayFromBlock(snapshot.BlockNumber, ancestor, true), nil
+	}
+
+	if s.bootstrap != nil && s.registry != nil {
+		key, err := s.registry.GetKey(ctx, poolID)
+		if err != nil {
+			return 0, fmt.Errorf("resolve pool key: %w", err)
+		}
+		data, err := s.bootstrap.ReadBootstrapData(ctx, poolID, key, ancestor)
+		if err != nil {
+			return 0, fmt.Errorf("read chain bootstrap data: %w", err)
+		}
+		pool.Key = data.Key
+		applyBootstrapData(pool, data)
+		pool.LastBlockNumber = ancestor
+		return syncapp.ReorgReplayFromBlock(0, ancestor, false), nil
+	}
+
+	pool.LastBlockNumber = ancestor
+	return syncapp.ReorgReplayFromBlock(0, ancestor, false), nil
 }

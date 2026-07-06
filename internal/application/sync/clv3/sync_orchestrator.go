@@ -88,7 +88,7 @@ func NewServices(deps ServiceDeps) *Services {
 	lifecycle := NewPoolLifecycleService(deps.Registry, bootstrap, readiness)
 	blockApply := NewBlockApplyService(deps.Pools, deps.Checkpoints, snapshots, readiness, deps.Listener)
 	catchup := NewCatchupService(deps.Config, deps.Pools, deps.Checkpoints, deps.Fetcher, deps.Parser, blockApply, lifecycle, deps.Blocks)
-	reorg := NewReorgRecoveryService(deps.Config, deps.Blocks, deps.Checkpoints, deps.Pools, snapshots, deps.Fetcher, deps.Parser, blockApply, readiness)
+	reorg := NewReorgRecoveryService(deps.Config, deps.Blocks, deps.Checkpoints, deps.Pools, deps.Bootstrap, snapshots, deps.Fetcher, deps.Parser, blockApply, readiness)
 	headSync := NewHeadSyncService(deps.Fetcher, deps.Parser, blockApply, lifecycle, reorg, readiness, deps.Subscriber)
 	scheduler := NewSnapshotScheduler(deps.Config, deps.Pools, snapshots, lifecycle)
 	health := syncapp.NewHealthService(deps.Health...)

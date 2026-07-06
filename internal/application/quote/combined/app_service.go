@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/brianliu-sysu/uniswapv3/internal/domain/asset"
 	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
@@ -83,7 +84,7 @@ func (s *AppService) Quote(ctx context.Context, req Request) (Response, error) {
 }
 
 func validateQuoteRequest(req Request) error {
-	if req.TokenIn == (common.Address{}) || req.TokenOut == (common.Address{}) {
+	if !isCombinedQuoteToken(req.TokenIn) || !isCombinedQuoteToken(req.TokenOut) {
 		return fmt.Errorf("tokenIn and tokenOut are required")
 	}
 	if req.TokenIn == req.TokenOut {
@@ -106,6 +107,10 @@ func validateQuoteRequest(req Request) error {
 		return fmt.Errorf("unsupported quote mode %d", req.Mode)
 	}
 	return nil
+}
+
+func isCombinedQuoteToken(address common.Address) bool {
+	return address != (common.Address{}) || asset.IsNativeETH(address)
 }
 
 func (s *AppService) quoteSinglePoolByAddress(ctx context.Context, req Request, poolAddress common.Address) (Response, error) {

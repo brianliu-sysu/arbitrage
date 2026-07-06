@@ -52,6 +52,7 @@ type AppService struct {
 	pancakeRegistry  marketpancake.PoolRegistry
 	v4Registry       marketuniv4.PoolRegistry
 	tokens           *assetapp.TokenMetadataService
+	chain            *ChainReaders
 }
 
 func NewAppService(
@@ -62,6 +63,7 @@ func NewAppService(
 	pancakeRegistry marketpancake.PoolRegistry,
 	v4Registry marketuniv4.PoolRegistry,
 	tokens *assetapp.TokenMetadataService,
+	chain *ChainReaders,
 ) *AppService {
 	return &AppService{
 		univ3Pools:      univ3Pools,
@@ -71,6 +73,7 @@ func NewAppService(
 		pancakeRegistry: pancakeRegistry,
 		v4Registry:      v4Registry,
 		tokens:          tokens,
+		chain:           chain,
 	}
 }
 

@@ -121,6 +121,27 @@ func (r *PoolReader) readBaseState(ctx context.Context, poolAddress common.Addre
 	}, nil
 }
 
+// ReadBaseState loads slot0 and liquidity for a V3-style pool at the given block.
+// blockNumber 0 uses the latest head.
+func (r *PoolReader) ReadBaseState(ctx context.Context, poolAddress common.Address, blockNumber uint64) (*BasePoolState, error) {
+	if blockNumber == 0 {
+		header, err := r.client.GetLatestBlockHeader(ctx)
+		if err != nil {
+			return nil, err
+		}
+		blockNumber = header.Number
+	}
+	state, err := r.readBaseState(ctx, poolAddress, blockNumber)
+	if err != nil {
+		return nil, err
+	}
+	return &BasePoolState{
+		SqrtPriceX96: new(big.Int).Set(state.sqrtPriceX96),
+		Tick:         state.tick,
+		Liquidity:    new(big.Int).Set(state.liquidity),
+	}, nil
+}
+
 func (r *PoolReader) callPoolMethods(
 	ctx context.Context,
 	poolAddress common.Address,

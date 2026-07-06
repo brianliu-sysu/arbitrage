@@ -377,6 +377,7 @@ func newPoolsAppService(
 		pancakeRegistry,
 		v4Registry,
 		tokenService,
+		chaininfra.NewPoolsChainReaders(chain.Client, chain.PoolReader, chain.PancakePoolReader, chain.V4PoolReader).AsChainReaders(),
 	)
 }
 

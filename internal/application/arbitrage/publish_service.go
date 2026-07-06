@@ -89,6 +89,8 @@ func (p *LogPublisher) Publish(_ context.Context, opportunity *domainarb.Opportu
 		zap.String("id", opportunity.ID),
 		zap.String("strategy", opportunity.StrategyID),
 		zap.Uint64("block", opportunity.BlockNumber),
+		zap.String("AmountIn", opportunity.AmountIn.String()),
+		zap.String("AmountOut", opportunity.AmountOut.String()),
 		zap.String("net_profit", opportunity.NetProfit.String()),
 		zap.Int("route_hops", opportunity.Route.Len()),
 	)

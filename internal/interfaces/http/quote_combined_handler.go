@@ -79,7 +79,7 @@ func (h *QuoteCombinedHandler) HandleQuote(c *gin.Context) {
 }
 
 func toQuoteCombinedRequest(payload quoteHTTPRequest) (quotecombined.Request, error) {
-	tokenIn, tokenOut, mode, amountIn, amountOut, err := parseQuoteBase(payload)
+	tokenIn, tokenOut, mode, amountIn, amountOut, err := parseQuoteBaseAllowNative(payload, true)
 	if err != nil {
 		return quotecombined.Request{}, err
 	}

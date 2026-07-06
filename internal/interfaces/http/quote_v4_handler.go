@@ -47,7 +47,7 @@ func (h *QuoteV4Handler) HandleQuote(c *gin.Context) {
 }
 
 func toQuoteV4Request(payload quoteHTTPRequest) (quoteuniv4.Request, error) {
-	tokenIn, tokenOut, mode, amountIn, amountOut, err := parseQuoteBase(payload)
+	tokenIn, tokenOut, mode, amountIn, amountOut, err := parseQuoteBaseAllowNative(payload, true)
 	if err != nil {
 		return quoteuniv4.Request{}, err
 	}

@@ -60,11 +60,15 @@ type errorHTTPResponse struct {
 }
 
 func parseQuoteBase(payload quoteHTTPRequest) (common.Address, common.Address, quoteapp.QuoteMode, *big.Int, *big.Int, error) {
-	tokenIn, err := parseAddress(payload.TokenIn, "tokenIn")
+	return parseQuoteBaseAllowNative(payload, false)
+}
+
+func parseQuoteBaseAllowNative(payload quoteHTTPRequest, allowNativeETH bool) (common.Address, common.Address, quoteapp.QuoteMode, *big.Int, *big.Int, error) {
+	tokenIn, err := parseTokenAddress(payload.TokenIn, "tokenIn", allowNativeETH)
 	if err != nil {
 		return common.Address{}, common.Address{}, 0, nil, nil, err
 	}
-	tokenOut, err := parseAddress(payload.TokenOut, "tokenOut")
+	tokenOut, err := parseTokenAddress(payload.TokenOut, "tokenOut", allowNativeETH)
 	if err != nil {
 		return common.Address{}, common.Address{}, 0, nil, nil, err
 	}
@@ -112,7 +116,7 @@ func parsePoolID(value string) (marketv4.PoolID, error) {
 	return marketv4.PoolID(hash), nil
 }
 
-func parseAddress(value, field string) (common.Address, error) {
+func parseTokenAddress(value, field string, allowNativeETH bool) (common.Address, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return common.Address{}, errors.New(field + " is required")
@@ -121,10 +125,14 @@ func parseAddress(value, field string) (common.Address, error) {
 		return common.Address{}, errors.New(field + " must be a valid hex address")
 	}
 	address := common.HexToAddress(value)
-	if address == (common.Address{}) {
+	if address == (common.Address{}) && !allowNativeETH {
 		return common.Address{}, errors.New(field + " must be non-zero")
 	}
 	return address, nil
+}
+
+func parseAddress(value, field string) (common.Address, error) {
+	return parseTokenAddress(value, field, false)
 }
 
 func parsePositiveAmount(value, field string) (*big.Int, error) {
