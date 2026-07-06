@@ -70,6 +70,9 @@ func (r *OpportunityRepository) List(ctx context.Context, limit int) ([]*arbitra
 		}
 		item.PoolAddress = codec.BytesToAddress(poolAddress)
 		item.Payload = append([]byte(nil), payload...)
+		if err := item.ApplyPayload(); err != nil {
+			return nil, fmt.Errorf("apply opportunity payload for %s: %w", item.ID, err)
+		}
 		items = append(items, &item)
 	}
 	return items, rows.Err()

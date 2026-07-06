@@ -52,7 +52,7 @@ func NewOpportunity(
 		poolAddress = poolRef.PrimaryAddress()
 	}
 
-	return &Opportunity{
+	o := &Opportunity{
 		ID:          id,
 		StrategyID:  strategy.ID,
 		Status:      OpportunityStatusDiscovered,
@@ -67,6 +67,8 @@ func NewOpportunity(
 		NetProfit:   cloneBigInt(evaluation.NetProfit),
 		CreatedAt:   createdAt,
 	}
+	_ = o.EnsurePayload()
+	return o
 }
 
 // IsProfitable reports whether net profit is positive.

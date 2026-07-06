@@ -66,6 +66,9 @@ func (p *RepositoryPublisher) Publish(ctx context.Context, opportunity *domainar
 	if p.repo == nil {
 		return fmt.Errorf("opportunity repository is nil")
 	}
+	if err := opportunity.EnsurePayload(); err != nil {
+		return fmt.Errorf("encode opportunity payload: %w", err)
+	}
 	return p.repo.Save(ctx, opportunity)
 }
 
