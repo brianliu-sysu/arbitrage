@@ -313,9 +313,9 @@ func TestServicesOnPoolsChangedRunsPipeline(t *testing.T) {
 
 	oppRepo := newMemoryOpportunityRepo()
 	services := arbitrageapp.NewServices(arbitrageapp.ServiceDeps{
-		Pools:   repo,
-		Quotes:  unifiedQuotes(),
-		Gas:     domainarb.NewStaticGasEstimator(100_000, 80_000, big.NewInt(1)),
+		Pools:  repo,
+		Quotes: unifiedQuotes(),
+		Gas:    domainarb.NewStaticGasEstimator(100_000, 80_000, big.NewInt(1)),
 		Strategies: []domainarb.Strategy{
 			domainarb.NewCycleStrategy("cycle-a", tokenA, 2, big.NewInt(1)),
 		},
@@ -351,6 +351,126 @@ func TestServicesOnPoolsChangedRunsPipeline(t *testing.T) {
 		t.Fatalf("expected no opportunities for unprofitable round-trip route, got %d", len(items))
 	}
 }
+
+func TestRefreshTriangleRoutesRebuildsGraph(t *testing.T) {
+	tokenA := testToken(2)
+	tokenB := testToken(3)
+	tokenC := testToken(4)
+	poolAB := testToken(10)
+	poolBC := testToken(11)
+	poolCA := testToken(12)
+
+	repo := newMemoryPoolRepo()
+	for _, spec := range []struct {
+		address, token0, token1 common.Address
+	}{
+		{poolAB, tokenA, tokenB},
+		{poolBC, tokenB, tokenC},
+		{poolCA, tokenC, tokenA},
+	} {
+		pool := setupQuotedPool(spec.address, spec.token0, spec.token1, 100_000_000_000_000_000)
+		if err := repo.Save(context.Background(), pool); err != nil {
+			t.Fatalf("save pool: %v", err)
+		}
+	}
+
+	registry := &staticPoolRegistry{}
+	services := arbitrageapp.NewServices(arbitrageapp.ServiceDeps{
+		Pools:                 repo,
+		Registry:              registry,
+		Quotes:                unifiedQuotes(),
+		Readiness:             alwaysReady{},
+		ConfiguredStartTokens: []common.Address{tokenA},
+		MinNetProfitWei:       big.NewInt(1),
+	})
+
+	if routes := len(services.Scan.Routes()); routes != 0 {
+		t.Fatalf("expected no routes before pools are registered, got %d", routes)
+	}
+
+	registry.addresses = []common.Address{poolAB, poolBC, poolCA}
+	routes, err := services.RefreshTriangleRoutes(context.Background())
+	if err != nil {
+		t.Fatalf("refresh triangle routes: %v", err)
+	}
+	if routes != 6 {
+		t.Fatalf("expected 6 triangle routes for 3 start tokens, got %d", routes)
+	}
+	if len(services.Scan.Routes()) != 6 {
+		t.Fatalf("expected scan service to track 6 routes, got %d", len(services.Scan.Routes()))
+	}
+
+	routes, err = services.RefreshTriangleRoutes(context.Background())
+	if err != nil {
+		t.Fatalf("refresh triangle routes again: %v", err)
+	}
+	if routes != 6 {
+		t.Fatalf("expected 6 triangle routes after refresh, got %d", routes)
+	}
+	if len(services.Scan.Routes()) != 6 {
+		t.Fatalf("expected scan service to keep 6 routes, got %d", len(services.Scan.Routes()))
+	}
+}
+
+func TestRefreshTriangleRoutesAddsAutoStartTokens(t *testing.T) {
+	tokenA := testToken(2)
+	tokenB := testToken(3)
+	tokenC := testToken(4)
+	tokenD := testToken(5)
+	poolAB := testToken(10)
+	poolBC := testToken(11)
+	poolCA := testToken(12)
+	poolAD := testToken(13)
+
+	repo := newMemoryPoolRepo()
+	for _, spec := range []struct {
+		address, token0, token1 common.Address
+	}{
+		{poolAB, tokenA, tokenB},
+		{poolBC, tokenB, tokenC},
+		{poolCA, tokenC, tokenA},
+		{poolAD, tokenA, tokenD},
+	} {
+		pool := setupQuotedPool(spec.address, spec.token0, spec.token1, 100_000_000_000_000_000)
+		if err := repo.Save(context.Background(), pool); err != nil {
+			t.Fatalf("save pool: %v", err)
+		}
+	}
+
+	registry := &staticPoolRegistry{
+		addresses: []common.Address{poolAB, poolBC, poolCA, poolAD},
+	}
+	services := arbitrageapp.NewServices(arbitrageapp.ServiceDeps{
+		Pools:           repo,
+		Registry:        registry,
+		Quotes:          unifiedQuotes(),
+		Readiness:       alwaysReady{},
+		MinNetProfitWei: big.NewInt(1),
+	})
+
+	if _, err := services.RefreshTriangleRoutes(context.Background()); err != nil {
+		t.Fatalf("refresh triangle routes: %v", err)
+	}
+
+	startTokens := services.StartTokens()
+	if len(startTokens) != 3 {
+		t.Fatalf("expected 3 auto start tokens, got %d: %+v", len(startTokens), startTokens)
+	}
+	if startTokens[0] != tokenA {
+		t.Fatalf("expected tokenA to rank first, got %s", startTokens[0].Hex())
+	}
+}
+
+type staticPoolRegistry struct {
+	addresses []common.Address
+}
+
+func (r *staticPoolRegistry) List(context.Context) ([]common.Address, error) {
+	return append([]common.Address(nil), r.addresses...), nil
+}
+
+func (r *staticPoolRegistry) Add(context.Context, common.Address) error  { return nil }
+func (r *staticPoolRegistry) Remove(context.Context, common.Address) error { return nil }
 
 func TestPublishServicePersistsOpportunity(t *testing.T) {
 	repo := newMemoryOpportunityRepo()

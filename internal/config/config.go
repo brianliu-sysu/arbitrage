@@ -472,7 +472,7 @@ func (c Univ4SyncConfig) IsActive() bool {
 }
 
 func (c Config) TriangleArbitrageEnabled() bool {
-	return c.Arbitrage.Triangle.Enabled && len(c.Arbitrage.Triangle.StartTokens) > 0
+	return c.Arbitrage.Triangle.Enabled
 }
 
 func (c TriangleArbitrageConfig) StartTokenAddresses() []common.Address {

@@ -8,6 +8,22 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
+// ProtocolReadinessDiagnostics summarizes readiness for one sync protocol.
+type ProtocolReadinessDiagnostics struct {
+	Enabled     bool `json:"enabled"`
+	SystemReady bool `json:"systemReady"`
+	ReadyPools  int  `json:"readyPools"`
+	TotalPools  int  `json:"totalPools"`
+}
+
+// ReadinessDiagnostics summarizes cross-protocol sync readiness.
+type ReadinessDiagnostics struct {
+	ArbitrageReady bool                         `json:"arbitrageReady"`
+	V3             ProtocolReadinessDiagnostics `json:"univ3"`
+	Pancake        ProtocolReadinessDiagnostics `json:"pancakev3"`
+	V4             ProtocolReadinessDiagnostics `json:"univ4"`
+}
+
 // SyncReadiness adapts sync readiness services for unified quoting.
 type SyncReadiness struct {
 	V3      *syncv3.ReadinessService
@@ -29,6 +45,41 @@ func (r *SyncReadiness) IsSystemReady() bool {
 		return false
 	}
 	return true
+}
+
+// Diagnostics returns a snapshot of readiness across enabled sync protocols.
+func (r *SyncReadiness) Diagnostics() ReadinessDiagnostics {
+	d := ReadinessDiagnostics{
+		ArbitrageReady: r.IsSystemReady(),
+	}
+	if r.V3 != nil {
+		snap := r.V3.Snapshot()
+		d.V3 = ProtocolReadinessDiagnostics{
+			Enabled:     true,
+			SystemReady: snap.SystemReady,
+			ReadyPools:  snap.ReadyPools,
+			TotalPools:  snap.TotalPools,
+		}
+	}
+	if r.Pancake != nil {
+		snap := r.Pancake.Snapshot()
+		d.Pancake = ProtocolReadinessDiagnostics{
+			Enabled:     true,
+			SystemReady: snap.SystemReady,
+			ReadyPools:  snap.ReadyPools,
+			TotalPools:  snap.TotalPools,
+		}
+	}
+	if r.V4 != nil {
+		snap := r.V4.Snapshot()
+		d.V4 = ProtocolReadinessDiagnostics{
+			Enabled:     true,
+			SystemReady: snap.SystemReady,
+			ReadyPools:  snap.ReadyPools,
+			TotalPools:  snap.TotalPools,
+		}
+	}
+	return d
 }
 
 func (r *SyncReadiness) IsV3PoolReady(poolAddress common.Address) bool {

@@ -187,9 +187,11 @@ func newRuntimeBundle(
 	}
 
 	triangleCfg := cfg.Arbitrage.Triangle
-	strategies := arbitrageapp.TriangleStrategies(triangleCfg.StartTokenAddresses(), triangleCfg.MinNetProfit())
+	configuredStartTokens := triangleCfg.StartTokenAddresses()
+	minNetProfit := triangleCfg.MinNetProfit()
 	if !cfg.TriangleArbitrageEnabled() {
-		strategies = nil
+		configuredStartTokens = nil
+		minNetProfit = nil
 	}
 
 	readiness := &quotecombined.SyncReadiness{V3: syncServices.Readiness}
@@ -213,12 +215,13 @@ func newRuntimeBundle(
 			quotepancakev3domain.NewQuoteService(),
 			quoteuniv4domain.NewQuoteService(),
 		),
-		Readiness:           readiness,
-		Repository:          store.Opportunities,
-		Strategies:          strategies,
-		MinAmount:           triangleCfg.OptimizerMinAmount(),
-		MaxAmount:           triangleCfg.OptimizerMaxAmount(),
-		OptimizerIterations: triangleCfg.OptimizerIterations,
+		Readiness:             readiness,
+		Repository:            store.Opportunities,
+		ConfiguredStartTokens: configuredStartTokens,
+		MinNetProfitWei:       minNetProfit,
+		MinAmount:             triangleCfg.OptimizerMinAmount(),
+		MaxAmount:             triangleCfg.OptimizerMaxAmount(),
+		OptimizerIterations:   triangleCfg.OptimizerIterations,
 	})
 
 	syncServices.BlockApply.SetListener(arbitrageServices)
@@ -229,10 +232,7 @@ func newRuntimeBundle(
 		syncV4Services.BlockApply.SetListener(arbitrageapp.V4PoolListener{Services: arbitrageServices})
 	}
 	if cfg.TriangleArbitrageEnabled() {
-		logger.Info("triangle arbitrage enabled",
-			zap.Int("start_tokens", len(triangleCfg.StartTokens)),
-			zap.Int("routes", len(arbitrageServices.Scan.Routes())),
-		)
+		arbitrageServices.LogDiagnostics(context.Background(), logger, "startup")
 	} else {
 		logger.Info("triangle arbitrage disabled")
 	}
@@ -351,6 +351,7 @@ func newHTTPRouter(
 	quoteV3 *quoteuniv3.AppService,
 	quotePancakeV3 *quotepancakev3.AppService,
 	quoteV4 *quoteuniv4.AppService,
+	store *persistence.Services,
 ) *gin.Engine {
 	return httpapi.NewRouter(httpapi.Handlers{
 		Health:         httpapi.NewHealthHandler(),
@@ -358,6 +359,7 @@ func newHTTPRouter(
 		QuoteV3:        httpapi.NewQuoteV3Handler(quoteV3),
 		QuotePancakeV3: httpapi.NewQuotePancakeV3Handler(quotePancakeV3),
 		QuoteV4:        httpapi.NewQuoteV4Handler(quoteV4),
+		Opportunities:  httpapi.NewOpportunityHandler(store.Opportunities),
 	})
 }
 
@@ -368,6 +370,7 @@ type syncLifecycle struct {
 	orchestrator        *syncv3.SyncOrchestrator
 	orchestratorPancake *syncpancakev3.SyncOrchestrator
 	orchestratorV4      *syncv4.SyncOrchestrator
+	bundle              *runtimeBundle
 	chain               *chaininfra.Services
 	store               *persistence.Services
 	cfg                 config.Config
@@ -386,6 +389,7 @@ func registerSyncLifecycle(
 		orchestrator:        bundle.Sync.NewOrchestrator(chain.Client),
 		orchestratorPancake: nil,
 		orchestratorV4:      nil,
+		bundle:              bundle,
 		chain:               chain,
 		store:               store,
 		cfg:                 cfg,
@@ -437,6 +441,10 @@ func (r *syncLifecycle) start(_ context.Context) error {
 			return r.orchestratorV4.Start(ctx)
 		})
 	}
+
+	if r.bundle != nil && r.bundle.Arbitrage != nil && r.cfg.TriangleArbitrageEnabled() {
+		r.runArbitrageRouteWatcher()
+	}
 	return nil
 }
 
@@ -458,6 +466,92 @@ func (r *syncLifecycle) runSync(name string, run func(context.Context) error) {
 			r.logger.Error("pool sync stopped", zap.String("sync", name), zap.Error(err))
 		}
 	}()
+}
+
+func (r *syncLifecycle) runArbitrageRouteWatcher() {
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+
+		ticker := time.NewTicker(3 * time.Second)
+		defer ticker.Stop()
+
+		protocolReady := make(map[string]bool)
+		for {
+			select {
+			case <-r.runCtx.Done():
+				return
+			case <-ticker.C:
+				if r.tryRefreshArbitrageRoutes(protocolReady) {
+					r.bundle.Arbitrage.LogDiagnostics(r.runCtx, r.logger, "routes_refreshed")
+				}
+			}
+		}
+	}()
+}
+
+func (r *syncLifecycle) tryRefreshArbitrageRoutes(protocolReady map[string]bool) bool {
+	if r.bundle == nil || r.bundle.Arbitrage == nil {
+		return false
+	}
+
+	changed := false
+	for _, protocol := range r.arbitrageProtocols() {
+		if protocol.ready() {
+			if !protocolReady[protocol.name] {
+				protocolReady[protocol.name] = true
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return false
+	}
+
+	routes, err := r.bundle.Arbitrage.RefreshTriangleRoutes(r.runCtx)
+	if err != nil {
+		r.logger.Warn("refresh triangle routes failed", zap.Error(err))
+		return false
+	}
+
+	r.logger.Info("triangle routes refreshed",
+		zap.Int("routes", routes),
+		zap.Int("start_tokens", len(r.bundle.Arbitrage.StartTokens())),
+	)
+	return true
+}
+
+type arbitrageProtocolState struct {
+	name  string
+	ready func() bool
+}
+
+func (r *syncLifecycle) arbitrageProtocols() []arbitrageProtocolState {
+	protocols := []arbitrageProtocolState{
+		{
+			name: "univ3",
+			ready: func() bool {
+				return r.bundle.Sync != nil && r.bundle.Sync.Readiness != nil && r.bundle.Sync.Readiness.IsSystemReady()
+			},
+		},
+	}
+	if r.bundle.SyncPancake != nil && r.bundle.SyncPancake.Readiness != nil {
+		protocols = append(protocols, arbitrageProtocolState{
+			name: "pancakev3",
+			ready: func() bool {
+				return r.bundle.SyncPancake.Readiness.IsSystemReady()
+			},
+		})
+	}
+	if r.bundle.SyncV4 != nil && r.bundle.SyncV4.Readiness != nil {
+		protocols = append(protocols, arbitrageProtocolState{
+			name: "univ4",
+			ready: func() bool {
+				return r.bundle.SyncV4.Readiness.IsSystemReady()
+			},
+		})
+	}
+	return protocols
 }
 
 func (r *syncLifecycle) stop(ctx context.Context) error {

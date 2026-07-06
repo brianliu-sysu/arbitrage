@@ -1,6 +1,8 @@
 package arbitrageapp
 
 import (
+	"sync"
+
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
 	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
@@ -10,7 +12,9 @@ import (
 
 // ScanService finds routes affected by pool state changes.
 type ScanService struct {
-	graph *domainarb.DependencyGraph
+	mu               sync.Mutex
+	graph            *domainarb.DependencyGraph
+	triangleRouteIDs []string
 }
 
 func NewScanService(graph *domainarb.DependencyGraph) *ScanService {
@@ -22,6 +26,8 @@ func NewScanService(graph *domainarb.DependencyGraph) *ScanService {
 
 // RegisterRoutes adds monitored routes to the dependency graph.
 func (s *ScanService) RegisterRoutes(routes []domainarb.RouteRef) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, route := range routes {
 		s.graph.Register(route)
 	}
@@ -29,29 +35,53 @@ func (s *ScanService) RegisterRoutes(routes []domainarb.RouteRef) {
 
 // RegisterRoute adds a single monitored route.
 func (s *ScanService) RegisterRoute(route domainarb.RouteRef) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.graph.Register(route)
+}
+
+// ClearTriangleRoutes removes previously registered triangle routes.
+func (s *ScanService) ClearTriangleRoutes() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, routeID := range s.triangleRouteIDs {
+		s.graph.Remove(routeID)
+	}
+	s.triangleRouteIDs = nil
 }
 
 // FindAffected returns routes that depend on any changed Uniswap V3, Pancake V3, or V4 pool.
 func (s *ScanService) FindAffected(univ3Pools, pancakePools []common.Address, univ4Pools []marketuniv4.PoolID) []domainarb.RouteRef {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.graph.AffectedRoutes(univ3Pools, pancakePools, univ4Pools)
 }
 
 // Routes returns all registered routes.
 func (s *ScanService) Routes() []domainarb.RouteRef {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.graph.Routes()
 }
 
 // RegisterUnifiedTriangleRoutes discovers and registers A->B->C->A routes on a unified graph.
 func (s *ScanService) RegisterUnifiedTriangleRoutes(graph quoteunified.PoolGraph, startToken common.Address) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	routes := domainarb.FindUnifiedTriangleRoutes(graph, startToken)
+	registered := make([]string, 0, len(routes))
 	for _, route := range routes {
-		s.RegisterRoute(domainarb.RouteRef{
+		routeRef := domainarb.RouteRef{
 			ID:    domainarb.UnifiedTriangleRouteIDWithPools(route),
 			Route: route,
-		})
+		}
+		s.graph.Register(routeRef)
+		registered = append(registered, routeRef.ID)
 	}
-	return len(routes)
+
+	s.triangleRouteIDs = append(s.triangleRouteIDs, registered...)
+	return len(registered)
 }
 
 // RegisterTriangleRoutes discovers and registers triangle routes on a V3-only graph.

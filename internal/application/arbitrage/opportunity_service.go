@@ -67,6 +67,11 @@ func NewOpportunityService(
 	}
 }
 
+// SetStrategies replaces the active arbitrage strategies.
+func (s *OpportunityService) SetStrategies(strategies []domainarb.Strategy) {
+	s.strategies = append([]domainarb.Strategy(nil), strategies...)
+}
+
 // Generate evaluates affected routes and returns accepted opportunities.
 func (s *OpportunityService) Generate(ctx context.Context, req GenerateRequest) ([]*domainarb.Opportunity, error) {
 	if s.readiness != nil && !s.readiness.IsSystemReady() {

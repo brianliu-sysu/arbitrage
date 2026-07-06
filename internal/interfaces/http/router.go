@@ -10,11 +10,12 @@ const apiV1Prefix = "/api/v1"
 
 // Handlers groups HTTP handlers exposed by the API.
 type Handlers struct {
-	Health        *HealthHandler
-	QuoteCombined *QuoteCombinedHandler
+	Health         *HealthHandler
+	QuoteCombined  *QuoteCombinedHandler
 	QuoteV3        *QuoteV3Handler
 	QuoteV4        *QuoteV4Handler
 	QuotePancakeV3 *QuotePancakeV3Handler
+	Opportunities  *OpportunityHandler
 }
 
 // NewRouter registers HTTP routes on a Gin engine.
@@ -44,6 +45,9 @@ func NewRouter(handlers Handlers) *gin.Engine {
 		}
 		if handlers.QuotePancakeV3 != nil {
 			v1.POST("/pancakev3/quote", handlers.QuotePancakeV3.HandleQuote)
+		}
+		if handlers.Opportunities != nil {
+			v1.GET("/opportunities", handlers.Opportunities.HandleList)
 		}
 	}
 

@@ -65,3 +65,28 @@ func (s *ReadinessService[PoolID]) PoolStatuses() map[PoolID]bool {
 	}
 	return statuses
 }
+
+// ReadinessSnapshot is a point-in-time view of sync readiness.
+type ReadinessSnapshot struct {
+	SystemReady bool
+	ReadyPools  int
+	TotalPools  int
+}
+
+// Snapshot returns the current readiness counters.
+func (s *ReadinessService[PoolID]) Snapshot() ReadinessSnapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	readyPools := 0
+	for _, ready := range s.poolReady {
+		if ready {
+			readyPools++
+		}
+	}
+	return ReadinessSnapshot{
+		SystemReady: s.systemReady,
+		ReadyPools:  readyPools,
+		TotalPools:  len(s.poolReady),
+	}
+}
