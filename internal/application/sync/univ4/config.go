@@ -29,10 +29,11 @@ type LogFilter struct {
 
 // BootstrapData is on-chain V4 pool state read during cold bootstrap.
 type BootstrapData struct {
-	Key    marketv4.PoolKey
-	State  market.PoolState
-	Ticks  market.TickTable
-	Bitmap market.TickBitmap
+	Key         marketv4.PoolKey
+	State       market.PoolState
+	Ticks       market.TickTable
+	Bitmap      market.TickBitmap
+	BlockNumber uint64
 }
 
 // LogFetcher fetches raw PoolManager logs from the chain.
@@ -48,6 +49,11 @@ type EventParser interface {
 // PoolBootstrapReader reads live V4 pool state from the chain.
 type PoolBootstrapReader interface {
 	ReadBootstrapData(ctx context.Context, poolID marketv4.PoolID, key marketv4.PoolKey, blockNumber uint64) (*BootstrapData, error)
+}
+
+// PoolBaseStateReader loads on-chain slot0 and liquidity for a V4 pool.
+type PoolBaseStateReader interface {
+	ReadPoolBaseState(ctx context.Context, poolID marketv4.PoolID, blockNumber uint64) (market.PoolState, error)
 }
 
 // ChangedPoolsListener receives pools updated after a block is applied.

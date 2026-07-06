@@ -11,6 +11,7 @@ import (
 
 // CompositeRegistry merges static config pools with a subgraph-backed registry.
 type CompositeRegistry struct {
+	enabled         bool
 	static          []common.Address
 	subgraph        *SubgraphRegistry
 	subgraphEnabled bool
@@ -18,6 +19,7 @@ type CompositeRegistry struct {
 
 func NewCompositeRegistry(cfg config.Univ3SyncConfig) *CompositeRegistry {
 	return &CompositeRegistry{
+		enabled:         cfg.Enabled,
 		static:          staticAddresses(cfg.Pools),
 		subgraph:        NewSubgraphRegistry(cfg.Subgraph),
 		subgraphEnabled: cfg.Subgraph.IsEnabled(),
@@ -25,6 +27,9 @@ func NewCompositeRegistry(cfg config.Univ3SyncConfig) *CompositeRegistry {
 }
 
 func (r *CompositeRegistry) List(ctx context.Context) ([]common.Address, error) {
+	if r == nil || !r.enabled {
+		return nil, nil
+	}
 	seen := make(map[common.Address]struct{})
 	addresses := make([]common.Address, 0)
 

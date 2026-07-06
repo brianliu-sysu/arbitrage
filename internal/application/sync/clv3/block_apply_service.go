@@ -6,9 +6,10 @@ import (
 	"sort"
 
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
-	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
 	"github.com/ethereum/go-ethereum/common"
+	"go.uber.org/zap"
 )
 
 // BlockApplyService applies pool events for a single block.
@@ -18,6 +19,7 @@ type BlockApplyService struct {
 	snapshots   *SnapshotService
 	readiness   *ReadinessService
 	listener    ChangedPoolsListener
+	logger      *zap.Logger
 }
 
 func NewBlockApplyService(
@@ -36,7 +38,16 @@ func NewBlockApplyService(
 		snapshots:   snapshots,
 		readiness:   readiness,
 		listener:    listener,
+		logger:      zap.NewNop(),
 	}
+}
+
+// SetLogger configures debug logging for pool event application.
+func (s *BlockApplyService) SetLogger(logger *zap.Logger) {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	s.logger = logger
 }
 
 // SetListener replaces the pool change listener, typically during application wiring.
@@ -87,13 +98,27 @@ func (s *BlockApplyService) ApplyBlock(ctx context.Context, req ApplyBlockReques
 			return ApplyBlockResult{}, fmt.Errorf("pool %s not found", poolAddress.Hex())
 		}
 
+		poolLastBlock := pool.LastBlockNumber
 		for _, event := range events {
+			skipped := event.Meta.BlockNumber < poolLastBlock
+			s.logger.Debug("pool event",
+				zap.String("protocol", "clv3"),
+				zap.String("pool", poolAddress.Hex()),
+				zap.Uint64("block", req.BlockNumber),
+				zap.Uint64("eventBlock", event.Meta.BlockNumber),
+				zap.String("kind", event.Kind.String()),
+				zap.Uint("txIndex", event.Meta.TxIndex),
+				zap.Uint("logIndex", event.Meta.LogIndex),
+				zap.Uint64("poolLastBlock", poolLastBlock),
+				zap.Bool("skipped", skipped),
+			)
 			if err := pool.Apply(event); err != nil {
 				pool.Status = market.PoolStatusError
 				_ = s.pools.Save(ctx, pool)
 				s.readiness.SetPoolReady(poolAddress, false)
 				return ApplyBlockResult{}, fmt.Errorf("apply event on pool %s: %w", poolAddress.Hex(), err)
 			}
+			poolLastBlock = pool.LastBlockNumber
 		}
 
 		if err := s.pools.Save(ctx, pool); err != nil {

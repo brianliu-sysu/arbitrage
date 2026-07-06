@@ -155,7 +155,10 @@ func newRuntimeBundle(
 	deps.Health = append(deps.Health, persistDeps.Health...)
 	deps.Listener = syncv3.NopChangedPoolsListener{}
 
-	syncServices := syncv3.NewServices(deps)
+	var syncServices *syncv3.Services
+	if cfg.Sync.Univ3.IsActive() {
+		syncServices = syncv3.NewServices(deps)
+	}
 
 	var syncPancakeServices *syncpancakev3.Services
 	if cfg.Sync.PancakeV3.IsActive() {
@@ -199,7 +202,10 @@ func newRuntimeBundle(
 		minNetProfit = nil
 	}
 
-	readiness := &quotecombined.SyncReadiness{V3: syncServices.Readiness}
+	readiness := &quotecombined.SyncReadiness{}
+	if syncServices != nil {
+		readiness.V3 = syncServices.Readiness
+	}
 	if syncPancakeServices != nil {
 		readiness.Pancake = syncPancakeServices.Readiness
 	}
@@ -229,12 +235,18 @@ func newRuntimeBundle(
 		OptimizerIterations:   triangleCfg.OptimizerIterations,
 	})
 
-	syncServices.BlockApply.SetListener(arbitrageServices)
+	if syncServices != nil {
+		syncServices.BlockApply.SetListener(arbitrageServices)
+		syncServices.BlockApply.SetLogger(logger.Named("sync.clv3"))
+	}
 	if syncPancakeServices != nil {
 		syncPancakeServices.BlockApply.SetListener(arbitrageapp.PancakePoolListener{Services: arbitrageServices})
+		syncPancakeServices.BlockApply.SetLogger(logger.Named("sync.pancakev3"))
 	}
 	if syncV4Services != nil {
 		syncV4Services.BlockApply.SetListener(arbitrageapp.V4PoolListener{Services: arbitrageServices})
+		syncV4Services.BlockApply.SetLogger(logger.Named("sync.univ4"))
+		syncV4Services.Bootstrap.SetLogger(logger.Named("sync.univ4"))
 	}
 	if cfg.TriangleArbitrageEnabled() {
 		arbitrageServices.LogDiagnostics(context.Background(), logger, "startup")
@@ -256,6 +268,9 @@ func newQuoteV3AppService(
 	poolRegistry *registry.CompositeRegistry,
 	bundle *runtimeBundle,
 ) *quoteuniv3.AppService {
+	if !cfg.Sync.Univ3.IsActive() || bundle.Sync == nil {
+		return nil
+	}
 	maxHops := cfg.Quote.MaxHops
 	if maxHops <= 0 {
 		maxHops = 3
@@ -326,7 +341,10 @@ func newQuoteCombinedAppService(
 		maxHops = 3
 	}
 
-	readiness := &quotecombined.SyncReadiness{V3: bundle.Sync.Readiness}
+	readiness := &quotecombined.SyncReadiness{}
+	if bundle.Sync != nil {
+		readiness.V3 = bundle.Sync.Readiness
+	}
 	if bundle.SyncPancake != nil {
 		readiness.Pancake = bundle.SyncPancake.Readiness
 	}
@@ -423,7 +441,7 @@ func registerSyncLifecycle(
 	store *persistence.Services,
 ) {
 	runner := &syncLifecycle{
-		orchestrator:        bundle.Sync.NewOrchestrator(chain.Client),
+		orchestrator:        nil,
 		orchestratorPancake: nil,
 		orchestratorV4:      nil,
 		bundle:              bundle,
@@ -431,6 +449,9 @@ func registerSyncLifecycle(
 		store:               store,
 		cfg:                 cfg,
 		logger:              logger,
+	}
+	if bundle.Sync != nil {
+		runner.orchestrator = bundle.Sync.NewOrchestrator(chain.Client)
 	}
 	if bundle.SyncPancake != nil {
 		runner.orchestratorPancake = bundle.SyncPancake.NewOrchestrator(chain.Client)
@@ -463,9 +484,11 @@ func (r *syncLifecycle) start(_ context.Context) error {
 		zap.Bool("univ4_subgraph", r.cfg.Sync.Univ4.Subgraph.IsEnabled()),
 	)
 
-	r.runSync("univ3", func(ctx context.Context) error {
-		return r.orchestrator.Start(ctx)
-	})
+	if r.orchestrator != nil {
+		r.runSync("univ3", func(ctx context.Context) error {
+			return r.orchestrator.Start(ctx)
+		})
+	}
 
 	if r.orchestratorPancake != nil {
 		r.runSync("pancakev3", func(ctx context.Context) error {

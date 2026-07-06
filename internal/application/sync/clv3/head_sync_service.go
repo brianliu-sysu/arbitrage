@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 )
 
@@ -16,6 +17,8 @@ type HeadSyncService struct {
 	lifecycle  *PoolLifecycleService
 	reorg      *ReorgRecoveryService
 	readiness  *ReadinessService
+	catchup    *CatchupService
+	blocks     BlockReader
 	subscriber HeadSubscriber
 
 	mu        sync.RWMutex
@@ -29,6 +32,8 @@ func NewHeadSyncService(
 	lifecycle *PoolLifecycleService,
 	reorg *ReorgRecoveryService,
 	readiness *ReadinessService,
+	catchup *CatchupService,
+	blocks BlockReader,
 	subscriber HeadSubscriber,
 ) *HeadSyncService {
 	return &HeadSyncService{
@@ -38,6 +43,8 @@ func NewHeadSyncService(
 		lifecycle:  lifecycle,
 		reorg:      reorg,
 		readiness:  readiness,
+		catchup:    catchup,
+		blocks:     blocks,
 		subscriber: subscriber,
 	}
 }
@@ -77,6 +84,9 @@ func (s *HeadSyncService) Run(ctx context.Context) error {
 
 func (s *HeadSyncService) handleHead(ctx context.Context, head blockchain.BlockHeader) error {
 	localHead := s.LocalHead()
+	if syncapp.ShouldSkipHeadNotification(localHead, head) {
+		return nil
+	}
 	if localHead.Number > 0 {
 		reorgEvent, err := s.reorg.DetectReorg(ctx, localHead, head)
 		if err != nil {
@@ -89,6 +99,13 @@ func (s *HeadSyncService) handleHead(ctx context.Context, head blockchain.BlockH
 			s.SetLocalHead(head)
 			return nil
 		}
+	}
+
+	if syncapp.NeedsHeadGapCatchup(localHead, head) {
+		if err := s.catchUpGap(ctx, localHead, head); err != nil {
+			return err
+		}
+		localHead = s.LocalHead()
 	}
 
 	pools := s.lifecycle.ListActive()
@@ -130,4 +147,19 @@ func (s *HeadSyncService) handleHead(ctx context.Context, head blockchain.BlockH
 // HandleHead exposes single-head processing for tests and manual replay.
 func (s *HeadSyncService) HandleHead(ctx context.Context, head blockchain.BlockHeader) error {
 	return s.handleHead(ctx, head)
+}
+
+func (s *HeadSyncService) catchUpGap(ctx context.Context, localHead, head blockchain.BlockHeader) error {
+	if s.catchup == nil || s.blocks == nil {
+		return fmt.Errorf("missing catchup services for head gap %d -> %d", localHead.Number, head.Number)
+	}
+	if err := s.catchup.CatchUpAll(ctx, head.Number-1); err != nil {
+		return fmt.Errorf("catch up gap before head %d: %w", head.Number, err)
+	}
+	gapHead, err := s.blocks.GetBlockHeader(ctx, head.Number-1)
+	if err != nil {
+		return fmt.Errorf("load gap head %d: %w", head.Number-1, err)
+	}
+	s.SetLocalHead(gapHead)
+	return nil
 }

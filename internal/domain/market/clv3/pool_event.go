@@ -16,6 +16,21 @@ const (
 	EventKindBurn
 )
 
+func (k EventKind) String() string {
+	switch k {
+	case EventKindInitialize:
+		return "initialize"
+	case EventKindSwap:
+		return "swap"
+	case EventKindMint:
+		return "mint"
+	case EventKindBurn:
+		return "burn"
+	default:
+		return "unknown"
+	}
+}
+
 // EventMeta holds common metadata for every V3-style pool log.
 type EventMeta struct {
 	PoolAddress common.Address

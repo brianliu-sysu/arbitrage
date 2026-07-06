@@ -15,6 +15,19 @@ const (
 	EventKindModifyLiquidity
 )
 
+func (k EventKind) String() string {
+	switch k {
+	case EventKindInitialize:
+		return "initialize"
+	case EventKindSwap:
+		return "swap"
+	case EventKindModifyLiquidity:
+		return "modify_liquidity"
+	default:
+		return "unknown"
+	}
+}
+
 // EventMeta holds common metadata for every PoolManager pool log.
 type EventMeta struct {
 	PoolID      PoolID

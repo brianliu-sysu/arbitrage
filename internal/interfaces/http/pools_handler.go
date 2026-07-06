@@ -40,22 +40,35 @@ func (h *PoolsHandler) HandleDiagnostics(c *gin.Context) {
 	}
 
 	poolType := strings.TrimSpace(c.Query("poolType"))
+	poolIDQuery := strings.TrimSpace(c.Query("poolId"))
+	poolAddressQuery := strings.TrimSpace(c.Query("poolAddress"))
+
+	if poolType == "" && poolIDQuery == "" && poolAddressQuery == "" {
+		resp, err := h.pools.DiagnosticsAll(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, errorHTTPResponse{Error: err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, resp)
+		return
+	}
+
 	if poolType == "" {
-		c.JSON(http.StatusBadRequest, errorHTTPResponse{Error: "poolType is required"})
+		c.JSON(http.StatusBadRequest, errorHTTPResponse{Error: "poolType is required when poolId or poolAddress is set"})
 		return
 	}
 
 	req := poolsapp.DiagnosticsRequest{PoolType: poolType}
 	switch poolType {
 	case poolsapp.PoolTypeUniv4:
-		poolID, err := parsePoolID(strings.TrimSpace(c.Query("poolId")))
+		poolID, err := parsePoolID(poolIDQuery)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, errorHTTPResponse{Error: err.Error()})
 			return
 		}
 		req.PoolID = poolID
 	case poolsapp.PoolTypeUniv3, poolsapp.PoolTypePancakeV3:
-		poolAddress, err := parseAddress(strings.TrimSpace(c.Query("poolAddress")), "poolAddress")
+		poolAddress, err := parseAddress(poolAddressQuery, "poolAddress")
 		if err != nil {
 			c.JSON(http.StatusBadRequest, errorHTTPResponse{Error: err.Error()})
 			return

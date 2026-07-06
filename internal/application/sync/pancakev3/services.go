@@ -133,9 +133,11 @@ func NewHeadSyncService(
 	lifecycle *PoolLifecycleService,
 	reorg *ReorgRecoveryService,
 	readiness *ReadinessService,
+	catchup *CatchupService,
+	blocks BlockReader,
 	subscriber HeadSubscriber,
 ) *HeadSyncService {
-	return clv3sync.NewHeadSyncService(fetcher, parser, blockApply, lifecycle, reorg, readiness, subscriber)
+	return clv3sync.NewHeadSyncService(fetcher, parser, blockApply, lifecycle, reorg, readiness, catchup, blocks, subscriber)
 }
 
 func NewPoolLifecycleService(

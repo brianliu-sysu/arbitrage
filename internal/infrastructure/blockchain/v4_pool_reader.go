@@ -40,6 +40,14 @@ func (r *V4PoolReader) ReadBootstrapData(
 	key marketv4.PoolKey,
 	blockNumber uint64,
 ) (*syncv4.BootstrapData, error) {
+	if blockNumber == 0 {
+		header, err := r.client.GetLatestBlockHeader(ctx)
+		if err != nil {
+			return nil, err
+		}
+		blockNumber = header.Number
+	}
+
 	baseResults, err := r.readBaseState(ctx, poolID, blockNumber)
 	if err != nil {
 		return nil, err
@@ -59,8 +67,9 @@ func (r *V4PoolReader) ReadBootstrapData(
 			FeeGrowthGlobal0X128: big.NewInt(0),
 			FeeGrowthGlobal1X128: big.NewInt(0),
 		},
-		Ticks:  ticks,
-		Bitmap: bitmap,
+		Ticks:       ticks,
+		Bitmap:      bitmap,
+		BlockNumber: blockNumber,
 	}, nil
 }
 
@@ -134,6 +143,19 @@ func (r *V4PoolReader) ReadBaseState(ctx context.Context, poolID marketv4.PoolID
 		SqrtPriceX96: new(big.Int).Set(state.sqrtPriceX96),
 		Tick:         state.tick,
 		Liquidity:    new(big.Int).Set(state.liquidity),
+	}, nil
+}
+
+// ReadPoolBaseState loads slot0 and liquidity for sync anchoring at a specific block.
+func (r *V4PoolReader) ReadPoolBaseState(ctx context.Context, poolID marketv4.PoolID, blockNumber uint64) (market.PoolState, error) {
+	base, err := r.ReadBaseState(ctx, poolID, blockNumber)
+	if err != nil {
+		return market.PoolState{}, err
+	}
+	return market.PoolState{
+		SqrtPriceX96: new(big.Int).Set(base.SqrtPriceX96),
+		Tick:         base.Tick,
+		Liquidity:    new(big.Int).Set(base.Liquidity),
 	}, nil
 }
 

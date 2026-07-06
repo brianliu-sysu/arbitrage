@@ -55,6 +55,15 @@ func (s *PoolLifecycleService) StartAll(ctx context.Context, blockNumber uint64)
 	return nil
 }
 
+func (s *PoolLifecycleService) RefreshAllFromChain(ctx context.Context) error {
+	for _, poolID := range s.ListActive() {
+		if _, err := s.bootstrap.RefreshFromChain(ctx, poolID); err != nil {
+			return fmt.Errorf("refresh pool %s from chain: %w", poolID, err)
+		}
+	}
+	return nil
+}
+
 func (s *PoolLifecycleService) Start(ctx context.Context, poolID marketv4.PoolID, blockNumber uint64) error {
 	if _, err := s.bootstrap.Bootstrap(ctx, poolID, blockNumber); err != nil {
 		return fmt.Errorf("bootstrap pool %s: %w", poolID, err)

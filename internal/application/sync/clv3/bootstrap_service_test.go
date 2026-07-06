@@ -68,13 +68,35 @@ func TestBootstrapRefreshesStalePoolFromChain(t *testing.T) {
 	}
 }
 
-func TestBootstrapSkipsChainRefreshWithinThreshold(t *testing.T) {
+func TestBootstrapRefreshesPoolBehindHead(t *testing.T) {
 	ctx := context.Background()
 	address := common.HexToAddress("0x0000000000000000000000000000000000000001")
 	reader := &countingBootstrapReader{}
 
 	poolRepo := &bootstrapPoolRepo{
-		pool: initializedPool(address, 9500),
+		pool: initializedPool(address, 10_000),
+	}
+	service := NewBootstrapService(poolRepo, marketclv3.NewPool, reader, nil, 1000)
+
+	pool, err := service.Bootstrap(ctx, address, 10_005)
+	if err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	if reader.calls != 1 {
+		t.Fatalf("expected one chain bootstrap read, got %d", reader.calls)
+	}
+	if pool.LastBlockNumber != 10_005 {
+		t.Fatalf("expected last block 10005, got %d", pool.LastBlockNumber)
+	}
+}
+
+func TestBootstrapSkipsChainRefreshWhenAlreadyAtHead(t *testing.T) {
+	ctx := context.Background()
+	address := common.HexToAddress("0x0000000000000000000000000000000000000001")
+	reader := &countingBootstrapReader{}
+
+	poolRepo := &bootstrapPoolRepo{
+		pool: initializedPool(address, 10_000),
 	}
 	service := NewBootstrapService(poolRepo, marketclv3.NewPool, reader, nil, 1000)
 
@@ -85,8 +107,8 @@ func TestBootstrapSkipsChainRefreshWithinThreshold(t *testing.T) {
 	if reader.calls != 0 {
 		t.Fatalf("expected no chain bootstrap read, got %d", reader.calls)
 	}
-	if pool.LastBlockNumber != 9500 {
-		t.Fatalf("expected last block to remain 9500, got %d", pool.LastBlockNumber)
+	if pool.LastBlockNumber != 10_000 {
+		t.Fatalf("expected last block to remain 10000, got %d", pool.LastBlockNumber)
 	}
 }
 

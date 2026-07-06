@@ -2,6 +2,7 @@ package poolsapp
 
 import (
 	"context"
+	"fmt"
 	"math/big"
 	"testing"
 
@@ -85,4 +86,112 @@ func TestDiagnosticsV4MatchesChainState(t *testing.T) {
 	if resp.Local.Price.Token1PerToken0 == "" {
 		t.Fatal("expected implied price on local snapshot")
 	}
+}
+
+type diagV4Registry struct {
+	poolIDs []marketuniv4.PoolID
+}
+
+func (r *diagV4Registry) List(context.Context) ([]marketuniv4.PoolID, error) {
+	return append([]marketuniv4.PoolID(nil), r.poolIDs...), nil
+}
+func (r *diagV4Registry) GetKey(context.Context, marketuniv4.PoolID) (marketuniv4.PoolKey, error) {
+	return marketuniv4.PoolKey{}, nil
+}
+func (r *diagV4Registry) Add(context.Context, marketuniv4.PoolID, marketuniv4.PoolKey) error   { return nil }
+func (r *diagV4Registry) Remove(context.Context, marketuniv4.PoolID) error { return nil }
+
+type diagV4ReaderByPool map[marketuniv4.PoolID]*BaseState
+
+func (r diagV4ReaderByPool) ReadV4BaseState(_ context.Context, poolID marketuniv4.PoolID, _ uint64) (*BaseState, error) {
+	state, ok := r[poolID]
+	if !ok {
+		return nil, fmt.Errorf("pool not found")
+	}
+	return state, nil
+}
+
+func TestDiagnosticsAllReturnsMismatchingPoolsAtHead(t *testing.T) {
+	matchedID := marketuniv4.PoolID(common.HexToHash("0x1"))
+	mismatchID := marketuniv4.PoolID(common.HexToHash("0x2"))
+	sqrtPrice, _ := new(big.Int).SetString("1182815765319608250048300092661", 10)
+	liquidity := big.NewInt(1000)
+
+	matchedPool := marketuniv4.NewPool(matchedID, marketuniv4.PoolKey{
+		Currency0: common.HexToAddress("0x1"),
+		Currency1: common.HexToAddress("0x2"),
+		Fee:       3000,
+	})
+	matchedPool.State.SqrtPriceX96 = sqrtPrice
+	matchedPool.State.Tick = 100
+	matchedPool.State.Liquidity = liquidity
+	matchedPool.LastBlockNumber = 200
+	matchedPool.Status = market.PoolStatusReady
+
+	mismatchPool := marketuniv4.NewPool(mismatchID, marketuniv4.PoolKey{
+		Currency0: common.HexToAddress("0x3"),
+		Currency1: common.HexToAddress("0x4"),
+		Fee:       3000,
+	})
+	mismatchPool.State.SqrtPriceX96 = big.NewInt(1)
+	mismatchPool.State.Tick = 10
+	mismatchPool.State.Liquidity = liquidity
+	mismatchPool.LastBlockNumber = 200
+	mismatchPool.Status = market.PoolStatusReady
+
+	repo := &diagV4PoolRepoByID{
+		pools: map[marketuniv4.PoolID]*marketuniv4.Pool{
+			matchedID:   matchedPool,
+			mismatchID: mismatchPool,
+		},
+	}
+
+	service := NewAppService(nil, nil, repo, nil, nil, &diagV4Registry{
+		poolIDs: []marketuniv4.PoolID{matchedID, mismatchID},
+	}, nil, &ChainReaders{
+		Head: diagHeadReader{head: 200},
+		V4: diagV4ReaderByPool{
+			matchedID: {
+				SqrtPriceX96: new(big.Int).Set(sqrtPrice),
+				Tick:         100,
+				Liquidity:    new(big.Int).Set(liquidity),
+			},
+			mismatchID: {
+				SqrtPriceX96: new(big.Int).Set(sqrtPrice),
+				Tick:         100,
+				Liquidity:    new(big.Int).Set(liquidity),
+			},
+		},
+	})
+
+	resp, err := service.DiagnosticsAll(context.Background())
+	if err != nil {
+		t.Fatalf("diagnostics all: %v", err)
+	}
+	if resp.Count != 1 {
+		t.Fatalf("expected 1 mismatching pool, got %#v", resp)
+	}
+	if resp.Items[0].PoolID != mismatchID.String() {
+		t.Fatalf("unexpected pool: %s", resp.Items[0].PoolID)
+	}
+}
+
+type diagV4PoolRepoByID struct {
+	pools map[marketuniv4.PoolID]*marketuniv4.Pool
+}
+
+func (r *diagV4PoolRepoByID) Save(context.Context, *marketuniv4.Pool) error { return nil }
+func (r *diagV4PoolRepoByID) Delete(context.Context, marketuniv4.PoolID) error { return nil }
+func (r *diagV4PoolRepoByID) AdvanceSyncProgress(context.Context, marketuniv4.PoolID, uint64) error {
+	return nil
+}
+func (r *diagV4PoolRepoByID) AdvanceSyncProgressMany(context.Context, []marketuniv4.PoolID, uint64) error {
+	return nil
+}
+func (r *diagV4PoolRepoByID) Get(_ context.Context, id marketuniv4.PoolID) (*marketuniv4.Pool, error) {
+	pool := r.pools[id]
+	if pool == nil {
+		return nil, nil
+	}
+	return pool.Clone(), nil
 }

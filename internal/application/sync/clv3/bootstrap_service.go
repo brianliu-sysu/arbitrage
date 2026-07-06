@@ -57,11 +57,10 @@ func (s *BootstrapService) Bootstrap(ctx context.Context, poolAddress common.Add
 		chainBootstrapped = true
 	} else {
 		pool.Status = market.PoolStatusBootstrapping
-	}
-
-	if s.snapshot != nil {
-		if _, err := s.snapshot.RestorePool(ctx, pool); err != nil {
-			return nil, fmt.Errorf("restore snapshot: %w", err)
+		if s.snapshot != nil {
+			if _, err := s.snapshot.RestorePool(ctx, pool); err != nil {
+				return nil, fmt.Errorf("restore snapshot: %w", err)
+			}
 		}
 	}
 
@@ -76,7 +75,7 @@ func (s *BootstrapService) Bootstrap(ctx context.Context, poolAddress common.Add
 		pool.TickSpacing = data.TickSpacing
 		applyBootstrapData(pool, data)
 		chainBootstrapped = true
-	} else if syncapp.NeedsChainRebootstrap(pool.LastBlockNumber, blockNumber, s.staleBlockThreshold) {
+	} else if pool.LastBlockNumber < blockNumber || syncapp.NeedsChainRebootstrap(pool.LastBlockNumber, blockNumber, s.staleBlockThreshold) {
 		data, err := s.reader.ReadBootstrapData(ctx, poolAddress, blockNumber)
 		if err != nil {
 			return nil, fmt.Errorf("read bootstrap data: %w", err)

@@ -3,12 +3,15 @@ package syncv4
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"sort"
 
+	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
-	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/common"
+	"go.uber.org/zap"
 )
 
 // BlockApplyService applies V4 pool events for a single block.
@@ -17,7 +20,9 @@ type BlockApplyService struct {
 	checkpoints blockchain.V4CheckpointRepository
 	snapshots   *SnapshotService
 	readiness   *ReadinessService
+	baseState   PoolBaseStateReader
 	listener    ChangedPoolsListener
+	logger      *zap.Logger
 }
 
 func NewBlockApplyService(
@@ -25,6 +30,7 @@ func NewBlockApplyService(
 	checkpoints blockchain.V4CheckpointRepository,
 	snapshots *SnapshotService,
 	readiness *ReadinessService,
+	baseState PoolBaseStateReader,
 	listener ChangedPoolsListener,
 ) *BlockApplyService {
 	if listener == nil {
@@ -35,8 +41,18 @@ func NewBlockApplyService(
 		checkpoints: checkpoints,
 		snapshots:   snapshots,
 		readiness:   readiness,
+		baseState:   baseState,
 		listener:    listener,
+		logger:      zap.NewNop(),
 	}
+}
+
+// SetLogger configures debug logging for pool event application.
+func (s *BlockApplyService) SetLogger(logger *zap.Logger) {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	s.logger = logger
 }
 
 func (s *BlockApplyService) SetListener(listener ChangedPoolsListener) {
@@ -86,13 +102,39 @@ func (s *BlockApplyService) ApplyBlock(ctx context.Context, req ApplyBlockReques
 			return ApplyBlockResult{}, fmt.Errorf("pool %s not found", poolID)
 		}
 
+		poolLastBlock := pool.LastBlockNumber
 		for _, event := range events {
+			skipped := event.Meta.BlockNumber < poolLastBlock
+			s.logger.Debug("pool event",
+				append([]zap.Field{
+					zap.String("protocol", "univ4"),
+					zap.String("pool", poolID.String()),
+					zap.Uint64("block", req.BlockNumber),
+					zap.Uint64("eventBlock", event.Meta.BlockNumber),
+					zap.String("kind", event.Kind.String()),
+					zap.Uint("txIndex", event.Meta.TxIndex),
+					zap.Uint("logIndex", event.Meta.LogIndex),
+					zap.Uint64("poolLastBlock", poolLastBlock),
+					zap.Bool("skipped", skipped),
+				}, v4EventLogFields(event)...)...,
+			)
 			if err := pool.Apply(event); err != nil {
 				pool.Status = market.PoolStatusError
 				_ = s.pools.Save(ctx, pool)
 				s.readiness.SetPoolReady(poolID, false)
 				return ApplyBlockResult{}, fmt.Errorf("apply event on pool %s: %w", poolID, err)
 			}
+			if !skipped {
+				s.logger.Debug("pool state",
+					append([]zap.Field{
+						zap.String("protocol", "univ4"),
+						zap.String("pool", poolID.String()),
+						zap.Uint64("block", req.BlockNumber),
+						zap.String("kind", event.Kind.String()),
+					}, syncapp.PoolStateLogFields(pool.State, pool.LastBlockNumber, pool.Status)...)...,
+				)
+			}
+			poolLastBlock = pool.LastBlockNumber
 		}
 
 		if err := s.pools.Save(ctx, pool); err != nil {
@@ -117,8 +159,8 @@ func (s *BlockApplyService) ApplyBlock(ctx context.Context, req ApplyBlockReques
 		idlePools = append(idlePools, poolID)
 	}
 	if len(idlePools) > 0 {
-		if err := s.pools.AdvanceSyncProgressMany(ctx, idlePools, req.BlockNumber); err != nil {
-			return ApplyBlockResult{}, fmt.Errorf("advance sync progress: %w", err)
+		if err := s.syncIdlePools(ctx, idlePools, req.BlockNumber); err != nil {
+			return ApplyBlockResult{}, err
 		}
 		for _, poolID := range idlePools {
 			pendingCheckpoints = append(pendingCheckpoints, newCheckpoint(poolID, req.BlockNumber, req.BlockHash))
@@ -181,4 +223,51 @@ func groupEventsByPool(events []marketv4.PoolEvent) map[marketv4.PoolID][]market
 		grouped[poolID] = append(grouped[poolID], event)
 	}
 	return grouped
+}
+
+func (s *BlockApplyService) syncIdlePools(ctx context.Context, poolIDs []marketv4.PoolID, blockNumber uint64) error {
+	if s.baseState == nil {
+		if err := s.pools.AdvanceSyncProgressMany(ctx, poolIDs, blockNumber); err != nil {
+			return fmt.Errorf("advance sync progress: %w", err)
+		}
+		return nil
+	}
+
+	for _, poolID := range poolIDs {
+		pool, err := s.pools.Get(ctx, poolID)
+		if err != nil {
+			return fmt.Errorf("load pool %s: %w", poolID, err)
+		}
+		if pool == nil {
+			return fmt.Errorf("pool %s not found", poolID)
+		}
+
+		state, err := s.baseState.ReadPoolBaseState(ctx, poolID, blockNumber)
+		if err != nil {
+			return fmt.Errorf("read chain base state for pool %s at block %d: %w", poolID, blockNumber, err)
+		}
+		pool.State.SqrtPriceX96 = cloneBigInt(state.SqrtPriceX96)
+		pool.State.Tick = state.Tick
+		pool.State.Liquidity = cloneBigInt(state.Liquidity)
+		pool.LastBlockNumber = blockNumber
+		if err := s.pools.Save(ctx, pool); err != nil {
+			return fmt.Errorf("save anchored pool %s: %w", poolID, err)
+		}
+
+		s.logger.Debug("pool state anchored from chain",
+			append([]zap.Field{
+				zap.String("protocol", "univ4"),
+				zap.String("pool", poolID.String()),
+				zap.Uint64("block", blockNumber),
+			}, syncapp.PoolStateLogFields(pool.State, pool.LastBlockNumber, pool.Status)...)...,
+		)
+	}
+	return nil
+}
+
+func cloneBigInt(value *big.Int) *big.Int {
+	if value == nil {
+		return nil
+	}
+	return new(big.Int).Set(value)
 }

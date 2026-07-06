@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"sort"
 
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/asset"
 	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
@@ -50,6 +51,13 @@ type DiagnosticsResponse struct {
 	Diff        StateDiff     `json:"diff"`
 }
 
+// DiagnosticsListResponse lists pools whose local state does not match chain state.
+type DiagnosticsListResponse struct {
+	ChainHead uint64                `json:"chainHeadBlock"`
+	Count     int                   `json:"count"`
+	Items     []DiagnosticsResponse `json:"items"`
+}
+
 // Diagnostics compares local pool state with on-chain base state.
 func (s *AppService) Diagnostics(ctx context.Context, req DiagnosticsRequest) (*DiagnosticsResponse, error) {
 	if s == nil {
@@ -76,6 +84,127 @@ func (s *AppService) Diagnostics(ctx context.Context, req DiagnosticsRequest) (*
 	}
 }
 
+// DiagnosticsAll returns tracked pools at chain head whose local slot0 state differs from chain.
+func (s *AppService) DiagnosticsAll(ctx context.Context) (*DiagnosticsListResponse, error) {
+	if s == nil {
+		return nil, fmt.Errorf("pools service is nil")
+	}
+	if s.chain == nil || s.chain.Head == nil {
+		return nil, fmt.Errorf("chain readers are not configured")
+	}
+
+	head, err := s.chain.Head.LatestBlockNumber(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("latest block: %w", err)
+	}
+
+	items := make([]DiagnosticsResponse, 0)
+	if err := s.appendMismatchingUniv3(ctx, head, &items); err != nil {
+		return nil, err
+	}
+	if err := s.appendMismatchingPancake(ctx, head, &items); err != nil {
+		return nil, err
+	}
+	if err := s.appendMismatchingV4(ctx, head, &items); err != nil {
+		return nil, err
+	}
+
+	sortDiagnostics(items)
+	return &DiagnosticsListResponse{
+		ChainHead: head,
+		Count:     len(items),
+		Items:     items,
+	}, nil
+}
+
+func (s *AppService) appendMismatchingUniv3(ctx context.Context, head uint64, items *[]DiagnosticsResponse) error {
+	if s.univ3Registry == nil || s.univ3Pools == nil || s.chain.V3 == nil {
+		return nil
+	}
+	addresses, err := s.univ3Registry.List(ctx)
+	if err != nil {
+		return fmt.Errorf("list univ3 pools: %w", err)
+	}
+	for _, address := range addresses {
+		resp, err := s.diagnosticsUniv3(ctx, address, head)
+		if err != nil {
+			continue
+		}
+		if isMismatchingAtHead(resp) {
+			*items = append(*items, *resp)
+		}
+	}
+	return nil
+}
+
+func (s *AppService) appendMismatchingPancake(ctx context.Context, head uint64, items *[]DiagnosticsResponse) error {
+	if s.pancakeRegistry == nil || s.pancakePools == nil || s.chain.Pancake == nil {
+		return nil
+	}
+	addresses, err := s.pancakeRegistry.List(ctx)
+	if err != nil {
+		return fmt.Errorf("list pancakev3 pools: %w", err)
+	}
+	for _, address := range addresses {
+		resp, err := s.diagnosticsPancake(ctx, address, head)
+		if err != nil {
+			continue
+		}
+		if isMismatchingAtHead(resp) {
+			*items = append(*items, *resp)
+		}
+	}
+	return nil
+}
+
+func (s *AppService) appendMismatchingV4(ctx context.Context, head uint64, items *[]DiagnosticsResponse) error {
+	if s.v4Registry == nil || s.v4Pools == nil || s.chain.V4 == nil {
+		return nil
+	}
+	poolIDs, err := s.v4Registry.List(ctx)
+	if err != nil {
+		return fmt.Errorf("list univ4 pools: %w", err)
+	}
+	for _, poolID := range poolIDs {
+		resp, err := s.diagnosticsV4(ctx, poolID, head)
+		if err != nil {
+			continue
+		}
+		if isMismatchingAtHead(resp) {
+			*items = append(*items, *resp)
+		}
+	}
+	return nil
+}
+
+func isMismatchingAtHead(resp *DiagnosticsResponse) bool {
+	if resp == nil || resp.Local.BlockLag > 0 {
+		return false
+	}
+	return !stateConsistent(resp.Diff)
+}
+
+func stateConsistent(diff StateDiff) bool {
+	return diff.SqrtPriceX96Match && diff.TickMatch && diff.LiquidityMatch
+}
+
+func sortDiagnostics(items []DiagnosticsResponse) {
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].PoolType != items[j].PoolType {
+			return items[i].PoolType < items[j].PoolType
+		}
+		left := items[i].PoolAddress
+		if left == "" {
+			left = items[i].PoolID
+		}
+		right := items[j].PoolAddress
+		if right == "" {
+			right = items[j].PoolID
+		}
+		return left < right
+	})
+}
+
 func (s *AppService) diagnosticsV4(ctx context.Context, poolID marketuniv4.PoolID, head uint64) (*DiagnosticsResponse, error) {
 	if poolID == (marketuniv4.PoolID{}) {
 		return nil, fmt.Errorf("poolId is required for univ4 diagnostics")
@@ -100,13 +229,18 @@ func (s *AppService) diagnosticsV4(ctx context.Context, poolID marketuniv4.PoolI
 		return nil, err
 	}
 
-	chainState, err := s.chain.V4.ReadV4BaseState(ctx, poolID, head)
+	chainBlock := head
+	if pool.LastBlockNumber > 0 && pool.LastBlockNumber <= head {
+		chainBlock = pool.LastBlockNumber
+	}
+
+	chainState, err := s.chain.V4.ReadV4BaseState(ctx, poolID, chainBlock)
 	if err != nil {
 		return nil, fmt.Errorf("read chain v4 state: %w", err)
 	}
 
 	local := snapshotFromState(pool.State.SqrtPriceX96, pool.State.Tick, pool.State.Liquidity, pool.LastBlockNumber, string(pool.Status), token0.Decimal, token1.Decimal)
-	chain := snapshotFromState(chainState.SqrtPriceX96, chainState.Tick, chainState.Liquidity, head, "", token0.Decimal, token1.Decimal)
+	chain := snapshotFromState(chainState.SqrtPriceX96, chainState.Tick, chainState.Liquidity, chainBlock, "", token0.Decimal, token1.Decimal)
 	local.BlockLag = blockLag(head, pool.LastBlockNumber)
 
 	return &DiagnosticsResponse{
