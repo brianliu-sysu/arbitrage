@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
+	"github.com/brianliu-sysu/uniswapv3/internal/domain/asset"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -145,7 +146,23 @@ func buildAdjacency(edges []PoolEdge) map[common.Address][]adjacencyEdge {
 		adjacency[edge.Token0] = append(adjacency[edge.Token0], link)
 		adjacency[edge.Token1] = append(adjacency[edge.Token1], link)
 	}
+	appendDirectedWETHBridgeAdjacency(adjacency)
 	return adjacency
+}
+
+func appendDirectedWETHBridgeAdjacency(adjacency map[common.Address][]adjacencyEdge) {
+	weth := asset.MainnetWETH
+	native := common.Address{}
+	adjacency[weth] = append(adjacency[weth], adjacencyEdge{
+		version: PoolVersionUnwrapWETH,
+		a:       weth,
+		b:       native,
+	})
+	adjacency[native] = append(adjacency[native], adjacencyEdge{
+		version: PoolVersionWrapWETH,
+		a:       native,
+		b:       weth,
+	})
 }
 
 // StaticPoolGraph is an in-memory PoolGraph backed by a fixed edge list.

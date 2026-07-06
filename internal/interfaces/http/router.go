@@ -16,6 +16,7 @@ type Handlers struct {
 	QuoteV4        *QuoteV4Handler
 	QuotePancakeV3 *QuotePancakeV3Handler
 	Opportunities  *OpportunityHandler
+	Pools          *PoolsHandler
 }
 
 // NewRouter registers HTTP routes on a Gin engine.
@@ -48,6 +49,9 @@ func NewRouter(handlers Handlers) *gin.Engine {
 		}
 		if handlers.Opportunities != nil {
 			v1.GET("/opportunities", handlers.Opportunities.HandleList)
+		}
+		if handlers.Pools != nil {
+			v1.GET("/pools", handlers.Pools.HandleList)
 		}
 	}
 

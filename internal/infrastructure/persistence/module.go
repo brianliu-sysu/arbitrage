@@ -9,6 +9,7 @@ import (
 	syncpancakev3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/pancakev3"
 	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ4"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
+	"github.com/brianliu-sysu/uniswapv3/internal/domain/asset"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
@@ -35,6 +36,7 @@ type Services struct {
 	V4Pools       marketv4.PoolRepository
 	V4Snapshots   marketv4.SnapshotRepository
 	V4Checkpoints blockchain.V4CheckpointRepository
+	Tokens        asset.TokenRepository
 	Postgres      *postgres.DB
 
 	memory *memoryBundle
@@ -51,6 +53,7 @@ type memoryBundle struct {
 	v4Pools       *memory.V4PoolRepository
 	v4Snapshots   *memory.V4SnapshotRepository
 	v4Checkpoints *memory.V4CheckpointRepository
+	tokens        *memory.TokenRepository
 }
 
 // MemoryServices returns in-memory repositories for local development and tests.
@@ -66,6 +69,7 @@ func MemoryServices() *Services {
 		v4Pools:            memory.NewV4PoolRepository(),
 		v4Snapshots:        memory.NewV4SnapshotRepository(),
 		v4Checkpoints:      memory.NewV4CheckpointRepository(),
+		tokens:             memory.NewTokenRepository(),
 	}
 	return &Services{
 		Pools:              bundle.pools,
@@ -78,6 +82,7 @@ func MemoryServices() *Services {
 		V4Pools:       bundle.v4Pools,
 		V4Snapshots:   bundle.v4Snapshots,
 		V4Checkpoints: bundle.v4Checkpoints,
+		Tokens:        bundle.tokens,
 		memory:        bundle,
 	}
 }
@@ -104,6 +109,7 @@ func NewServices(ctx context.Context, cfg Config) (*Services, error) {
 		V4Pools:            postgres.NewV4PoolRepository(db),
 		V4Snapshots:        postgres.NewV4SnapshotRepository(db),
 		V4Checkpoints:      postgres.NewV4CheckpointRepository(db),
+		Tokens:             postgres.NewTokenRepository(db),
 		Postgres:           db,
 	}, nil
 }

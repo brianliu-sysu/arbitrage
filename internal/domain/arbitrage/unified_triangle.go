@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/brianliu-sysu/uniswapv3/internal/domain/asset"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -29,7 +30,23 @@ func buildUnifiedTriangleAdjacency(edges []quoteunified.PoolEdge) map[common.Add
 			peer:    edge.Token0,
 		})
 	}
+	appendDirectedWETHBridgeTriangleAdjacency(adjacency)
 	return adjacency
+}
+
+func appendDirectedWETHBridgeTriangleAdjacency(adjacency map[common.Address][]unifiedTriangleEdge) {
+	weth := asset.MainnetWETH
+	native := common.Address{}
+	adjacency[weth] = append(adjacency[weth], unifiedTriangleEdge{
+		poolRef: PoolRef{Version: quoteunified.PoolVersionUnwrapWETH},
+		token:   weth,
+		peer:    native,
+	})
+	adjacency[native] = append(adjacency[native], unifiedTriangleEdge{
+		poolRef: PoolRef{Version: quoteunified.PoolVersionWrapWETH},
+		token:   native,
+		peer:    weth,
+	})
 }
 
 func poolRefFromUnifiedEdge(edge quoteunified.PoolEdge) PoolRef {
@@ -40,6 +57,10 @@ func poolRefFromUnifiedEdge(edge quoteunified.PoolEdge) PoolRef {
 		return PoolRefFromPancakeV3(edge.PoolPancakeV3)
 	case quoteunified.PoolVersionV4:
 		return PoolRefFromV4(edge.PoolV4)
+	case quoteunified.PoolVersionUnwrapWETH:
+		return PoolRef{Version: quoteunified.PoolVersionUnwrapWETH}
+	case quoteunified.PoolVersionWrapWETH:
+		return PoolRef{Version: quoteunified.PoolVersionWrapWETH}
 	default:
 		return PoolRef{}
 	}
@@ -121,6 +142,8 @@ func unifiedHop(edge unifiedTriangleEdge) quoteunified.RouteHop {
 	case quoteunified.PoolVersionV4:
 		hop.Version = quoteunified.PoolVersionV4
 		hop.PoolV4 = edge.poolRef.V4
+	case quoteunified.PoolVersionUnwrapWETH, quoteunified.PoolVersionWrapWETH:
+		hop.Version = edge.poolRef.Version
 	}
 	return hop
 }

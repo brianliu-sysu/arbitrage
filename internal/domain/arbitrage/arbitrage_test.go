@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/brianliu-sysu/uniswapv3/internal/domain/asset"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/common"
@@ -305,5 +306,37 @@ func TestDependencyGraphAffectedRoutesV4(t *testing.T) {
 	affected := graph.AffectedRoutes(nil, nil, []marketv4.PoolID{poolBCID})
 	if len(affected) != 1 || affected[0].ID != "mixed-tri" {
 		t.Fatalf("expected mixed-tri route, got %+v", affected)
+	}
+}
+
+func TestFindUnifiedTriangleRoutesWithWETHBridge(t *testing.T) {
+	weth := asset.MainnetWETH
+	native := common.Address{}
+	usdc := testToken(2)
+	poolWETHUSDC := testToken(10)
+	poolETHUSDC := testPoolID(11)
+	poolUSDCWETH := testToken(12)
+
+	graph := quoteunified.NewStaticPoolGraph([]quoteunified.PoolEdge{
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolWETHUSDC, Token0: weth, Token1: usdc},
+		{Version: quoteunified.PoolVersionV4, PoolV4: poolETHUSDC, Token0: native, Token1: usdc},
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolUSDCWETH, Token0: usdc, Token1: weth},
+	})
+
+	routes := FindUnifiedTriangleRoutes(graph, weth)
+	if len(routes) == 0 {
+		t.Fatal("expected triangle routes through WETH bridge")
+	}
+
+	hasBridge := false
+	for _, route := range routes {
+		for _, hop := range route.Hops {
+			if quoteunified.IsWETHBridgeVersion(hop.Version) {
+				hasBridge = true
+			}
+		}
+	}
+	if !hasBridge {
+		t.Fatal("expected at least one route with a WETH wrap or unwrap hop")
 	}
 }

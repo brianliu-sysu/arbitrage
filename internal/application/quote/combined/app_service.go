@@ -400,6 +400,8 @@ func (s *AppService) loadRoutePools(ctx context.Context, route quoteunified.Rout
 				return quoteunified.RoutePools{}, fmt.Errorf("univ4 pool %s not found", hop.PoolV4.String())
 			}
 			pools.V4[hop.PoolV4] = pool
+		case quoteunified.PoolVersionWrapWETH, quoteunified.PoolVersionUnwrapWETH:
+			continue
 		default:
 			return quoteunified.RoutePools{}, fmt.Errorf("unsupported pool version %d", hop.Version)
 		}
@@ -426,6 +428,8 @@ func (s *AppService) ensureRouteReady(route quoteunified.Route) error {
 			if !s.readiness.IsV4PoolReady(hop.PoolV4) {
 				return fmt.Errorf("univ4 pool %s is not ready", hop.PoolV4.String())
 			}
+		case quoteunified.PoolVersionWrapWETH, quoteunified.PoolVersionUnwrapWETH:
+			continue
 		default:
 			return fmt.Errorf("unsupported pool version %d", hop.Version)
 		}

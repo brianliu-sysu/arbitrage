@@ -10,6 +10,8 @@ import (
 	"time"
 
 	arbitrageapp "github.com/brianliu-sysu/uniswapv3/internal/application/arbitrage"
+	assetapp "github.com/brianliu-sysu/uniswapv3/internal/application/asset"
+	poolsapp "github.com/brianliu-sysu/uniswapv3/internal/application/pools"
 	quotecombined "github.com/brianliu-sysu/uniswapv3/internal/application/quote/combined"
 	quoteuniv3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/univ3"
 	quotepancakev3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/pancakev3"
@@ -18,6 +20,8 @@ import (
 	syncpancakev3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/pancakev3"
 	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ4"
 	"github.com/brianliu-sysu/uniswapv3/internal/config"
+	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	quoteuniv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
 	quotepancakev3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/pancakev3"
 	quoteuniv4domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ4"
@@ -61,6 +65,7 @@ func Module(params Params) fx.Option {
 			newQuotePancakeV3AppService,
 			newQuoteV4AppService,
 			newQuoteCombinedAppService,
+			newPoolsAppService,
 			newHTTPRouter,
 		),
 		fx.Invoke(registerLoggerLifecycle, registerSyncLifecycle, registerHTTPLifecycle),
@@ -346,12 +351,42 @@ func newQuoteCombinedAppService(
 	)
 }
 
+func newPoolsAppService(
+	_ config.Config,
+	store *persistence.Services,
+	poolRegistry *registry.CompositeRegistry,
+	pancakePoolRegistry *registry.PancakeCompositeRegistry,
+	v4PoolRegistry *registry.CompositeV4Registry,
+	chain *chaininfra.Services,
+) *poolsapp.AppService {
+	var pancakeRegistry marketpancake.PoolRegistry
+	if pancakePoolRegistry != nil {
+		pancakeRegistry = pancakePoolRegistry.AsPoolRegistry()
+	}
+	var v4Registry marketv4.PoolRegistry
+	if v4PoolRegistry != nil {
+		v4Registry = v4PoolRegistry.AsPoolRegistry()
+	}
+
+	tokenService := assetapp.NewTokenMetadataService(store.Tokens, chain.ERC20)
+	return poolsapp.NewAppService(
+		store.Pools,
+		store.PancakePools,
+		store.V4Pools,
+		poolRegistry,
+		pancakeRegistry,
+		v4Registry,
+		tokenService,
+	)
+}
+
 func newHTTPRouter(
 	quoteCombined *quotecombined.AppService,
 	quoteV3 *quoteuniv3.AppService,
 	quotePancakeV3 *quotepancakev3.AppService,
 	quoteV4 *quoteuniv4.AppService,
 	store *persistence.Services,
+	pools *poolsapp.AppService,
 ) *gin.Engine {
 	return httpapi.NewRouter(httpapi.Handlers{
 		Health:         httpapi.NewHealthHandler(),
@@ -360,6 +395,7 @@ func newHTTPRouter(
 		QuotePancakeV3: httpapi.NewQuotePancakeV3Handler(quotePancakeV3),
 		QuoteV4:        httpapi.NewQuoteV4Handler(quoteV4),
 		Opportunities:  httpapi.NewOpportunityHandler(store.Opportunities),
+		Pools:          httpapi.NewPoolsHandler(pools),
 	})
 }
 

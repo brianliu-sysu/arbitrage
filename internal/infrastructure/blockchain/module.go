@@ -23,6 +23,7 @@ type Services struct {
 	V4LogFetcher      *V4LogFetcher
 	V4Parser     *V4ABIParser
 	V4PoolReader *V4PoolReader
+	ERC20        *ERC20Reader
 }
 
 func NewServices(cfg Config) (*Services, error) {
@@ -76,6 +77,12 @@ func NewServices(cfg Config) (*Services, error) {
 		}
 	}
 
+	erc20Reader, err := NewERC20Reader(multicall)
+	if err != nil {
+		client.Close()
+		return nil, fmt.Errorf("create erc20 reader: %w", err)
+	}
+
 	return &Services{
 		Client:            client,
 		Multicall:         multicall,
@@ -88,6 +95,7 @@ func NewServices(cfg Config) (*Services, error) {
 		V4LogFetcher:      NewV4LogFetcher(client, cfg.PoolManagerAddress),
 		V4Parser:          v4Parser,
 		V4PoolReader:      v4PoolReader,
+		ERC20:             erc20Reader,
 	}, nil
 }
 

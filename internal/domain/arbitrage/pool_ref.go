@@ -37,6 +37,10 @@ func PoolRefFromHop(hop quoteunified.RouteHop) PoolRef {
 		return PoolRefFromPancakeV3(hop.PoolPancakeV3)
 	case quoteunified.PoolVersionV4:
 		return PoolRefFromV4(hop.PoolV4)
+	case quoteunified.PoolVersionUnwrapWETH:
+		return PoolRef{Version: quoteunified.PoolVersionUnwrapWETH}
+	case quoteunified.PoolVersionWrapWETH:
+		return PoolRef{Version: quoteunified.PoolVersionWrapWETH}
 	default:
 		return PoolRef{}
 	}
@@ -51,6 +55,10 @@ func (p PoolRef) Key() string {
 		return "pancakev3:" + p.PancakeV3.Hex()
 	case quoteunified.PoolVersionV4:
 		return "v4:" + p.V4.String()
+	case quoteunified.PoolVersionUnwrapWETH:
+		return "unwrap:weth"
+	case quoteunified.PoolVersionWrapWETH:
+		return "wrap:weth"
 	default:
 		return ""
 	}

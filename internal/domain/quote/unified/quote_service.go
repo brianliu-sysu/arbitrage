@@ -118,6 +118,8 @@ func (s *QuoteService) quoteHop(pools RoutePools, hop RouteHop, amountIn *big.In
 			return quoteshared.QuoteResult{}, fmt.Errorf("univ4 pool %s not found", hop.PoolV4.String())
 		}
 		return s.v4.QuoteExactInput(pool, hop.TokenIn, hop.TokenOut, amountIn)
+	case PoolVersionWrapWETH, PoolVersionUnwrapWETH:
+		return QuoteWETHBridge(hop, amountIn)
 	default:
 		return quoteshared.QuoteResult{}, fmt.Errorf("unsupported pool version %d", hop.Version)
 	}
