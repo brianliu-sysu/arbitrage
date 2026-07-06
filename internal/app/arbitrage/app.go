@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	arbitrageapp "github.com/brianliu-sysu/uniswapv3/internal/application/arbitrage"
@@ -56,13 +57,6 @@ func Module(params Params) fx.Option {
 			newPancakePoolRegistry,
 			newV4PoolRegistry,
 			newRuntimeBundle,
-			provideSyncServices,
-			provideSyncPancakeServices,
-			provideSyncV4Services,
-			provideArbitrageServices,
-			newSyncOrchestrator,
-			newSyncPancakeOrchestrator,
-			newSyncV4Orchestrator,
 			newQuoteV3AppService,
 			newQuotePancakeV3AppService,
 			newQuoteV4AppService,
@@ -212,8 +206,8 @@ func newRuntimeBundle(
 		PancakePools:        store.PancakePools,
 		V4Pools:             store.V4Pools,
 		Registry:            poolRegistry,
-		PancakeRegistry:     pancakePoolRegistry,
-		V4Registry:          v4PoolRegistry,
+		PancakeRegistry:     pancakePoolRegistry.AsPoolRegistry(),
+		V4Registry:          v4PoolRegistry.AsPoolRegistry(),
 		Quotes: quoteunified.NewQuoteService(
 			quoteuniv3domain.NewQuoteService(),
 			quotepancakev3domain.NewQuoteService(),
@@ -251,45 +245,11 @@ func newRuntimeBundle(
 	}, nil
 }
 
-func provideSyncServices(bundle *runtimeBundle) *syncv3.Services {
-	return bundle.Sync
-}
-
-func provideSyncPancakeServices(bundle *runtimeBundle) *syncpancakev3.Services {
-	return bundle.SyncPancake
-}
-
-func provideSyncV4Services(bundle *runtimeBundle) *syncv4.Services {
-	return bundle.SyncV4
-}
-
-func provideArbitrageServices(bundle *runtimeBundle) *arbitrageapp.Services {
-	return bundle.Arbitrage
-}
-
-func newSyncOrchestrator(services *syncv3.Services, chain *chaininfra.Services) *syncv3.SyncOrchestrator {
-	return services.NewOrchestrator(chain.Client)
-}
-
-func newSyncPancakeOrchestrator(services *syncpancakev3.Services, chain *chaininfra.Services) *syncpancakev3.SyncOrchestrator {
-	if services == nil {
-		return nil
-	}
-	return services.NewOrchestrator(chain.Client)
-}
-
-func newSyncV4Orchestrator(services *syncv4.Services, chain *chaininfra.Services) *syncv4.SyncOrchestrator {
-	if services == nil {
-		return nil
-	}
-	return services.NewOrchestrator(chain.Client)
-}
-
 func newQuoteV3AppService(
 	cfg config.Config,
 	store *persistence.Services,
 	poolRegistry *registry.CompositeRegistry,
-	syncServices *syncv3.Services,
+	bundle *runtimeBundle,
 ) *quoteuniv3.AppService {
 	maxHops := cfg.Quote.MaxHops
 	if maxHops <= 0 {
@@ -299,7 +259,7 @@ func newQuoteV3AppService(
 		store.Pools,
 		poolRegistry,
 		quoteuniv3domain.NewQuoteService(),
-		syncServices.Readiness,
+		bundle.Sync.Readiness,
 		maxHops,
 	)
 }
@@ -308,9 +268,9 @@ func newQuotePancakeV3AppService(
 	cfg config.Config,
 	store *persistence.Services,
 	pancakePoolRegistry *registry.PancakeCompositeRegistry,
-	syncPancakeServices *syncpancakev3.Services,
+	bundle *runtimeBundle,
 ) *quotepancakev3.AppService {
-	if !cfg.Sync.PancakeV3.IsActive() || syncPancakeServices == nil || pancakePoolRegistry == nil {
+	if !cfg.Sync.PancakeV3.IsActive() || bundle.SyncPancake == nil || pancakePoolRegistry == nil {
 		return nil
 	}
 	maxHops := cfg.Quote.MaxHops
@@ -321,7 +281,7 @@ func newQuotePancakeV3AppService(
 		store.PancakePools,
 		pancakePoolRegistry,
 		quotepancakev3domain.NewQuoteService(),
-		syncPancakeServices.Readiness,
+		bundle.SyncPancake.Readiness,
 		maxHops,
 	)
 }
@@ -330,9 +290,9 @@ func newQuoteV4AppService(
 	cfg config.Config,
 	store *persistence.Services,
 	v4PoolRegistry *registry.CompositeV4Registry,
-	syncV4Services *syncv4.Services,
+	bundle *runtimeBundle,
 ) *quoteuniv4.AppService {
-	if syncV4Services == nil || v4PoolRegistry == nil {
+	if bundle.SyncV4 == nil || v4PoolRegistry == nil {
 		return nil
 	}
 	maxHops := cfg.Quote.MaxHops
@@ -343,7 +303,7 @@ func newQuoteV4AppService(
 		store.V4Pools,
 		v4PoolRegistry,
 		quoteuniv4domain.NewQuoteService(),
-		syncV4Services.Readiness,
+		bundle.SyncV4.Readiness,
 		maxHops,
 	)
 }
@@ -354,21 +314,19 @@ func newQuoteCombinedAppService(
 	poolRegistry *registry.CompositeRegistry,
 	pancakePoolRegistry *registry.PancakeCompositeRegistry,
 	v4PoolRegistry *registry.CompositeV4Registry,
-	syncServices *syncv3.Services,
-	syncPancakeServices *syncpancakev3.Services,
-	syncV4Services *syncv4.Services,
+	bundle *runtimeBundle,
 ) *quotecombined.AppService {
 	maxHops := cfg.Quote.MaxHops
 	if maxHops <= 0 {
 		maxHops = 3
 	}
 
-	readiness := &quotecombined.SyncReadiness{V3: syncServices.Readiness}
-	if syncPancakeServices != nil {
-		readiness.Pancake = syncPancakeServices.Readiness
+	readiness := &quotecombined.SyncReadiness{V3: bundle.Sync.Readiness}
+	if bundle.SyncPancake != nil {
+		readiness.Pancake = bundle.SyncPancake.Readiness
 	}
-	if syncV4Services != nil {
-		readiness.V4 = syncV4Services.Readiness
+	if bundle.SyncV4 != nil {
+		readiness.V4 = bundle.SyncV4.Readiness
 	}
 
 	return quotecombined.NewAppService(
@@ -376,8 +334,8 @@ func newQuoteCombinedAppService(
 		store.PancakePools,
 		store.V4Pools,
 		poolRegistry,
-		pancakePoolRegistry,
-		v4PoolRegistry,
+		pancakePoolRegistry.AsPoolRegistry(),
+		v4PoolRegistry.AsPoolRegistry(),
 		quoteunified.NewQuoteService(
 			quoteuniv3domain.NewQuoteService(),
 			quotepancakev3domain.NewQuoteService(),
@@ -404,7 +362,9 @@ func newHTTPRouter(
 }
 
 type syncLifecycle struct {
+	runCtx              context.Context
 	cancel              context.CancelFunc
+	wg                  sync.WaitGroup
 	orchestrator        *syncv3.SyncOrchestrator
 	orchestratorPancake *syncpancakev3.SyncOrchestrator
 	orchestratorV4      *syncv4.SyncOrchestrator
@@ -418,20 +378,24 @@ func registerSyncLifecycle(
 	lifecycle fx.Lifecycle,
 	cfg config.Config,
 	logger *zap.Logger,
-	orchestrator *syncv3.SyncOrchestrator,
-	orchestratorPancake *syncpancakev3.SyncOrchestrator,
-	orchestratorV4 *syncv4.SyncOrchestrator,
+	bundle *runtimeBundle,
 	chain *chaininfra.Services,
 	store *persistence.Services,
 ) {
 	runner := &syncLifecycle{
-		orchestrator:        orchestrator,
-		orchestratorPancake: orchestratorPancake,
-		orchestratorV4:      orchestratorV4,
+		orchestrator:        bundle.Sync.NewOrchestrator(chain.Client),
+		orchestratorPancake: nil,
+		orchestratorV4:      nil,
 		chain:               chain,
 		store:               store,
 		cfg:                 cfg,
 		logger:              logger,
+	}
+	if bundle.SyncPancake != nil {
+		runner.orchestratorPancake = bundle.SyncPancake.NewOrchestrator(chain.Client)
+	}
+	if bundle.SyncV4 != nil {
+		runner.orchestratorV4 = bundle.SyncV4.NewOrchestrator(chain.Client)
 	}
 	lifecycle.Append(fx.Hook{
 		OnStart: runner.start,
@@ -441,6 +405,7 @@ func registerSyncLifecycle(
 
 func (r *syncLifecycle) start(_ context.Context) error {
 	runCtx, cancel := context.WithCancel(context.Background())
+	r.runCtx = runCtx
 	r.cancel = cancel
 
 	r.logger.Info("starting pool sync",
@@ -457,34 +422,61 @@ func (r *syncLifecycle) start(_ context.Context) error {
 		zap.Bool("univ4_subgraph", r.cfg.Sync.Univ4.Subgraph.IsEnabled()),
 	)
 
-	go func() {
-		if err := r.orchestrator.Start(runCtx); err != nil && !errors.Is(err, context.Canceled) {
-			r.logger.Error("v3 pool sync stopped", zap.Error(err))
-		}
-	}()
+	r.runSync("univ3", func(ctx context.Context) error {
+		return r.orchestrator.Start(ctx)
+	})
 
 	if r.orchestratorPancake != nil {
-		go func() {
-			if err := r.orchestratorPancake.Start(runCtx); err != nil && !errors.Is(err, context.Canceled) {
-				r.logger.Error("pancakev3 pool sync stopped", zap.Error(err))
-			}
-		}()
+		r.runSync("pancakev3", func(ctx context.Context) error {
+			return r.orchestratorPancake.Start(ctx)
+		})
 	}
 
 	if r.orchestratorV4 != nil {
-		go func() {
-			if err := r.orchestratorV4.Start(runCtx); err != nil && !errors.Is(err, context.Canceled) {
-				r.logger.Error("v4 pool sync stopped", zap.Error(err))
-			}
-		}()
+		r.runSync("univ4", func(ctx context.Context) error {
+			return r.orchestratorV4.Start(ctx)
+		})
 	}
 	return nil
 }
 
-func (r *syncLifecycle) stop(_ context.Context) error {
+func (r *syncLifecycle) runSync(name string, run func(context.Context) error) {
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				r.logger.Error("pool sync panicked",
+					zap.String("sync", name),
+					zap.Any("panic", recovered),
+					zap.Stack("stack"),
+				)
+			}
+		}()
+
+		if err := run(r.runCtx); err != nil && !errors.Is(err, context.Canceled) {
+			r.logger.Error("pool sync stopped", zap.String("sync", name), zap.Error(err))
+		}
+	}()
+}
+
+func (r *syncLifecycle) stop(ctx context.Context) error {
 	if r.cancel != nil {
 		r.cancel()
 	}
+
+	waitDone := make(chan struct{})
+	go func() {
+		r.wg.Wait()
+		close(waitDone)
+	}()
+
+	select {
+	case <-waitDone:
+	case <-ctx.Done():
+		r.logger.Warn("pool sync shutdown timed out", zap.Error(ctx.Err()))
+	}
+
 	r.chain.Close()
 	r.store.Close()
 	r.logger.Info("pool sync shutdown complete")

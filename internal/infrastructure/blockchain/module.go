@@ -18,8 +18,9 @@ type Services struct {
 	HeadSub      *HeadSubscriber
 	Parser       *ABIParser
 	Factory      *FactoryReader
-	PoolReader   *PoolReader
-	V4LogFetcher *V4LogFetcher
+	PoolReader        *PoolReader
+	PancakePoolReader *PoolReader
+	V4LogFetcher      *V4LogFetcher
 	V4Parser     *V4ABIParser
 	V4PoolReader *V4PoolReader
 }
@@ -54,6 +55,12 @@ func NewServices(cfg Config) (*Services, error) {
 		return nil, fmt.Errorf("create pool reader: %w", err)
 	}
 
+	pancakePoolReader, err := NewPancakePoolReader(client, multicall)
+	if err != nil {
+		client.Close()
+		return nil, fmt.Errorf("create pancake pool reader: %w", err)
+	}
+
 	v4Parser, err := NewV4ABIParser()
 	if err != nil {
 		client.Close()
@@ -70,16 +77,17 @@ func NewServices(cfg Config) (*Services, error) {
 	}
 
 	return &Services{
-		Client:       client,
-		Multicall:    multicall,
-		LogFetcher:   NewLogFetcher(client),
-		HeadSub:      NewHeadSubscriber(client),
-		Parser:       parser,
-		Factory:      factory,
-		PoolReader:   poolReader,
-		V4LogFetcher: NewV4LogFetcher(client, cfg.PoolManagerAddress),
-		V4Parser:     v4Parser,
-		V4PoolReader: v4PoolReader,
+		Client:            client,
+		Multicall:         multicall,
+		LogFetcher:        NewLogFetcher(client),
+		HeadSub:           NewHeadSubscriber(client),
+		Parser:            parser,
+		Factory:           factory,
+		PoolReader:        poolReader,
+		PancakePoolReader: pancakePoolReader,
+		V4LogFetcher:      NewV4LogFetcher(client, cfg.PoolManagerAddress),
+		V4Parser:          v4Parser,
+		V4PoolReader:      v4PoolReader,
 	}, nil
 }
 
@@ -107,7 +115,7 @@ func (s *Services) SyncPancakeV3Deps() syncpancakev3.ServiceDeps {
 		Fetcher:    s.LogFetcher,
 		Parser:     s.Parser,
 		Blocks:     s.Client,
-		Bootstrap:  s.PoolReader,
+		Bootstrap:  s.PancakePoolReader,
 		Subscriber: s.HeadSub,
 		Health:     []syncapp.HealthProbe{s.Client},
 	}

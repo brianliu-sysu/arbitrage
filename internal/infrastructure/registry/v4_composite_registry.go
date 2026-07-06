@@ -81,6 +81,14 @@ func (r *CompositeV4Registry) GetKey(ctx context.Context, id marketv4.PoolID) (m
 	return marketv4.PoolKey{}, fmt.Errorf("pool %s not found in registry", id)
 }
 
+// AsPoolRegistry returns a nil-safe PoolRegistry interface value.
+func (r *CompositeV4Registry) AsPoolRegistry() marketv4.PoolRegistry {
+	if r == nil {
+		return nil
+	}
+	return r
+}
+
 func (r *CompositeV4Registry) Add(ctx context.Context, id marketv4.PoolID, key marketv4.PoolKey) error {
 	if r.subgraph == nil {
 		r.subgraph = NewV4SubgraphRegistry(config.V4SubgraphPoolConfig{})

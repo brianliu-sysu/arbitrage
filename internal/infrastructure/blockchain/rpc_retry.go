@@ -29,12 +29,17 @@ func callContractWithRetry(
 	data []byte,
 	blockNumber uint64,
 ) ([]byte, error) {
+	rpcClient, err := client.rpcClient()
+	if err != nil {
+		return nil, err
+	}
+
 	blocks := callBlockCandidates(blockNumber)
 	var lastErr error
 
 	for attempt := 0; attempt < rpcRetryAttempts; attempt++ {
 		for _, block := range blocks {
-			output, err := client.client.CallContract(ctx, ethereum.CallMsg{
+			output, err := rpcClient.CallContract(ctx, ethereum.CallMsg{
 				To:   &to,
 				Data: data,
 			}, block)
@@ -66,12 +71,17 @@ func codeAtWithRetry(
 	address common.Address,
 	blockNumber uint64,
 ) ([]byte, error) {
+	rpcClient, err := client.rpcClient()
+	if err != nil {
+		return nil, err
+	}
+
 	blocks := callBlockCandidates(blockNumber)
 	var lastErr error
 
 	for attempt := 0; attempt < rpcRetryAttempts; attempt++ {
 		for _, block := range blocks {
-			code, err := client.client.CodeAt(ctx, address, block)
+			code, err := rpcClient.CodeAt(ctx, address, block)
 			if err != nil {
 				lastErr = err
 				continue

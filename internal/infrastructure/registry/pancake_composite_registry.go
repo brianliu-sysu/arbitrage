@@ -12,14 +12,14 @@ import (
 // PancakeCompositeRegistry merges static config pools with a subgraph-backed registry.
 type PancakeCompositeRegistry struct {
 	static          []common.Address
-	subgraph        *SubgraphRegistry
+	subgraph        *PancakeSubgraphRegistry
 	subgraphEnabled bool
 }
 
 func NewPancakeCompositeRegistry(cfg config.PancakeV3SyncConfig) *PancakeCompositeRegistry {
 	return &PancakeCompositeRegistry{
 		static:          staticAddresses(cfg.Pools),
-		subgraph:        NewSubgraphRegistry(cfg.Subgraph),
+		subgraph:        NewPancakeSubgraphRegistry(cfg.Subgraph),
 		subgraphEnabled: cfg.Subgraph.IsEnabled(),
 	}
 }
@@ -56,16 +56,24 @@ func (r *PancakeCompositeRegistry) List(ctx context.Context) ([]common.Address, 
 	return addresses, nil
 }
 
+// AsPoolRegistry returns a nil-safe PoolRegistry interface value.
+func (r *PancakeCompositeRegistry) AsPoolRegistry() marketpancake.PoolRegistry {
+	if r == nil {
+		return nil
+	}
+	return r
+}
+
 func (r *PancakeCompositeRegistry) Add(ctx context.Context, address common.Address) error {
 	if r.subgraph == nil {
-		r.subgraph = NewSubgraphRegistry(config.SubgraphPoolConfig{})
+		r.subgraph = NewPancakeSubgraphRegistry(config.SubgraphPoolConfig{})
 	}
 	return r.subgraph.Add(ctx, address)
 }
 
 func (r *PancakeCompositeRegistry) Remove(ctx context.Context, address common.Address) error {
 	if r.subgraph == nil {
-		r.subgraph = NewSubgraphRegistry(config.SubgraphPoolConfig{})
+		r.subgraph = NewPancakeSubgraphRegistry(config.SubgraphPoolConfig{})
 	}
 	return r.subgraph.Remove(ctx, address)
 }

@@ -1,0 +1,404 @@
+package registry
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/brianliu-sysu/uniswapv3/internal/config"
+	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
+	"github.com/ethereum/go-ethereum/common"
+)
+
+var allowedPancakeOrderBy = map[string]string{
+	"totalValueLockedUSD": "totalValueLockedUSD",
+	"volumeUSD":           "cumulativeVolumeUSD",
+	"volume24h":           "",
+	"txCount":             "cumulativeSwapCount",
+	"feesUSD":             "cumulativeTotalRevenueUSD",
+	"liquidity":           "totalLiquidityUSD",
+}
+
+// PancakeSubgraphRegistry loads PancakeSwap V3 pool addresses from a Messari-schema subgraph.
+type PancakeSubgraphRegistry struct {
+	cfg    config.SubgraphPoolConfig
+	client *http.Client
+	clock  func() time.Time
+
+	mu        sync.RWMutex
+	cached    []common.Address
+	lastFetch time.Time
+	added     map[common.Address]struct{}
+	removed   map[common.Address]struct{}
+}
+
+func NewPancakeSubgraphRegistry(cfg config.SubgraphPoolConfig) *PancakeSubgraphRegistry {
+	if cfg.First <= 0 {
+		cfg.First = 100
+	}
+	if cfg.OrderBy == "" {
+		cfg.OrderBy = "volume24h"
+	}
+	if cfg.OrderDirection == "" {
+		cfg.OrderDirection = "desc"
+	}
+	if cfg.RefreshInterval <= 0 {
+		cfg.RefreshInterval = 10 * time.Minute
+	}
+	return &PancakeSubgraphRegistry{
+		cfg:     cfg,
+		client:  &http.Client{Timeout: defaultGraphQLTimeout},
+		clock:   time.Now,
+		added:   make(map[common.Address]struct{}),
+		removed: make(map[common.Address]struct{}),
+	}
+}
+
+func (r *PancakeSubgraphRegistry) List(ctx context.Context) ([]common.Address, error) {
+	if r.cfg.IsEnabled() {
+		if err := r.refreshIfNeeded(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.currentAddressesLocked(), nil
+}
+
+func (r *PancakeSubgraphRegistry) Add(_ context.Context, address common.Address) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.removed, address)
+	r.added[address] = struct{}{}
+	return nil
+}
+
+func (r *PancakeSubgraphRegistry) Remove(_ context.Context, address common.Address) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.added, address)
+	r.removed[address] = struct{}{}
+	return nil
+}
+
+func (r *PancakeSubgraphRegistry) refreshIfNeeded(ctx context.Context) error {
+	r.mu.RLock()
+	stale := r.lastFetch.IsZero() || r.clock().Sub(r.lastFetch) >= r.cfg.RefreshInterval
+	r.mu.RUnlock()
+	if !stale {
+		return nil
+	}
+	return r.fetch(ctx)
+}
+
+func (r *PancakeSubgraphRegistry) fetch(ctx context.Context) error {
+	pools, err := r.queryPools(ctx)
+	if err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cached = pools
+	r.lastFetch = r.clock()
+	return nil
+}
+
+func (r *PancakeSubgraphRegistry) currentAddressesLocked() []common.Address {
+	seen := make(map[common.Address]struct{}, len(r.cached)+len(r.added))
+	addresses := make([]common.Address, 0, len(r.cached)+len(r.added))
+
+	for _, address := range r.cached {
+		if _, removed := r.removed[address]; removed {
+			continue
+		}
+		if _, ok := seen[address]; ok {
+			continue
+		}
+		seen[address] = struct{}{}
+		addresses = append(addresses, address)
+	}
+	for address := range r.added {
+		if _, removed := r.removed[address]; removed {
+			continue
+		}
+		if _, ok := seen[address]; ok {
+			continue
+		}
+		seen[address] = struct{}{}
+		addresses = append(addresses, address)
+	}
+
+	sort.Slice(addresses, func(i, j int) bool {
+		return addresses[i].Hex() < addresses[j].Hex()
+	})
+	return addresses
+}
+
+func (r *PancakeSubgraphRegistry) queryPools(ctx context.Context) ([]common.Address, error) {
+	query, variables, mode, err := r.buildQuery()
+	if err != nil {
+		return nil, err
+	}
+
+	body, err := json.Marshal(graphQLRequest{
+		Query:     query,
+		Variables: variables,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal graphql request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.cfg.Endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create graphql request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("query subgraph: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read subgraph response: %w", err)
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, fmt.Errorf("subgraph status %d: %s", resp.StatusCode, string(raw))
+	}
+
+	var response pancakeGraphQLResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return nil, fmt.Errorf("decode subgraph response: %w", err)
+	}
+	if len(response.Errors) > 0 {
+		return nil, fmt.Errorf("subgraph graphql error: %s", response.Errors[0].Message)
+	}
+
+	switch mode {
+	case pancakeQueryModeDailySnapshot:
+		if response.Data.LiquidityPoolDailySnapshots == nil {
+			return nil, fmt.Errorf("subgraph response missing liquidityPoolDailySnapshots")
+		}
+		return poolAddressesFromPancakeDailySnapshots(response.Data.LiquidityPoolDailySnapshots, r.cfg.FeeTiers), nil
+	default:
+		if response.Data.LiquidityPools == nil {
+			return nil, fmt.Errorf("subgraph response missing liquidityPools")
+		}
+		return poolAddressesFromPancakePools(response.Data.LiquidityPools, r.cfg.FeeTiers), nil
+	}
+}
+
+func poolAddressesFromPancakePools(pools []pancakeSubgraphPool, feeTiers []uint32) []common.Address {
+	addresses := make([]common.Address, 0, len(pools))
+	for _, pool := range pools {
+		if pool.ID == "" || !pancakePoolMatchesFeeTiers(pool, feeTiers) {
+			continue
+		}
+		addresses = append(addresses, common.HexToAddress(pool.ID))
+	}
+	return addresses
+}
+
+func poolAddressesFromPancakeDailySnapshots(rows []pancakeSubgraphDailySnapshot, feeTiers []uint32) []common.Address {
+	addresses := make([]common.Address, 0, len(rows))
+	for _, row := range rows {
+		if row.Pool.ID == "" || !pancakePoolMatchesFeeTiers(row.Pool, feeTiers) {
+			continue
+		}
+		addresses = append(addresses, common.HexToAddress(row.Pool.ID))
+	}
+	return addresses
+}
+
+type pancakeQueryMode int
+
+const (
+	pancakeQueryModeLiquidityPools pancakeQueryMode = iota
+	pancakeQueryModeDailySnapshot
+)
+
+func (r *PancakeSubgraphRegistry) buildQuery() (string, map[string]any, pancakeQueryMode, error) {
+	orderBy := strings.TrimSpace(r.cfg.OrderBy)
+	subgraphOrderBy, ok := allowedPancakeOrderBy[orderBy]
+	if !ok {
+		return "", nil, pancakeQueryModeLiquidityPools, fmt.Errorf("unsupported pancake subgraph order_by %q", orderBy)
+	}
+	orderDirection := strings.ToLower(strings.TrimSpace(r.cfg.OrderDirection))
+	if _, ok := allowedOrderDirection[orderDirection]; !ok {
+		return "", nil, pancakeQueryModeLiquidityPools, fmt.Errorf("unsupported pancake subgraph order_direction %q", orderDirection)
+	}
+
+	if orderBy == "volume24h" {
+		return r.buildDailySnapshotQuery(orderDirection)
+	}
+	return r.buildLiquidityPoolsQuery(subgraphOrderBy, orderDirection)
+}
+
+func (r *PancakeSubgraphRegistry) buildLiquidityPoolsQuery(orderBy, orderDirection string) (string, map[string]any, pancakeQueryMode, error) {
+	where := r.buildLiquidityPoolWhereFilter()
+	if r.cfg.MinVolume24hUSD != "" {
+		// Messari schema has no nested poolDayData on LiquidityPool; volume24h must use daily snapshots.
+		return "", nil, pancakeQueryModeLiquidityPools, fmt.Errorf("pancake subgraph requires order_by volume24h when min_volume_24h_usd is set")
+	}
+
+	variables := map[string]any{
+		"first":          r.cfg.First,
+		"skip":           r.cfg.Skip,
+		"orderBy":        orderBy,
+		"orderDirection": orderDirection,
+	}
+	if len(where) > 0 {
+		variables["where"] = where
+	}
+
+	query := `
+query LiquidityPools($first: Int!, $skip: Int!, $orderBy: LiquidityPool_orderBy!, $orderDirection: OrderDirection!, $where: LiquidityPool_filter) {
+  liquidityPools(
+    first: $first
+    skip: $skip
+    orderBy: $orderBy
+    orderDirection: $orderDirection
+    where: $where
+  ) {
+    id
+    fees {
+      feeType
+      feePercentage
+    }
+  }
+}`
+	return query, variables, pancakeQueryModeLiquidityPools, nil
+}
+
+func (r *PancakeSubgraphRegistry) buildDailySnapshotQuery(orderDirection string) (string, map[string]any, pancakeQueryMode, error) {
+	where := map[string]any{}
+	if volumeFilter := strings.TrimSpace(r.cfg.MinVolume24hUSD); volumeFilter != "" {
+		where["dailyVolumeUSD_gt"] = volumeFilter
+	}
+	if poolWhere := r.buildLiquidityPoolWhereFilter(); len(poolWhere) > 0 {
+		where["pool_"] = poolWhere
+	}
+
+	variables := map[string]any{
+		"first":          r.cfg.First,
+		"skip":           r.cfg.Skip,
+		"orderBy":        "dailyVolumeUSD",
+		"orderDirection": orderDirection,
+	}
+	if len(where) > 0 {
+		variables["where"] = where
+	}
+
+	query := `
+query LiquidityPoolDailySnapshots($first: Int!, $skip: Int!, $orderBy: LiquidityPoolDailySnapshot_orderBy!, $orderDirection: OrderDirection!, $where: LiquidityPoolDailySnapshot_filter) {
+  liquidityPoolDailySnapshots(
+    first: $first
+    skip: $skip
+    orderBy: $orderBy
+    orderDirection: $orderDirection
+    where: $where
+  ) {
+    pool {
+      id
+      fees {
+        feeType
+        feePercentage
+      }
+    }
+  }
+}`
+	return query, variables, pancakeQueryModeDailySnapshot, nil
+}
+
+func (r *PancakeSubgraphRegistry) buildLiquidityPoolWhereFilter() map[string]any {
+	where := make(map[string]any)
+	if r.cfg.MinTotalValueLockedUSD != "" {
+		where["totalValueLockedUSD_gt"] = r.cfg.MinTotalValueLockedUSD
+	}
+	if token0 := strings.TrimSpace(r.cfg.Token0); token0 != "" {
+		where["inputTokens_"] = map[string]any{
+			"id": strings.ToLower(token0),
+		}
+	}
+	if token1 := strings.TrimSpace(r.cfg.Token1); token1 != "" {
+		where["inputTokens_"] = map[string]any{
+			"id": strings.ToLower(token1),
+		}
+	}
+	return where
+}
+
+func pancakePoolMatchesFeeTiers(pool pancakeSubgraphPool, feeTiers []uint32) bool {
+	if len(feeTiers) == 0 {
+		return true
+	}
+	for _, fee := range pool.Fees {
+		if fee.FeeType != "FIXED_TRADING_FEE" {
+			continue
+		}
+		if pancakeTradingFeeMatchesTier(fee.FeePercentage, feeTiers) {
+			return true
+		}
+	}
+	return false
+}
+
+func pancakeTradingFeeMatchesTier(feePercentage string, feeTiers []uint32) bool {
+	fee, err := parsePancakeFeePercentage(feePercentage)
+	if err != nil {
+		return false
+	}
+	for _, tier := range feeTiers {
+		if fee == float64(tier)/10000 {
+			return true
+		}
+	}
+	return false
+}
+
+func parsePancakeFeePercentage(value string) (float64, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, fmt.Errorf("empty fee percentage")
+	}
+	var fee float64
+	if _, err := fmt.Sscanf(value, "%f", &fee); err != nil {
+		return 0, err
+	}
+	return fee, nil
+}
+
+type pancakeGraphQLResponse struct {
+	Data struct {
+		LiquidityPools              []pancakeSubgraphPool         `json:"liquidityPools"`
+		LiquidityPoolDailySnapshots []pancakeSubgraphDailySnapshot `json:"liquidityPoolDailySnapshots"`
+	} `json:"data"`
+	Errors []graphQLError `json:"errors"`
+}
+
+type pancakeSubgraphPool struct {
+	ID   string              `json:"id"`
+	Fees []pancakeSubgraphFee `json:"fees"`
+}
+
+type pancakeSubgraphFee struct {
+	FeeType       string `json:"feeType"`
+	FeePercentage string `json:"feePercentage"`
+}
+
+type pancakeSubgraphDailySnapshot struct {
+	Pool pancakeSubgraphPool `json:"pool"`
+}
+
+var _ marketpancake.PoolRegistry = (*PancakeSubgraphRegistry)(nil)

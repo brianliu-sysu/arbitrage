@@ -3,6 +3,7 @@ package arbitrageapp
 import (
 	"context"
 	"fmt"
+	"reflect"
 
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
@@ -22,7 +23,7 @@ func BuildUnifiedPoolGraph(
 ) (quoteunified.PoolGraph, error) {
 	edges := make([]quoteunified.PoolEdge, 0)
 
-	if v3Registry != nil && univ3Pools != nil {
+	if interfacePresent(v3Registry) && univ3Pools != nil {
 		addresses, err := v3Registry.List(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("list univ3 pools: %w", err)
@@ -44,7 +45,7 @@ func BuildUnifiedPoolGraph(
 		}
 	}
 
-	if pancakeRegistry != nil && pancakePools != nil {
+	if interfacePresent(pancakeRegistry) && pancakePools != nil {
 		addresses, err := pancakeRegistry.List(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("list pancakev3 pools: %w", err)
@@ -66,7 +67,7 @@ func BuildUnifiedPoolGraph(
 		}
 	}
 
-	if v4Registry != nil && univ4Pools != nil {
+	if interfacePresent(v4Registry) && univ4Pools != nil {
 		poolIDs, err := v4Registry.List(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("list univ4 pools: %w", err)
@@ -98,4 +99,17 @@ func BuildUnifiedPoolGraph(
 // BuildPoolGraph builds a Uniswap V3-only routing graph from tracked pools.
 func BuildPoolGraph(ctx context.Context, registry marketuniv3.PoolRegistry, pools marketuniv3.PoolRepository) (quoteunified.PoolGraph, error) {
 	return BuildUnifiedPoolGraph(ctx, registry, pools, nil, nil, nil, nil)
+}
+
+func interfacePresent(value any) bool {
+	if value == nil {
+		return false
+	}
+	v := reflect.ValueOf(value)
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice, reflect.Chan, reflect.Func:
+		return !v.IsNil()
+	default:
+		return true
+	}
 }

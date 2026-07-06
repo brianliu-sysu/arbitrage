@@ -20,7 +20,16 @@ type PoolReader struct {
 }
 
 func NewPoolReader(client *EthClient, multicall *Multicall) (*PoolReader, error) {
-	parsed, err := abi.JSON(strings.NewReader(poolABIJSON))
+	return newPoolReader(client, multicall, poolABIJSON)
+}
+
+// NewPancakePoolReader loads PancakeSwap V3 pool state using the Pancake slot0 ABI.
+func NewPancakePoolReader(client *EthClient, multicall *Multicall) (*PoolReader, error) {
+	return newPoolReader(client, multicall, pancakePoolABIJSON)
+}
+
+func newPoolReader(client *EthClient, multicall *Multicall, abiJSON string) (*PoolReader, error) {
+	parsed, err := abi.JSON(strings.NewReader(abiJSON))
 	if err != nil {
 		return nil, fmt.Errorf("parse pool abi: %w", err)
 	}
