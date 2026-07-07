@@ -2,7 +2,6 @@ package balancersync
 
 import (
 	"context"
-	"math/big"
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
@@ -21,24 +20,9 @@ type BlockReader = syncapp.BlockReader
 type HeadSubscriber = syncapp.HeadSubscriber
 type HealthProbe = syncapp.HealthProbe
 
-// LogFilter selects Vault/pool logs for tracked Balancer pools within a block range.
-type LogFilter struct {
-	PoolIDs       []marketbalancer.PoolID
-	PoolAddresses []common.Address
-	FromBlock     uint64
-	ToBlock       uint64
-}
-
-// BootstrapData is on-chain Balancer pool state read during cold bootstrap.
-type BootstrapData struct {
-	Spec              marketbalancer.PoolSpec
-	Tokens            []common.Address
-	Balances          map[common.Address]*big.Int
-	Weights           map[common.Address]*big.Int
-	Amplification     *big.Int
-	SwapFeePercentage *big.Int
-	BlockNumber       uint64
-}
+type LogFilter = blockchain.BalancerLogFilter
+type BootstrapInput = marketbalancer.BootstrapInput
+type BootstrapData = marketbalancer.BootstrapData
 
 // LogFetcher fetches raw Vault/pool logs from the chain.
 type LogFetcher interface {
@@ -58,6 +42,7 @@ type PoolAddressBinder interface {
 // PoolBootstrapReader reads live Balancer pool state from the chain.
 type PoolBootstrapReader interface {
 	ReadBootstrapData(ctx context.Context, poolID marketbalancer.PoolID, spec marketbalancer.PoolSpec, blockNumber uint64) (*BootstrapData, error)
+	ReadManyBootstrapData(ctx context.Context, inputs []BootstrapInput, blockNumber uint64) (map[marketbalancer.PoolID]*BootstrapData, error)
 }
 
 // ChangedPoolsListener receives pools updated after a block is applied.

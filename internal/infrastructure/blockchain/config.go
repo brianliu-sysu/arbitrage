@@ -12,7 +12,8 @@ type Config struct {
 	MulticallAddress     common.Address
 	PoolManagerAddress   common.Address
 	StateViewAddress     common.Address
-	BalancerVaultAddress common.Address
+	BalancerVaultAddress   common.Address
+	BalancerVaultV3Address common.Address
 }
 
 func DefaultConfig(rpcURL string) Config {

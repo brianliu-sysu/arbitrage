@@ -9,6 +9,7 @@ import (
 	assetapp "github.com/brianliu-sysu/uniswapv3/internal/application/asset"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/asset"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -127,7 +128,9 @@ func TestAppServiceListPools(t *testing.T) {
 		repo,
 		nil,
 		nil,
+		nil,
 		&staticRegistry{addresses: []common.Address{poolAddr}},
+		nil,
 		nil,
 		nil,
 		nil,
@@ -153,7 +156,9 @@ func TestAppServiceListPools(t *testing.T) {
 		repo,
 		nil,
 		nil,
+		nil,
 		&staticRegistry{addresses: []common.Address{poolAddr}},
+		nil,
 		nil,
 		nil,
 		assetapp.NewTokenMetadataService(tokenRepo, nil),
@@ -167,3 +172,84 @@ func TestAppServiceListPools(t *testing.T) {
 		t.Fatalf("unexpected token metadata: %#v", resp.Items[0])
 	}
 }
+
+func TestAppServiceListBalancerPools(t *testing.T) {
+	token0 := testToken(1)
+	token1 := testToken(2)
+	poolAddr := testToken(10)
+	poolID := marketbalancer.PoolID(common.HexToHash(poolAddr.Hex()))
+
+	balancerRepo := &balancerMemoryRepo{}
+	pool, err := marketbalancer.NewPool(poolID, poolAddr, testToken(20), marketbalancer.PoolTypeStable, []common.Address{token0, token1})
+	if err != nil {
+		t.Fatalf("new balancer pool: %v", err)
+	}
+	if err := balancerRepo.Save(context.Background(), pool); err != nil {
+		t.Fatalf("save balancer pool: %v", err)
+	}
+
+	service := poolsapp.NewAppService(
+		nil, nil, nil, balancerRepo,
+		nil, nil, nil,
+		&balancerStaticRegistry{poolIDs: []marketbalancer.PoolID{poolID}},
+		nil, nil,
+	)
+
+	resp, err := service.List(context.Background())
+	if err != nil {
+		t.Fatalf("list pools: %v", err)
+	}
+	if resp.Count != 1 {
+		t.Fatalf("expected 1 pool, got %d", resp.Count)
+	}
+	item := resp.Items[0]
+	if item.PoolType != poolsapp.PoolTypeBalancer || item.BalancerType != "stable" {
+		t.Fatalf("unexpected balancer item: %#v", item)
+	}
+	if item.PoolAddress != poolAddr.Hex() || len(item.Tokens) != 2 {
+		t.Fatalf("unexpected balancer pool fields: %#v", item)
+	}
+}
+
+type balancerMemoryRepo struct {
+	pools map[marketbalancer.PoolID]*marketbalancer.Pool
+}
+
+func (r *balancerMemoryRepo) Save(_ context.Context, pool *marketbalancer.Pool) error {
+	if r.pools == nil {
+		r.pools = make(map[marketbalancer.PoolID]*marketbalancer.Pool)
+	}
+	r.pools[pool.ID] = pool.Clone()
+	return nil
+}
+
+func (r *balancerMemoryRepo) Get(_ context.Context, id marketbalancer.PoolID) (*marketbalancer.Pool, error) {
+	pool, ok := r.pools[id]
+	if !ok {
+		return nil, nil
+	}
+	return pool.Clone(), nil
+}
+
+func (r *balancerMemoryRepo) Delete(context.Context, marketbalancer.PoolID) error { return nil }
+func (r *balancerMemoryRepo) AdvanceSyncProgress(context.Context, marketbalancer.PoolID, uint64) error {
+	return nil
+}
+func (r *balancerMemoryRepo) AdvanceSyncProgressMany(context.Context, []marketbalancer.PoolID, uint64) error {
+	return nil
+}
+
+type balancerStaticRegistry struct {
+	poolIDs []marketbalancer.PoolID
+}
+
+func (r *balancerStaticRegistry) List(context.Context) ([]marketbalancer.PoolID, error) {
+	return append([]marketbalancer.PoolID(nil), r.poolIDs...), nil
+}
+func (r *balancerStaticRegistry) GetSpec(context.Context, marketbalancer.PoolID) (marketbalancer.PoolSpec, error) {
+	return marketbalancer.PoolSpec{}, fmt.Errorf("not implemented")
+}
+func (r *balancerStaticRegistry) Add(context.Context, marketbalancer.PoolID, marketbalancer.PoolSpec) error {
+	return nil
+}
+func (r *balancerStaticRegistry) Remove(context.Context, marketbalancer.PoolID) error { return nil }

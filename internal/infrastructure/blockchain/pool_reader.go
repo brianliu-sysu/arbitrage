@@ -6,8 +6,8 @@ import (
 	"math/big"
 	"strings"
 
-	clv3sync "github.com/brianliu-sysu/uniswapv3/internal/application/sync/clv3"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -40,7 +40,7 @@ func newPoolReader(client *EthClient, multicall *Multicall, abiJSON string) (*Po
 	}, nil
 }
 
-func (r *PoolReader) ReadBootstrapData(ctx context.Context, poolAddress common.Address, blockNumber uint64) (*clv3sync.BootstrapData, error) {
+func (r *PoolReader) ReadBootstrapData(ctx context.Context, poolAddress common.Address, blockNumber uint64) (*marketclv3.BootstrapData, error) {
 	baseResults, err := r.readBaseState(ctx, poolAddress, blockNumber)
 	if err != nil {
 		return nil, err
@@ -51,7 +51,7 @@ func (r *PoolReader) ReadBootstrapData(ctx context.Context, poolAddress common.A
 		return nil, err
 	}
 
-	return &clv3sync.BootstrapData{
+	return &marketclv3.BootstrapData{
 		Token0:      baseResults.token0,
 		Token1:      baseResults.token1,
 		Fee:         baseResults.fee,

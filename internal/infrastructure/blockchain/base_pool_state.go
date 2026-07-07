@@ -1,10 +1,6 @@
 package blockchain
 
-import "math/big"
+import domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 
 // BasePoolState is on-chain slot0 and liquidity without tick data.
-type BasePoolState struct {
-	SqrtPriceX96 *big.Int
-	Tick         int32
-	Liquidity    *big.Int
-}
+type BasePoolState = domainchain.BasePoolState

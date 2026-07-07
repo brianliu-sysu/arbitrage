@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	poolsapp "github.com/brianliu-sysu/uniswapv3/internal/application/pools"
+	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	"github.com/gin-gonic/gin"
 )
 
@@ -67,6 +68,13 @@ func (h *PoolsHandler) HandleDiagnostics(c *gin.Context) {
 			return
 		}
 		req.PoolID = poolID
+	case poolsapp.PoolTypeBalancer:
+		poolID, err := parsePoolID(poolIDQuery)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, errorHTTPResponse{Error: err.Error()})
+			return
+		}
+		req.BalancerPoolID = marketbalancer.PoolID(poolID.Hash())
 	case poolsapp.PoolTypeUniv3, poolsapp.PoolTypePancakeV3:
 		poolAddress, err := parseAddress(poolAddressQuery, "poolAddress")
 		if err != nil {
@@ -75,7 +83,7 @@ func (h *PoolsHandler) HandleDiagnostics(c *gin.Context) {
 		}
 		req.PoolAddress = poolAddress
 	default:
-		c.JSON(http.StatusBadRequest, errorHTTPResponse{Error: "poolType must be univ3, univ4, or pancakev3"})
+		c.JSON(http.StatusBadRequest, errorHTTPResponse{Error: "poolType must be univ3, univ4, pancakev3, or balancer"})
 		return
 	}
 

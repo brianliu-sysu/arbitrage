@@ -74,6 +74,9 @@ func validateQuoteInput(pool *marketbalancer.Pool, tokenIn, tokenOut common.Addr
 	if pool == nil {
 		return fmt.Errorf("pool is nil")
 	}
+	if pool.Paused {
+		return fmt.Errorf("pool is paused")
+	}
 	if tokenIn == tokenOut {
 		return fmt.Errorf("tokenIn and tokenOut must differ")
 	}

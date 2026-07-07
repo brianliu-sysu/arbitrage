@@ -18,10 +18,11 @@ import (
 
 // BalancerSubgraphRegistry loads weighted/stable pools from a Balancer subgraph.
 type BalancerSubgraphRegistry struct {
-	cfg          config.BalancerSubgraphPoolConfig
-	defaultVault common.Address
-	client       *http.Client
-	clock        func() time.Time
+	cfg           config.BalancerSubgraphPoolConfig
+	defaultVault  common.Address
+	defaultVaultV3 common.Address
+	client        *http.Client
+	clock         func() time.Time
 
 	mu        sync.RWMutex
 	cached    []balancerPoolEntry
@@ -30,12 +31,17 @@ type BalancerSubgraphRegistry struct {
 	removed   map[marketbalancer.PoolID]struct{}
 }
 
-func NewBalancerSubgraphRegistry(cfg config.BalancerSubgraphPoolConfig, defaultVault common.Address) *BalancerSubgraphRegistry {
+func NewBalancerSubgraphRegistry(cfg config.BalancerSubgraphPoolConfig, defaultVault, defaultVaultV3 common.Address) *BalancerSubgraphRegistry {
 	if cfg.First <= 0 {
 		cfg.First = 100
 	}
+	cfg.OrderBy = normalizeBalancerOrderBy(cfg.OrderBy, cfg.ResolvedSchema())
 	if cfg.OrderBy == "" {
-		cfg.OrderBy = "totalLiquidity"
+		if cfg.ResolvedSchema() == "v3" {
+			cfg.OrderBy = "id"
+		} else {
+			cfg.OrderBy = "totalLiquidity"
+		}
 	}
 	if cfg.OrderDirection == "" {
 		cfg.OrderDirection = "desc"
@@ -44,10 +50,11 @@ func NewBalancerSubgraphRegistry(cfg config.BalancerSubgraphPoolConfig, defaultV
 		cfg.RefreshInterval = 10 * time.Minute
 	}
 	return &BalancerSubgraphRegistry{
-		cfg:          cfg,
-		defaultVault: defaultVault,
-		client:       &http.Client{Timeout: defaultGraphQLTimeout},
-		clock:        time.Now,
+		cfg:            cfg,
+		defaultVault:   defaultVault,
+		defaultVaultV3: defaultVaultV3,
+		client:         &http.Client{Timeout: defaultGraphQLTimeout},
+		clock:          time.Now,
 		added:        make(map[marketbalancer.PoolID]balancerPoolEntry),
 		removed:      make(map[marketbalancer.PoolID]struct{}),
 	}
@@ -204,18 +211,25 @@ func (r *BalancerSubgraphRegistry) queryPools(ctx context.Context) ([]balancerPo
 }
 
 func (r *BalancerSubgraphRegistry) buildQuery() (string, map[string]any, error) {
-	orderBy := strings.TrimSpace(r.cfg.OrderBy)
+	if r.cfg.ResolvedSchema() == "v3" {
+		return r.buildV3Query()
+	}
+	return r.buildV2Query()
+}
+
+func (r *BalancerSubgraphRegistry) buildV2Query() (string, map[string]any, error) {
+	orderBy := normalizeBalancerV2OrderBy(r.cfg.OrderBy)
 	switch orderBy {
 	case "totalLiquidity", "totalSwapVolume", "totalSwapFee", "swapCount", "createTime":
 	default:
-		return "", nil, fmt.Errorf("unsupported balancer subgraph order_by %q", orderBy)
+		return "", nil, fmt.Errorf("unsupported balancer v2 subgraph order_by %q", r.cfg.OrderBy)
 	}
 	orderDirection := strings.ToLower(strings.TrimSpace(r.cfg.OrderDirection))
 	if _, ok := allowedOrderDirection[orderDirection]; !ok {
 		return "", nil, fmt.Errorf("unsupported balancer subgraph order_direction %q", orderDirection)
 	}
 
-	where := r.buildPoolWhereFilter()
+	where := r.buildV2PoolWhereFilter()
 	variables := map[string]any{
 		"first":          r.cfg.First,
 		"skip":           r.cfg.Skip,
@@ -243,10 +257,50 @@ query Pools($first: Int!, $skip: Int!, $orderBy: Pool_orderBy!, $orderDirection:
 	return query, variables, nil
 }
 
-func (r *BalancerSubgraphRegistry) buildPoolWhereFilter() map[string]any {
+func (r *BalancerSubgraphRegistry) buildV3Query() (string, map[string]any, error) {
+	orderBy := normalizeBalancerV3OrderBy(r.cfg.OrderBy)
+	orderDirection := strings.ToLower(strings.TrimSpace(r.cfg.OrderDirection))
+	if _, ok := allowedOrderDirection[orderDirection]; !ok {
+		return "", nil, fmt.Errorf("unsupported balancer subgraph order_direction %q", orderDirection)
+	}
+
+	where := r.buildV3PoolWhereFilter()
+	variables := map[string]any{
+		"first":          r.cfg.First,
+		"skip":           r.cfg.Skip,
+		"orderBy":        orderBy,
+		"orderDirection": orderDirection,
+	}
+	if len(where) > 0 {
+		variables["where"] = where
+	}
+
+	query := `
+query Pools($first: Int!, $skip: Int!, $orderBy: Pool_orderBy!, $orderDirection: OrderDirection!, $where: Pool_filter) {
+  pools(
+    first: $first
+    skip: $skip
+    orderBy: $orderBy
+    orderDirection: $orderDirection
+    where: $where
+  ) {
+    id
+    address
+    factory {
+      type
+    }
+  }
+}`
+	return query, variables, nil
+}
+
+func (r *BalancerSubgraphRegistry) buildV2PoolWhereFilter() map[string]any {
 	where := make(map[string]any)
 	if r.cfg.MinTotalValueLockedUSD != "" {
 		where["totalLiquidity_gt"] = r.cfg.MinTotalValueLockedUSD
+	}
+	if r.cfg.MinVolume24hUSD != "" {
+		where["totalSwapVolume_gt"] = r.cfg.MinVolume24hUSD
 	}
 	poolTypes := make([]string, 0, len(r.cfg.ResolvedPoolTypes()))
 	for _, poolType := range r.cfg.ResolvedPoolTypes() {
@@ -262,20 +316,54 @@ func (r *BalancerSubgraphRegistry) buildPoolWhereFilter() map[string]any {
 	return where
 }
 
+func (r *BalancerSubgraphRegistry) buildV3PoolWhereFilter() map[string]any {
+	poolTypes := make([]string, 0, len(r.cfg.ResolvedPoolTypes()))
+	for _, poolType := range r.cfg.ResolvedPoolTypes() {
+		poolType = strings.TrimSpace(poolType)
+		if poolType == "" {
+			continue
+		}
+		poolTypes = append(poolTypes, poolType)
+	}
+	if len(poolTypes) == 0 {
+		return nil
+	}
+	return map[string]any{
+		"factory_": map[string]any{
+			"type_in": poolTypes,
+		},
+	}
+}
+
 func (r *BalancerSubgraphRegistry) poolEntryFromSubgraph(pool balancerSubgraphPool, index int) (balancerPoolEntry, error) {
 	if pool.ID == "" {
 		return balancerPoolEntry{}, fmt.Errorf("balancer subgraph pool[%d] missing id", index)
 	}
-	poolType, err := balancerPoolTypeFromSubgraph(pool.PoolType)
+	poolTypeValue := pool.PoolType
+	if pool.Factory != nil && pool.Factory.Type != "" {
+		poolTypeValue = pool.Factory.Type
+	}
+	poolType, err := balancerPoolTypeFromSubgraph(poolTypeValue)
 	if err != nil {
 		return balancerPoolEntry{}, fmt.Errorf("balancer subgraph pool[%d]: %w", index, err)
+	}
+	address := pool.Address
+	if address == "" {
+		address = pool.ID
+	}
+	vault := r.defaultVault
+	version := marketbalancer.VaultV2
+	if r.cfg.ResolvedSchema() == "v3" {
+		vault = r.defaultVaultV3
+		version = marketbalancer.VaultV3
 	}
 	return balancerPoolEntry{
 		id: marketbalancer.PoolID(common.HexToHash(pool.ID)),
 		spec: marketbalancer.PoolSpec{
-			Address: common.HexToAddress(pool.Address),
-			Vault:   r.defaultVault,
-			Type:    poolType,
+			Address:      common.HexToAddress(address),
+			Vault:        vault,
+			Type:         poolType,
+			VaultVersion: version,
 		},
 	}, nil
 }
@@ -292,6 +380,41 @@ func balancerPoolTypeFromSubgraph(value string) (marketbalancer.PoolType, error)
 	}
 }
 
+func normalizeBalancerOrderBy(orderBy, schema string) string {
+	if schema == "v3" {
+		return normalizeBalancerV3OrderBy(orderBy)
+	}
+	return normalizeBalancerV2OrderBy(orderBy)
+}
+
+func normalizeBalancerV2OrderBy(orderBy string) string {
+	switch strings.TrimSpace(orderBy) {
+	case "volume24h", "volumeUSD", "totalSwapVolume":
+		return "totalSwapVolume"
+	case "liquidity", "totalValueLockedUSD", "totalLiquidity":
+		return "totalLiquidity"
+	case "totalSwapFee", "feesUSD":
+		return "totalSwapFee"
+	case "swapCount", "txCount":
+		return "swapCount"
+	case "createTime":
+		return "createTime"
+	default:
+		return strings.TrimSpace(orderBy)
+	}
+}
+
+func normalizeBalancerV3OrderBy(orderBy string) string {
+	switch strings.TrimSpace(orderBy) {
+	case "", "volume24h", "volumeUSD", "totalSwapVolume", "liquidity", "totalValueLockedUSD", "totalLiquidity", "totalSwapFee", "feesUSD", "swapCount", "txCount", "createTime":
+		return "id"
+	case "id", "address":
+		return strings.TrimSpace(orderBy)
+	default:
+		return "id"
+	}
+}
+
 type balancerGraphQLResponse struct {
 	Data struct {
 		Pools []balancerSubgraphPool `json:"pools"`
@@ -303,4 +426,9 @@ type balancerSubgraphPool struct {
 	ID       string `json:"id"`
 	Address  string `json:"address"`
 	PoolType string `json:"poolType"`
+	Factory  *balancerSubgraphFactory `json:"factory"`
+}
+
+type balancerSubgraphFactory struct {
+	Type string `json:"type"`
 }

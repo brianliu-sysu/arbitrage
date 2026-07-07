@@ -10,6 +10,7 @@ import (
 
 	poolsapp "github.com/brianliu-sysu/uniswapv3/internal/application/pools"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	httpapi "github.com/brianliu-sysu/uniswapv3/internal/interfaces/http"
@@ -42,7 +43,7 @@ type poolsRegistry struct {
 func (r *poolsRegistry) List(context.Context) ([]common.Address, error) {
 	return append([]common.Address(nil), r.addresses...), nil
 }
-func (r *poolsRegistry) Add(context.Context, common.Address) error   { return nil }
+func (r *poolsRegistry) Add(context.Context, common.Address) error    { return nil }
 func (r *poolsRegistry) Remove(context.Context, common.Address) error { return nil }
 
 func TestPoolsHandlerList(t *testing.T) {
@@ -57,7 +58,9 @@ func TestPoolsHandlerList(t *testing.T) {
 		&poolsMemoryRepo{pool: pool},
 		nil,
 		nil,
+		nil,
 		&poolsRegistry{addresses: []common.Address{poolAddr}},
+		nil,
 		nil,
 		nil,
 		nil,
@@ -105,9 +108,9 @@ func TestPoolsHandlerDiagnosticsAll(t *testing.T) {
 	pool.Status = market.PoolStatusReady
 
 	chainSqrt, _ := new(big.Int).SetString("1182815765319608250048300092661", 10)
-	service := poolsapp.NewAppService(nil, nil, &diagHTTPV4PoolRepo{pool: pool}, nil, nil, &diagHTTPV4Registry{
+	service := poolsapp.NewAppService(nil, nil, &diagHTTPV4PoolRepo{pool: pool}, nil, nil, nil, &diagHTTPV4Registry{
 		poolIDs: []marketuniv4.PoolID{poolID},
-	}, nil, &poolsapp.ChainReaders{
+	}, nil, nil, &poolsapp.ChainReaders{
 		Head: diagHTTPHead{head: 200},
 		V4: diagHTTPV4Chain{
 			state: &poolsapp.BaseState{
@@ -139,6 +142,68 @@ func TestPoolsHandlerDiagnosticsAll(t *testing.T) {
 	}
 }
 
+func TestPoolsHandlerDiagnosticsBalancer(t *testing.T) {
+	poolID := marketbalancer.PoolID(common.HexToHash("0x1000000000000000000000000000000000000000000000000000000000000000"))
+	token0 := common.HexToAddress("0x0000000000000000000000000000000000000001")
+	token1 := common.HexToAddress("0x0000000000000000000000000000000000000002")
+	pool, err := marketbalancer.NewPool(
+		poolID,
+		common.HexToAddress("0x00000000000000000000000000000000000000aa"),
+		common.HexToAddress("0x00000000000000000000000000000000000000bb"),
+		marketbalancer.PoolTypeWeighted,
+		[]common.Address{token0, token1},
+	)
+	if err != nil {
+		t.Fatalf("new balancer pool: %v", err)
+	}
+	pool.Balances[token0] = big.NewInt(100)
+	pool.Balances[token1] = big.NewInt(200)
+	pool.Weights[token0] = big.NewInt(50)
+	pool.Weights[token1] = big.NewInt(50)
+	pool.SwapFeePercentage = big.NewInt(1)
+	pool.LastBlockNumber = 200
+	pool.Status = market.PoolStatusReady
+	spec := marketbalancer.PoolSpec{
+		Address:      pool.Address,
+		Vault:        pool.Vault,
+		Type:         pool.Type,
+		VaultVersion: marketbalancer.VaultV2,
+	}
+	service := poolsapp.NewAppService(nil, nil, nil, &diagHTTPBalancerPoolRepo{pool: pool}, nil, nil, nil, &diagHTTPBalancerRegistry{
+		poolID: poolID,
+		spec:   spec,
+	}, nil, &poolsapp.ChainReaders{
+		Head: diagHTTPHead{head: 200},
+		Balancer: diagHTTPBalancerChain{state: &marketbalancer.BootstrapData{
+			Spec:              spec,
+			Tokens:            []common.Address{token0, token1},
+			Balances:          map[common.Address]*big.Int{token0: big.NewInt(100), token1: big.NewInt(200)},
+			Weights:           map[common.Address]*big.Int{token0: big.NewInt(50), token1: big.NewInt(50)},
+			Amplification:     big.NewInt(0),
+			SwapFeePercentage: big.NewInt(1),
+			BlockNumber:       200,
+		}},
+	})
+
+	router := httpapi.NewRouter(httpapi.Handlers{
+		Pools: httpapi.NewPoolsHandler(service),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/pools/diagnostics?poolType=balancer&poolId="+poolID.String(), nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp poolsapp.DiagnosticsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.PoolType != poolsapp.PoolTypeBalancer || resp.BalancerDiff == nil || !resp.BalancerDiff.BalancesMatch {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+}
+
 type diagHTTPHead struct{ head uint64 }
 
 func (h diagHTTPHead) LatestBlockNumber(context.Context) (uint64, error) { return h.head, nil }
@@ -159,12 +224,14 @@ func (r *diagHTTPV4Registry) List(context.Context) ([]marketuniv4.PoolID, error)
 func (r *diagHTTPV4Registry) GetKey(context.Context, marketuniv4.PoolID) (marketuniv4.PoolKey, error) {
 	return marketuniv4.PoolKey{}, nil
 }
-func (r *diagHTTPV4Registry) Add(context.Context, marketuniv4.PoolID, marketuniv4.PoolKey) error { return nil }
-func (r *diagHTTPV4Registry) Remove(context.Context, marketuniv4.PoolID) error                  { return nil }
+func (r *diagHTTPV4Registry) Add(context.Context, marketuniv4.PoolID, marketuniv4.PoolKey) error {
+	return nil
+}
+func (r *diagHTTPV4Registry) Remove(context.Context, marketuniv4.PoolID) error { return nil }
 
 type diagHTTPV4PoolRepo struct{ pool *marketuniv4.Pool }
 
-func (r *diagHTTPV4PoolRepo) Save(context.Context, *marketuniv4.Pool) error { return nil }
+func (r *diagHTTPV4PoolRepo) Save(context.Context, *marketuniv4.Pool) error    { return nil }
 func (r *diagHTTPV4PoolRepo) Delete(context.Context, marketuniv4.PoolID) error { return nil }
 func (r *diagHTTPV4PoolRepo) AdvanceSyncProgress(context.Context, marketuniv4.PoolID, uint64) error {
 	return nil
@@ -177,4 +244,45 @@ func (r *diagHTTPV4PoolRepo) Get(context.Context, marketuniv4.PoolID) (*marketun
 		return nil, nil
 	}
 	return r.pool.Clone(), nil
+}
+
+type diagHTTPBalancerPoolRepo struct{ pool *marketbalancer.Pool }
+
+func (r *diagHTTPBalancerPoolRepo) Save(context.Context, *marketbalancer.Pool) error { return nil }
+func (r *diagHTTPBalancerPoolRepo) Delete(context.Context, marketbalancer.PoolID) error {
+	return nil
+}
+func (r *diagHTTPBalancerPoolRepo) AdvanceSyncProgress(context.Context, marketbalancer.PoolID, uint64) error {
+	return nil
+}
+func (r *diagHTTPBalancerPoolRepo) AdvanceSyncProgressMany(context.Context, []marketbalancer.PoolID, uint64) error {
+	return nil
+}
+func (r *diagHTTPBalancerPoolRepo) Get(context.Context, marketbalancer.PoolID) (*marketbalancer.Pool, error) {
+	if r.pool == nil {
+		return nil, nil
+	}
+	return r.pool.Clone(), nil
+}
+
+type diagHTTPBalancerRegistry struct {
+	poolID marketbalancer.PoolID
+	spec   marketbalancer.PoolSpec
+}
+
+func (r *diagHTTPBalancerRegistry) List(context.Context) ([]marketbalancer.PoolID, error) {
+	return []marketbalancer.PoolID{r.poolID}, nil
+}
+func (r *diagHTTPBalancerRegistry) GetSpec(context.Context, marketbalancer.PoolID) (marketbalancer.PoolSpec, error) {
+	return r.spec, nil
+}
+func (r *diagHTTPBalancerRegistry) Add(context.Context, marketbalancer.PoolID, marketbalancer.PoolSpec) error {
+	return nil
+}
+func (r *diagHTTPBalancerRegistry) Remove(context.Context, marketbalancer.PoolID) error { return nil }
+
+type diagHTTPBalancerChain struct{ state *marketbalancer.BootstrapData }
+
+func (r diagHTTPBalancerChain) ReadBalancerState(context.Context, marketbalancer.PoolID, marketbalancer.PoolSpec, uint64) (*marketbalancer.BootstrapData, error) {
+	return r.state, nil
 }

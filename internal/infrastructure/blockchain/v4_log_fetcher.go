@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math/big"
 
-	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ4"
+	domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -20,7 +20,7 @@ func NewV4LogFetcher(client *EthClient, poolManager common.Address) *V4LogFetche
 	return &V4LogFetcher{client: client, poolManager: poolManager}
 }
 
-func (f *V4LogFetcher) FetchLogs(ctx context.Context, filter syncv4.LogFilter) ([]syncv4.RawLog, error) {
+func (f *V4LogFetcher) FetchLogs(ctx context.Context, filter domainchain.V4LogFilter) ([]domainchain.RawLog, error) {
 	if filter.ToBlock < filter.FromBlock {
 		return nil, fmt.Errorf("invalid block range: from %d to %d", filter.FromBlock, filter.ToBlock)
 	}

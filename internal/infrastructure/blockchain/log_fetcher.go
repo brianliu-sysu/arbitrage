@@ -5,8 +5,7 @@ import (
 	"fmt"
 	"math/big"
 
-	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
-	clv3sync "github.com/brianliu-sysu/uniswapv3/internal/application/sync/clv3"
+	domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -26,7 +25,7 @@ func NewPancakeLogFetcher(client *EthClient) *LogFetcher {
 	return &LogFetcher{client: client, topics: PancakePoolLogTopics()}
 }
 
-func (f *LogFetcher) FetchLogs(ctx context.Context, filter clv3sync.LogFilter) ([]syncapp.RawLog, error) {
+func (f *LogFetcher) FetchLogs(ctx context.Context, filter domainchain.CLV3LogFilter) ([]domainchain.RawLog, error) {
 	if filter.ToBlock < filter.FromBlock {
 		return nil, fmt.Errorf("invalid block range: from %d to %d", filter.FromBlock, filter.ToBlock)
 	}
@@ -48,10 +47,10 @@ func (f *LogFetcher) FetchLogs(ctx context.Context, filter clv3sync.LogFilter) (
 	return rawLogsFromEth(logs), nil
 }
 
-func rawLogsFromEth(logs []types.Log) []syncapp.RawLog {
-	rawLogs := make([]syncapp.RawLog, 0, len(logs))
+func rawLogsFromEth(logs []types.Log) []domainchain.RawLog {
+	rawLogs := make([]domainchain.RawLog, 0, len(logs))
 	for _, log := range logs {
-		rawLogs = append(rawLogs, syncapp.RawLog{
+		rawLogs = append(rawLogs, domainchain.RawLog{
 			Address:     log.Address,
 			Topics:      log.Topics,
 			Data:        log.Data,

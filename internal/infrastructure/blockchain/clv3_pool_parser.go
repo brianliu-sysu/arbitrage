@@ -5,7 +5,7 @@ import (
 	"math/big"
 	"strings"
 
-	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
+	domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
@@ -28,7 +28,7 @@ func newCLV3PoolParser(abiJSON string, swapTopic common.Hash) (*CLV3PoolParser, 
 	}, nil
 }
 
-func (p *CLV3PoolParser) ParsePoolEvents(logs []syncapp.RawLog) ([]marketv3.PoolEvent, error) {
+func (p *CLV3PoolParser) ParsePoolEvents(logs []domainchain.RawLog) ([]marketv3.PoolEvent, error) {
 	events := make([]marketv3.PoolEvent, 0, len(logs))
 	for _, log := range logs {
 		if len(log.Topics) == 0 {
@@ -45,7 +45,7 @@ func (p *CLV3PoolParser) ParsePoolEvents(logs []syncapp.RawLog) ([]marketv3.Pool
 	return events, nil
 }
 
-func (p *CLV3PoolParser) parseLog(log syncapp.RawLog) (*marketv3.PoolEvent, error) {
+func (p *CLV3PoolParser) parseLog(log domainchain.RawLog) (*marketv3.PoolEvent, error) {
 	meta := marketv3.EventMeta{
 		PoolAddress: log.Address,
 		BlockNumber: log.BlockNumber,
@@ -67,7 +67,7 @@ func (p *CLV3PoolParser) parseLog(log syncapp.RawLog) (*marketv3.PoolEvent, erro
 	}
 }
 
-func (p *CLV3PoolParser) parseInitialize(meta marketv3.EventMeta, log syncapp.RawLog) (*marketv3.PoolEvent, error) {
+func (p *CLV3PoolParser) parseInitialize(meta marketv3.EventMeta, log domainchain.RawLog) (*marketv3.PoolEvent, error) {
 	values, err := p.poolABI.Unpack("Initialize", log.Data)
 	if err != nil {
 		return nil, err
@@ -84,7 +84,7 @@ func (p *CLV3PoolParser) parseInitialize(meta marketv3.EventMeta, log syncapp.Ra
 	return &event, nil
 }
 
-func (p *CLV3PoolParser) parseSwap(meta marketv3.EventMeta, log syncapp.RawLog) (*marketv3.PoolEvent, error) {
+func (p *CLV3PoolParser) parseSwap(meta marketv3.EventMeta, log domainchain.RawLog) (*marketv3.PoolEvent, error) {
 	if len(log.Topics) < 3 {
 		return nil, fmt.Errorf("swap event missing indexed topics")
 	}
@@ -113,7 +113,7 @@ func (p *CLV3PoolParser) parseSwap(meta marketv3.EventMeta, log syncapp.RawLog) 
 	return &event, nil
 }
 
-func (p *CLV3PoolParser) parseMint(meta marketv3.EventMeta, log syncapp.RawLog) (*marketv3.PoolEvent, error) {
+func (p *CLV3PoolParser) parseMint(meta marketv3.EventMeta, log domainchain.RawLog) (*marketv3.PoolEvent, error) {
 	if len(log.Topics) < 4 {
 		return nil, fmt.Errorf("mint event missing indexed topics")
 	}
@@ -155,7 +155,7 @@ func (p *CLV3PoolParser) parseMint(meta marketv3.EventMeta, log syncapp.RawLog) 
 	return &event, nil
 }
 
-func (p *CLV3PoolParser) parseBurn(meta marketv3.EventMeta, log syncapp.RawLog) (*marketv3.PoolEvent, error) {
+func (p *CLV3PoolParser) parseBurn(meta marketv3.EventMeta, log domainchain.RawLog) (*marketv3.PoolEvent, error) {
 	if len(log.Topics) < 4 {
 		return nil, fmt.Errorf("burn event missing indexed topics")
 	}

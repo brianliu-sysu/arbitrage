@@ -7,27 +7,34 @@ import (
 	"sort"
 
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/asset"
+	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
 
 // DiagnosticsRequest selects a tracked pool to inspect.
 type DiagnosticsRequest struct {
-	PoolType    string
-	PoolAddress common.Address
-	PoolID      marketuniv4.PoolID
+	PoolType       string
+	PoolAddress    common.Address
+	PoolID         marketuniv4.PoolID
+	BalancerPoolID marketbalancer.PoolID
 }
 
 // StateSnapshot summarizes pool base state for diagnostics.
 type StateSnapshot struct {
-	BlockNumber     uint64    `json:"blockNumber,omitempty"`
-	LastBlockNumber uint64    `json:"lastBlockNumber,omitempty"`
-	BlockLag        uint64    `json:"blockLag,omitempty"`
-	Status          string    `json:"status,omitempty"`
-	SqrtPriceX96    string    `json:"sqrtPriceX96,omitempty"`
-	Tick            int32     `json:"tick,omitempty"`
-	Liquidity       string    `json:"liquidity,omitempty"`
-	Price           PriceInfo `json:"price,omitempty"`
+	BlockNumber       uint64            `json:"blockNumber,omitempty"`
+	LastBlockNumber   uint64            `json:"lastBlockNumber,omitempty"`
+	BlockLag          uint64            `json:"blockLag,omitempty"`
+	Status            string            `json:"status,omitempty"`
+	SqrtPriceX96      string            `json:"sqrtPriceX96,omitempty"`
+	Tick              int32             `json:"tick,omitempty"`
+	Liquidity         string            `json:"liquidity,omitempty"`
+	Price             PriceInfo         `json:"price,omitempty"`
+	Tokens            []TokenInfo       `json:"tokens,omitempty"`
+	Balances          map[string]string `json:"balances,omitempty"`
+	Weights           map[string]string `json:"weights,omitempty"`
+	Amplification     string            `json:"amplification,omitempty"`
+	SwapFeePercentage string            `json:"swapFeePercentage,omitempty"`
 }
 
 // StateDiff compares local and chain snapshots.
@@ -37,18 +44,30 @@ type StateDiff struct {
 	LiquidityMatch    bool `json:"liquidityMatch"`
 }
 
+// BalancerStateDiff compares Balancer pool state fields.
+type BalancerStateDiff struct {
+	TokensMatch            bool `json:"tokensMatch"`
+	BalancesMatch          bool `json:"balancesMatch"`
+	WeightsMatch           bool `json:"weightsMatch"`
+	AmplificationMatch     bool `json:"amplificationMatch"`
+	SwapFeePercentageMatch bool `json:"swapFeePercentageMatch"`
+}
+
 // DiagnosticsResponse compares synced pool state against on-chain data.
 type DiagnosticsResponse struct {
-	PoolType    string        `json:"poolType"`
-	PoolAddress string        `json:"poolAddress,omitempty"`
-	PoolID      string        `json:"poolId,omitempty"`
-	Token0      TokenInfo     `json:"token0"`
-	Token1      TokenInfo     `json:"token1"`
-	Fee         uint32        `json:"fee"`
-	ChainHead   uint64        `json:"chainHeadBlock"`
-	Local       StateSnapshot `json:"local"`
-	Chain       StateSnapshot `json:"chain"`
-	Diff        StateDiff     `json:"diff"`
+	PoolType     string             `json:"poolType"`
+	PoolAddress  string             `json:"poolAddress,omitempty"`
+	PoolID       string             `json:"poolId,omitempty"`
+	BalancerType string             `json:"balancerType,omitempty"`
+	Token0       TokenInfo          `json:"token0"`
+	Token1       TokenInfo          `json:"token1"`
+	Tokens       []TokenInfo        `json:"tokens,omitempty"`
+	Fee          uint32             `json:"fee"`
+	ChainHead    uint64             `json:"chainHeadBlock"`
+	Local        StateSnapshot      `json:"local"`
+	Chain        StateSnapshot      `json:"chain"`
+	Diff         StateDiff          `json:"diff"`
+	BalancerDiff *BalancerStateDiff `json:"balancerDiff,omitempty"`
 }
 
 // DiagnosticsListResponse lists pools whose local state does not match chain state.
@@ -79,6 +98,8 @@ func (s *AppService) Diagnostics(ctx context.Context, req DiagnosticsRequest) (*
 		return s.diagnosticsCLV3(ctx, PoolTypeUniv3, "univ3", req.PoolAddress, head, univ3CLV3Pools(s), s.chain.V3)
 	case PoolTypePancakeV3:
 		return s.diagnosticsCLV3(ctx, PoolTypePancakeV3, "pancakev3", req.PoolAddress, head, pancakeCLV3Pools(s), s.chain.Pancake)
+	case PoolTypeBalancer:
+		return s.diagnosticsBalancer(ctx, req.BalancerPoolID, head)
 	default:
 		return nil, fmt.Errorf("unsupported poolType %q", req.PoolType)
 	}
@@ -106,6 +127,9 @@ func (s *AppService) DiagnosticsAll(ctx context.Context) (*DiagnosticsListRespon
 		return nil, err
 	}
 	if err := s.appendMismatchingV4(ctx, head, &items); err != nil {
+		return nil, err
+	}
+	if err := s.appendMismatchingBalancer(ctx, head, &items); err != nil {
 		return nil, err
 	}
 
@@ -191,11 +215,22 @@ func isMismatchingAtHead(resp *DiagnosticsResponse) bool {
 	if resp == nil || resp.Local.BlockLag > 0 {
 		return false
 	}
+	if resp.PoolType == PoolTypeBalancer && resp.BalancerDiff != nil {
+		return !balancerStateConsistent(*resp.BalancerDiff)
+	}
 	return !stateConsistent(resp.Diff)
 }
 
 func stateConsistent(diff StateDiff) bool {
 	return diff.SqrtPriceX96Match && diff.TickMatch && diff.LiquidityMatch
+}
+
+func balancerStateConsistent(diff BalancerStateDiff) bool {
+	return diff.TokensMatch &&
+		diff.BalancesMatch &&
+		diff.WeightsMatch &&
+		diff.AmplificationMatch &&
+		diff.SwapFeePercentageMatch
 }
 
 func sortDiagnostics(items []DiagnosticsResponse) {

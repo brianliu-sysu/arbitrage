@@ -44,16 +44,11 @@ func NewReorgRecoveryService(
 				if fetcher == nil {
 					return nil, fmt.Errorf("log fetcher is not configured")
 				}
-				poolAddresses, err := bindBalancerPoolAddresses(ctx, registry, parser, []marketbalancer.PoolID{poolID})
+				binding, err := bindBalancerPools(ctx, registry, parser, []marketbalancer.PoolID{poolID})
 				if err != nil {
 					return nil, err
 				}
-				return fetcher.FetchLogs(ctx, LogFilter{
-					PoolIDs:       []marketbalancer.PoolID{poolID},
-					PoolAddresses: poolAddresses,
-					FromBlock:     fromBlock,
-					ToBlock:       toBlock,
-				})
+				return fetcher.FetchLogs(ctx, logFilterFromBinding(binding, fromBlock, toBlock))
 			},
 			ParseEvents: func(logs []syncapp.RawLog) ([]marketbalancer.PoolEvent, error) {
 				if parser == nil {

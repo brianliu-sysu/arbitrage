@@ -14,8 +14,10 @@ import (
 
 // BootstrapService cold-starts a Balancer pool from chain state or snapshot.
 type BootstrapService struct {
-	inner  *syncapp.BootstrapService[marketbalancer.PoolID, *marketbalancer.Pool, *BootstrapData]
-	logger *zap.Logger
+	inner    *syncapp.BootstrapService[marketbalancer.PoolID, *marketbalancer.Pool, *BootstrapData]
+	logger   *zap.Logger
+	registry marketbalancer.PoolRegistry
+	reader   PoolBootstrapReader
 }
 
 func NewBootstrapService(
@@ -25,7 +27,11 @@ func NewBootstrapService(
 	snapshot *SnapshotService,
 	staleBlockThreshold uint64,
 ) *BootstrapService {
-	svc := &BootstrapService{logger: zap.NewNop()}
+	svc := &BootstrapService{
+		logger:   zap.NewNop(),
+		registry: registry,
+		reader:   reader,
+	}
 	svc.inner = syncapp.NewBootstrapService(staleBlockThreshold, syncapp.BootstrapHooks[marketbalancer.PoolID, *marketbalancer.Pool, *BootstrapData]{
 		IsNilPool: func(pool *marketbalancer.Pool) bool { return pool == nil },
 		IsNilData: func(data *BootstrapData) bool { return data == nil },
@@ -48,6 +54,24 @@ func NewBootstrapService(
 				return nil, fmt.Errorf("read bootstrap data: %w", err)
 			}
 			return data, nil
+		},
+		ReadChainDataForMany: func(ctx context.Context, poolIDs []marketbalancer.PoolID, blockNumber uint64) (map[marketbalancer.PoolID]*BootstrapData, error) {
+			if reader == nil {
+				return nil, fmt.Errorf("balancer bootstrap reader is not configured")
+			}
+			inputs := make([]BootstrapInput, 0, len(poolIDs))
+			for _, poolID := range poolIDs {
+				spec, err := registry.GetSpec(ctx, poolID)
+				if err != nil {
+					return nil, fmt.Errorf("resolve pool spec for %s: %w", poolID, err)
+				}
+				inputs = append(inputs, BootstrapInput{PoolID: poolID, Spec: spec})
+			}
+			results, err := reader.ReadManyBootstrapData(ctx, inputs, blockNumber)
+			if err != nil {
+				return nil, fmt.Errorf("read bootstrap data: %w", err)
+			}
+			return results, nil
 		},
 		NewPoolFromChain: func(poolID marketbalancer.PoolID, data *BootstrapData) (*marketbalancer.Pool, error) {
 			return marketbalancer.NewPool(poolID, data.Spec.Address, data.Spec.Vault, data.Spec.Type, data.Tokens)
@@ -76,6 +100,11 @@ func (s *BootstrapService) SetLogger(logger *zap.Logger) {
 
 func (s *BootstrapService) Bootstrap(ctx context.Context, poolID marketbalancer.PoolID, blockNumber uint64) (*marketbalancer.Pool, error) {
 	return s.inner.Bootstrap(ctx, poolID, blockNumber)
+}
+
+// BootstrapAll cold-starts every tracked pool using batched chain reads.
+func (s *BootstrapService) BootstrapAll(ctx context.Context, poolIDs []marketbalancer.PoolID, blockNumber uint64) error {
+	return s.inner.BootstrapAll(ctx, poolIDs, blockNumber)
 }
 
 func (s *BootstrapService) logChainBootstrap(poolID marketbalancer.PoolID, data *BootstrapData) {

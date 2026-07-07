@@ -5,8 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
-	syncbalancer "github.com/brianliu-sysu/uniswapv3/internal/application/sync/balancer"
+	domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
@@ -25,7 +24,7 @@ func TestABIParserInitializeEvent(t *testing.T) {
 	}
 
 	poolAddress := common.HexToAddress("0x0000000000000000000000000000000000000001")
-	events, err := parser.ParsePoolEvents([]syncapp.RawLog{{
+	events, err := parser.ParsePoolEvents([]domainchain.RawLog{{
 		Address:     poolAddress,
 		Topics:      []common.Hash{topicInitialize},
 		Data:        data,
@@ -64,7 +63,7 @@ func TestABIParserSwapEvent(t *testing.T) {
 	recipient := common.HexToAddress("0x0000000000000000000000000000000000000003")
 	poolAddress := common.HexToAddress("0x0000000000000000000000000000000000000001")
 
-	events, err := parser.ParsePoolEvents([]syncapp.RawLog{{
+	events, err := parser.ParsePoolEvents([]domainchain.RawLog{{
 		Address: poolAddress,
 		Topics: []common.Hash{
 			topicSwap,
@@ -97,7 +96,7 @@ func TestABIParserBurnEvent(t *testing.T) {
 
 	owner := common.HexToAddress("0x0000000000000000000000000000000000000002")
 	poolAddress := common.HexToAddress("0x0000000000000000000000000000000000000001")
-	events, err := parser.ParsePoolEvents([]syncapp.RawLog{{
+	events, err := parser.ParsePoolEvents([]domainchain.RawLog{{
 		Address: poolAddress,
 		Topics: []common.Hash{
 			topicBurn,
@@ -128,7 +127,7 @@ func TestABIParserSkipsZeroBurn(t *testing.T) {
 		t.Fatalf("pack burn: %v", err)
 	}
 
-	events, err := parser.ParsePoolEvents([]syncapp.RawLog{{
+	events, err := parser.ParsePoolEvents([]domainchain.RawLog{{
 		Address: common.HexToAddress("0x0000000000000000000000000000000000000001"),
 		Topics: []common.Hash{
 			topicBurn,
@@ -166,7 +165,7 @@ func TestV4ABIParserInitializeEvent(t *testing.T) {
 		t.Fatalf("pack v4 initialize: %v", err)
 	}
 
-	events, err := parser.ParsePoolEvents([]syncapp.RawLog{{
+	events, err := parser.ParsePoolEvents([]domainchain.RawLog{{
 		Topics: []common.Hash{
 			topicV4Initialize,
 			poolID.Hash(),
@@ -210,7 +209,7 @@ func TestV4ABIParserSwapEvent(t *testing.T) {
 		t.Fatalf("pack v4 swap: %v", err)
 	}
 
-	events, err := parser.ParsePoolEvents([]syncapp.RawLog{{
+	events, err := parser.ParsePoolEvents([]domainchain.RawLog{{
 		Topics: []common.Hash{
 			topicV4Swap,
 			poolID.Hash(),
@@ -252,7 +251,7 @@ func TestV4ABIParserModifyLiquidityEvent(t *testing.T) {
 		t.Fatalf("pack v4 modify liquidity: %v", err)
 	}
 
-	events, err := parser.ParsePoolEvents([]syncapp.RawLog{{
+	events, err := parser.ParsePoolEvents([]domainchain.RawLog{{
 		Topics: []common.Hash{
 			topicV4ModifyLiquidity,
 			poolID.Hash(),
@@ -288,7 +287,7 @@ func TestBalancerABIParserSwapEvent(t *testing.T) {
 		t.Fatalf("pack balancer swap: %v", err)
 	}
 
-	events, err := parser.ParsePoolEvents([]syncbalancer.RawLog{{
+	events, err := parser.ParsePoolEvents([]domainchain.RawLog{{
 		Topics: []common.Hash{
 			topicBalancerSwap,
 			poolID.Hash(),
@@ -328,7 +327,7 @@ func TestBalancerABIParserPoolBalanceChangedEvent(t *testing.T) {
 		t.Fatalf("pack balancer balance changed: %v", err)
 	}
 
-	events, err := parser.ParsePoolEvents([]syncbalancer.RawLog{{
+	events, err := parser.ParsePoolEvents([]domainchain.RawLog{{
 		Topics: []common.Hash{
 			topicBalancerPoolBalanceChanged,
 			poolID.Hash(),
@@ -369,7 +368,7 @@ func TestBalancerABIParserPoolContractEvents(t *testing.T) {
 		t.Fatalf("pack amp update stopped: %v", err)
 	}
 
-	events, err := parser.ParsePoolEvents([]syncbalancer.RawLog{
+	events, err := parser.ParsePoolEvents([]domainchain.RawLog{
 		{
 			Address:     poolAddress,
 			Topics:      []common.Hash{topicBalancerSwapFeeChanged},
@@ -396,6 +395,36 @@ func TestBalancerABIParserPoolContractEvents(t *testing.T) {
 	if events[1].Meta.PoolID != poolID || events[1].AmplificationUpdated == nil ||
 		events[1].AmplificationUpdated.Amplification.Cmp(big.NewInt(1500)) != 0 {
 		t.Fatalf("unexpected amplification event: %#v", events[1])
+	}
+}
+
+func TestBalancerABIParserAmpUpdateStarted(t *testing.T) {
+	parser, _, poolABI := mustBalancerParserAndABIs(t)
+
+	poolID := marketbalancer.PoolID(common.HexToHash("0x3000000000000000000000000000000000000000000000000000000000000000"))
+	poolAddress := common.HexToAddress("0x00000000000000000000000000000000000000aa")
+	parser.SetPoolAddressMap(map[common.Address]marketbalancer.PoolID{poolAddress: poolID})
+
+	ampData, err := poolABI.Events["AmpUpdateStarted"].Inputs.NonIndexed().Pack(
+		big.NewInt(1000), big.NewInt(2000), big.NewInt(1), big.NewInt(2),
+	)
+	if err != nil {
+		t.Fatalf("pack amp update started: %v", err)
+	}
+	events, err := parser.ParsePoolEvents([]domainchain.RawLog{{
+		Address:     poolAddress,
+		Topics:      []common.Hash{topicBalancerV2AmpUpdateStarted},
+		Data:        ampData,
+		BlockNumber: 304,
+	}})
+	if err != nil {
+		t.Fatalf("parse amp update started: %v", err)
+	}
+	if len(events) != 1 || events[0].Kind != marketbalancer.EventKindAmplificationUpdated {
+		t.Fatalf("unexpected events: %#v", events)
+	}
+	if events[0].AmplificationUpdated.Amplification.Cmp(big.NewInt(2000)) != 0 {
+		t.Fatalf("expected end amplification 2000, got %s", events[0].AmplificationUpdated.Amplification)
 	}
 }
 
@@ -464,13 +493,110 @@ func mustBalancerParserAndABIs(t *testing.T) (*BalancerABIParser, abi.ABI, abi.A
 	if err != nil {
 		t.Fatalf("new balancer parser: %v", err)
 	}
-	vaultABI, err := abi.JSON(strings.NewReader(balancerVaultEventsABI))
+	vaultABI, err := abi.JSON(strings.NewReader(balancerVaultV2EventsABI))
 	if err != nil {
-		t.Fatalf("parse balancer abi: %v", err)
+		t.Fatalf("parse balancer v2 vault abi: %v", err)
 	}
-	poolABI, err := abi.JSON(strings.NewReader(balancerPoolEventsABI))
+	poolABI, err := abi.JSON(strings.NewReader(balancerPoolV2EventsABI))
 	if err != nil {
-		t.Fatalf("parse balancer pool abi: %v", err)
+		t.Fatalf("parse balancer pool v2 abi: %v", err)
 	}
 	return parser, vaultABI, poolABI
+}
+
+func TestBalancerABIParserV3Events(t *testing.T) {
+	parser, err := NewBalancerABIParser()
+	if err != nil {
+		t.Fatalf("new balancer parser: %v", err)
+	}
+	vaultV3ABI, err := abi.JSON(strings.NewReader(balancerVaultV3EventsABI))
+	if err != nil {
+		t.Fatalf("parse balancer v3 vault abi: %v", err)
+	}
+
+	poolAddress := common.HexToAddress("0x00000000000000000000000000000000000000bb")
+	poolID := marketbalancer.PoolID(common.HexToHash(poolAddress.Hex()))
+	parser.SetPoolAddressMap(map[common.Address]marketbalancer.PoolID{poolAddress: poolID})
+
+	tokenIn := common.HexToAddress("0x0000000000000000000000000000000000000001")
+	tokenOut := common.HexToAddress("0x0000000000000000000000000000000000000002")
+	swapData, err := vaultV3ABI.Events["Swap"].Inputs.NonIndexed().Pack(
+		big.NewInt(100), big.NewInt(90), big.NewInt(1000000), big.NewInt(1),
+	)
+	if err != nil {
+		t.Fatalf("pack v3 swap: %v", err)
+	}
+	liquidityData, err := vaultV3ABI.Events["LiquidityAdded"].Inputs.NonIndexed().Pack(
+		big.NewInt(1000),
+		[]*big.Int{big.NewInt(50), big.NewInt(60)},
+		[]*big.Int{big.NewInt(0), big.NewInt(0)},
+	)
+	if err != nil {
+		t.Fatalf("pack v3 liquidity added: %v", err)
+	}
+	feeData, err := vaultV3ABI.Events["SwapFeePercentageChanged"].Inputs.NonIndexed().Pack(big.NewInt(2000000))
+	if err != nil {
+		t.Fatalf("pack v3 swap fee changed: %v", err)
+	}
+	pausedData, err := vaultV3ABI.Events["PoolPausedStateChanged"].Inputs.NonIndexed().Pack(true)
+	if err != nil {
+		t.Fatalf("pack v3 pool paused: %v", err)
+	}
+
+	events, err := parser.ParsePoolEvents([]domainchain.RawLog{
+		{
+			Topics: []common.Hash{
+				topicBalancerV3Swap,
+				common.BytesToHash(common.LeftPadBytes(poolAddress.Bytes(), 32)),
+				common.BytesToHash(common.LeftPadBytes(tokenIn.Bytes(), 32)),
+				common.BytesToHash(common.LeftPadBytes(tokenOut.Bytes(), 32)),
+			},
+			Data:        swapData,
+			BlockNumber: 400,
+		},
+		{
+			Topics: []common.Hash{
+				topicBalancerV3LiquidityAdded,
+				common.BytesToHash(common.LeftPadBytes(poolAddress.Bytes(), 32)),
+				common.Hash{},
+				common.Hash{31: 1},
+			},
+			Data:        liquidityData,
+			BlockNumber: 401,
+		},
+		{
+			Topics: []common.Hash{
+				topicBalancerV3SwapFeeChanged,
+				common.BytesToHash(common.LeftPadBytes(poolAddress.Bytes(), 32)),
+			},
+			Data:        feeData,
+			BlockNumber: 402,
+		},
+		{
+			Topics: []common.Hash{
+				topicBalancerV3PoolPaused,
+				common.BytesToHash(common.LeftPadBytes(poolAddress.Bytes(), 32)),
+			},
+			Data:        pausedData,
+			BlockNumber: 403,
+		},
+	})
+	if err != nil {
+		t.Fatalf("parse v3 events: %v", err)
+	}
+	if len(events) != 4 {
+		t.Fatalf("expected 4 events, got %#v", events)
+	}
+	if events[0].Kind != marketbalancer.EventKindSwap {
+		t.Fatalf("expected swap, got %s", events[0].Kind)
+	}
+	if events[1].Kind != marketbalancer.EventKindLiquidityAdded || len(events[1].LiquidityAdded.Amounts) != 2 {
+		t.Fatalf("unexpected liquidity added: %#v", events[1])
+	}
+	if events[2].Kind != marketbalancer.EventKindSwapFeePercentageChanged {
+		t.Fatalf("unexpected fee event: %#v", events[2])
+	}
+	if events[3].Kind != marketbalancer.EventKindPoolPausedStateChanged || !events[3].PoolPausedStateChanged.Paused {
+		t.Fatalf("unexpected paused event: %#v", events[3])
+	}
 }

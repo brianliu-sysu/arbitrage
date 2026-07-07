@@ -41,16 +41,17 @@ type BlockApplyHooks[PoolID comparable, Event any, Pool any, Checkpoint any] str
 	SavePool         func(context.Context, Pool) error
 	AdvanceIdlePools func(context.Context, []PoolID, uint64) error
 
-	EventPoolID       func(Event) PoolID
-	EventTxIndex      func(Event) uint
-	EventLogIndex     func(Event) uint
-	EventBlockNumber  func(Event) uint64
-	EventKind         func(Event) string
-	ProtocolLabel     string
-	ExtraEventLogFields func(Event) []zap.Field
+	EventPoolID                  func(Event) PoolID
+	EventTxIndex                 func(Event) uint
+	EventLogIndex                func(Event) uint
+	EventBlockNumber             func(Event) uint64
+	EventKind                    func(Event) string
+	ProtocolLabel                string
+	ExtraEventLogFields          func(Event) []zap.Field
 	PoolStateAfterApplyLogFields func(Pool, Event, bool) []zap.Field
 
 	ApplyEvent            func(Pool, Event) error
+	AfterApplyPool        func(context.Context, PoolID, Pool, uint64) error
 	PoolLastBlock         func(Pool) uint64
 	SetPoolStatus         func(Pool, market.PoolStatus)
 	IsPoolAlreadyAtBlock  func(Pool, uint64) bool
@@ -202,6 +203,15 @@ func (s *BlockApplyService[PoolID, Event, Pool, Checkpoint]) ApplyBlock(
 				}
 			}
 			poolLastBlock = s.hooks.PoolLastBlock(pool)
+		}
+
+		if s.hooks.AfterApplyPool != nil {
+			if err := s.hooks.AfterApplyPool(ctx, poolID, pool, req.BlockNumber); err != nil {
+				s.hooks.SetPoolStatus(pool, market.PoolStatusError)
+				_ = s.hooks.SavePool(ctx, pool)
+				s.hooks.SetPoolReady(poolID, false)
+				return zero, fmt.Errorf("after apply pool %s: %w", s.hooks.FormatPoolID(poolID), err)
+			}
 		}
 
 		if err := s.hooks.SavePool(ctx, pool); err != nil {

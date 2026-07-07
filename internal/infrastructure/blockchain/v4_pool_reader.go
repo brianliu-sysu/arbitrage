@@ -6,7 +6,6 @@ import (
 	"math/big"
 	"strings"
 
-	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ4"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -39,7 +38,7 @@ func (r *V4PoolReader) ReadBootstrapData(
 	poolID marketv4.PoolID,
 	key marketv4.PoolKey,
 	blockNumber uint64,
-) (*syncv4.BootstrapData, error) {
+) (*marketv4.BootstrapData, error) {
 	blockNumber, err := r.client.ResolveBlockNumber(ctx, blockNumber)
 	if err != nil {
 		return nil, err
@@ -55,7 +54,7 @@ func (r *V4PoolReader) ReadBootstrapData(
 		return nil, err
 	}
 
-	return &syncv4.BootstrapData{
+	return &marketv4.BootstrapData{
 		Key: key,
 		State: market.PoolState{
 			SqrtPriceX96:         baseResults.sqrtPriceX96,

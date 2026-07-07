@@ -8,10 +8,11 @@ import (
 
 // LifecycleHooks configures protocol-specific pool lifecycle behavior.
 type LifecycleHooks[PoolID comparable] struct {
-	Bootstrap   func(context.Context, PoolID, uint64) error
-	ListTracked func(context.Context) ([]PoolID, error)
-	Register    func(context.Context, PoolID) error
-	Unregister  func(context.Context, PoolID) error
+	Bootstrap    func(context.Context, PoolID, uint64) error
+	BootstrapAll func(context.Context, []PoolID, uint64) error
+	ListTracked  func(context.Context) ([]PoolID, error)
+	Register     func(context.Context, PoolID) error
+	Unregister   func(context.Context, PoolID) error
 }
 
 // PoolLifecycleService manages tracked pools at runtime.
@@ -49,6 +50,20 @@ func (s *PoolLifecycleService[PoolID]) StartAll(ctx context.Context, blockNumber
 	ids, err := s.hooks.ListTracked(ctx)
 	if err != nil {
 		return fmt.Errorf("list registry pools: %w", err)
+	}
+	if s.hooks.BootstrapAll != nil {
+		if err := s.hooks.BootstrapAll(ctx, ids, blockNumber); err != nil {
+			return err
+		}
+		s.mu.Lock()
+		for _, id := range ids {
+			s.active[id] = struct{}{}
+		}
+		s.mu.Unlock()
+		for _, id := range ids {
+			s.readiness.SetPoolReady(id, false)
+		}
+		return nil
 	}
 	for _, id := range ids {
 		if err := s.Start(ctx, id, blockNumber); err != nil {

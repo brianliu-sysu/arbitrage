@@ -6,7 +6,6 @@ import (
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
-	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -21,23 +20,8 @@ type BlockReader = syncapp.BlockReader
 type HeadSubscriber = syncapp.HeadSubscriber
 type HealthProbe = syncapp.HealthProbe
 
-// LogFilter selects logs for tracked CLMM V3 pools within a block range.
-type LogFilter struct {
-	PoolAddresses []common.Address
-	FromBlock     uint64
-	ToBlock       uint64
-}
-
-// BootstrapData is on-chain V3 pool state read during cold bootstrap.
-type BootstrapData struct {
-	Token0      common.Address
-	Token1      common.Address
-	Fee         uint32
-	TickSpacing int32
-	State       market.PoolState
-	Ticks       market.TickTable
-	Bitmap      market.TickBitmap
-}
+type LogFilter = blockchain.CLV3LogFilter
+type BootstrapData = marketclv3.BootstrapData
 
 // LogFetcher fetches raw logs from the chain.
 type LogFetcher interface {

@@ -5,10 +5,6 @@ import (
 	"fmt"
 	"os"
 
-	syncbalancer "github.com/brianliu-sysu/uniswapv3/internal/application/sync/balancer"
-	syncpancakev3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/pancakev3"
-	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ3"
-	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ4"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/asset"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
@@ -129,58 +125,6 @@ func NewServices(ctx context.Context, cfg Config) (*Services, error) {
 		Tokens:              postgres.NewTokenRepository(db),
 		Postgres:            db,
 	}, nil
-}
-
-// SyncDeps returns repositories for sync application wiring.
-func (s *Services) SyncDeps() syncv3.ServiceDeps {
-	deps := syncv3.ServiceDeps{
-		Pools:       s.Pools,
-		Snapshots:   s.Snapshots,
-		Checkpoints: s.Checkpoints,
-	}
-	if s.Postgres != nil {
-		deps.Health = append(deps.Health, s.Postgres)
-	}
-	return deps
-}
-
-// SyncPancakeV3Deps returns repositories for PancakeSwap V3 sync application wiring.
-func (s *Services) SyncPancakeV3Deps() syncpancakev3.ServiceDeps {
-	deps := syncpancakev3.ServiceDeps{
-		Pools:       s.PancakePools,
-		Snapshots:   s.PancakeSnapshots,
-		Checkpoints: s.PancakeCheckpoints,
-	}
-	if s.Postgres != nil {
-		deps.Health = append(deps.Health, s.Postgres)
-	}
-	return deps
-}
-
-// SyncV4Deps returns repositories for V4 sync application wiring.
-func (s *Services) SyncV4Deps() syncv4.ServiceDeps {
-	deps := syncv4.ServiceDeps{
-		Pools:       s.V4Pools,
-		Snapshots:   s.V4Snapshots,
-		Checkpoints: s.V4Checkpoints,
-	}
-	if s.Postgres != nil {
-		deps.Health = append(deps.Health, s.Postgres)
-	}
-	return deps
-}
-
-// SyncBalancerDeps returns repositories for Balancer sync application wiring.
-func (s *Services) SyncBalancerDeps() syncbalancer.ServiceDeps {
-	deps := syncbalancer.ServiceDeps{
-		Pools:       s.BalancerPools,
-		Snapshots:   s.BalancerSnapshots,
-		Checkpoints: s.BalancerCheckpoints,
-	}
-	if s.Postgres != nil {
-		deps.Health = append(deps.Health, s.Postgres)
-	}
-	return deps
 }
 
 func (s *Services) Close() {

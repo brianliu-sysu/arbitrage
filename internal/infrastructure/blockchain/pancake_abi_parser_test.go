@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
+	domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
@@ -45,7 +45,7 @@ func TestPancakeABIParserSwapEvent(t *testing.T) {
 	recipient := common.HexToAddress("0x0000000000000000000000000000000000000003")
 	poolAddress := common.HexToAddress("0x6CA298D2983aB03Aa1dA7679389D955A4eFEE15C")
 
-	events, err := parser.ParsePoolEvents([]syncapp.RawLog{{
+	events, err := parser.ParsePoolEvents([]domainchain.RawLog{{
 		Address: poolAddress,
 		Topics: []common.Hash{
 			topicPancakeSwap,

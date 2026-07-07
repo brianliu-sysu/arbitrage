@@ -33,16 +33,11 @@ func NewHeadSyncService(
 				if fetcher == nil {
 					return nil, fmt.Errorf("log fetcher is not configured")
 				}
-				poolAddresses, err := bindBalancerPoolAddresses(ctx, registry, parser, poolIDs)
+				binding, err := bindBalancerPools(ctx, registry, parser, poolIDs)
 				if err != nil {
 					return nil, err
 				}
-				return fetcher.FetchLogs(ctx, LogFilter{
-					PoolIDs:       poolIDs,
-					PoolAddresses: poolAddresses,
-					FromBlock:     blockNumber,
-					ToBlock:       blockNumber,
-				})
+				return fetcher.FetchLogs(ctx, logFilterFromBinding(binding, blockNumber, blockNumber))
 			},
 			ParseEvents: func(logs []syncapp.RawLog) ([]marketbalancer.PoolEvent, error) {
 				if parser == nil {

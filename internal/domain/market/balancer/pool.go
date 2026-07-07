@@ -20,6 +20,7 @@ type Pool struct {
 	Weights           map[common.Address]*big.Int
 	Amplification     *big.Int
 	SwapFeePercentage *big.Int
+	Paused            bool
 	Status            market.PoolStatus
 	LastBlockNumber   uint64
 }
@@ -59,6 +60,7 @@ func (p *Pool) Clone() *Pool {
 		Weights:           cloneIntMap(p.Weights),
 		Amplification:     cloneInt(p.Amplification),
 		SwapFeePercentage: cloneInt(p.SwapFeePercentage),
+		Paused:            p.Paused,
 		Status:            p.Status,
 		LastBlockNumber:   p.LastBlockNumber,
 	}
@@ -107,6 +109,12 @@ func (p *Pool) Apply(event PoolEvent) error {
 		err = p.applySwapFeePercentageChanged(event)
 	case EventKindAmplificationUpdated:
 		err = p.applyAmplificationUpdated(event)
+	case EventKindLiquidityAdded:
+		err = p.applyLiquidityAdded(event)
+	case EventKindLiquidityRemoved:
+		err = p.applyLiquidityRemoved(event)
+	case EventKindPoolPausedStateChanged:
+		err = p.applyPoolPausedStateChanged(event)
 	default:
 		return fmt.Errorf("unsupported event kind %d", event.Kind)
 	}
@@ -180,6 +188,51 @@ func (p *Pool) applyAmplificationUpdated(event PoolEvent) error {
 		return fmt.Errorf("amplification must be positive")
 	}
 	p.Amplification = cloneInt(payload.Amplification)
+	return nil
+}
+
+func (p *Pool) applyLiquidityAdded(event PoolEvent) error {
+	payload := event.LiquidityAdded
+	if payload == nil {
+		return fmt.Errorf("liquidity added event payload is nil")
+	}
+	if len(payload.Amounts) != len(p.Tokens) {
+		return fmt.Errorf("liquidity added has %d amounts for %d tokens", len(payload.Amounts), len(p.Tokens))
+	}
+	for i, token := range p.Tokens {
+		if err := p.addBalanceDelta(token, payload.Amounts[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *Pool) applyLiquidityRemoved(event PoolEvent) error {
+	payload := event.LiquidityRemoved
+	if payload == nil {
+		return fmt.Errorf("liquidity removed event payload is nil")
+	}
+	if len(payload.Amounts) != len(p.Tokens) {
+		return fmt.Errorf("liquidity removed has %d amounts for %d tokens", len(payload.Amounts), len(p.Tokens))
+	}
+	for i, token := range p.Tokens {
+		amount := payload.Amounts[i]
+		if amount == nil {
+			return fmt.Errorf("liquidity removed amount for token %s is nil", token.Hex())
+		}
+		if err := p.addBalanceDelta(token, new(big.Int).Neg(amount)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *Pool) applyPoolPausedStateChanged(event PoolEvent) error {
+	payload := event.PoolPausedStateChanged
+	if payload == nil {
+		return fmt.Errorf("pool paused state changed event payload is nil")
+	}
+	p.Paused = payload.Paused
 	return nil
 }
 

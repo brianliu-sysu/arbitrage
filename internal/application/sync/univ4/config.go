@@ -5,7 +5,6 @@ import (
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
-	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 )
 
@@ -20,21 +19,8 @@ type BlockReader = syncapp.BlockReader
 type HeadSubscriber = syncapp.HeadSubscriber
 type HealthProbe = syncapp.HealthProbe
 
-// LogFilter selects PoolManager logs for tracked V4 pools within a block range.
-type LogFilter struct {
-	PoolIDs   []marketv4.PoolID
-	FromBlock uint64
-	ToBlock   uint64
-}
-
-// BootstrapData is on-chain V4 pool state read during cold bootstrap.
-type BootstrapData struct {
-	Key         marketv4.PoolKey
-	State       market.PoolState
-	Ticks       market.TickTable
-	Bitmap      market.TickBitmap
-	BlockNumber uint64
-}
+type LogFilter = blockchain.V4LogFilter
+type BootstrapData = marketv4.BootstrapData
 
 // LogFetcher fetches raw PoolManager logs from the chain.
 type LogFetcher interface {

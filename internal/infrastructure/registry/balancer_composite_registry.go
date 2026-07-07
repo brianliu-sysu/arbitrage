@@ -16,14 +16,14 @@ type CompositeBalancerRegistry struct {
 	subgraphEnabled bool
 }
 
-func NewCompositeBalancerRegistry(cfg config.BalancerSyncConfig, defaultVault common.Address) (*CompositeBalancerRegistry, error) {
-	static, err := parseStaticBalancerPools(cfg.Pools, defaultVault)
+func NewCompositeBalancerRegistry(cfg config.BalancerSyncConfig, defaultVault, defaultVaultV3 common.Address) (*CompositeBalancerRegistry, error) {
+	static, err := parseStaticBalancerPools(cfg.Pools, defaultVault, defaultVaultV3)
 	if err != nil {
 		return nil, err
 	}
 	return &CompositeBalancerRegistry{
 		static:          static,
-		subgraph:        NewBalancerSubgraphRegistry(cfg.Subgraph, defaultVault),
+		subgraph:        NewBalancerSubgraphRegistry(cfg.Subgraph, defaultVault, defaultVaultV3),
 		subgraphEnabled: cfg.Subgraph.IsEnabled(),
 	}, nil
 }
@@ -80,14 +80,14 @@ func (r *CompositeBalancerRegistry) GetSpec(ctx context.Context, id marketbalanc
 
 func (r *CompositeBalancerRegistry) Add(ctx context.Context, id marketbalancer.PoolID, spec marketbalancer.PoolSpec) error {
 	if r.subgraph == nil {
-		r.subgraph = NewBalancerSubgraphRegistry(config.BalancerSubgraphPoolConfig{}, common.Address{})
+		r.subgraph = NewBalancerSubgraphRegistry(config.BalancerSubgraphPoolConfig{}, common.Address{}, common.Address{})
 	}
 	return r.subgraph.Add(ctx, id, spec)
 }
 
 func (r *CompositeBalancerRegistry) Remove(ctx context.Context, id marketbalancer.PoolID) error {
 	if r.subgraph == nil {
-		r.subgraph = NewBalancerSubgraphRegistry(config.BalancerSubgraphPoolConfig{}, common.Address{})
+		r.subgraph = NewBalancerSubgraphRegistry(config.BalancerSubgraphPoolConfig{}, common.Address{}, common.Address{})
 	}
 	return r.subgraph.Remove(ctx, id)
 }

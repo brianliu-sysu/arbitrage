@@ -2,18 +2,15 @@ package poolsapp
 
 import (
 	"context"
-	"math/big"
 
+	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
+	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
 
 // BaseState is on-chain slot0 and liquidity without tick data.
-type BaseState struct {
-	SqrtPriceX96 *big.Int
-	Tick         int32
-	Liquidity    *big.Int
-}
+type BaseState = blockchain.BasePoolState
 
 // HeadBlockReader returns the latest chain head block number.
 type HeadBlockReader interface {
@@ -40,10 +37,21 @@ type V3BaseStateBatchReader interface {
 	ReadManyV3BaseStates(ctx context.Context, poolAddresses []common.Address, blockNumber uint64) (map[common.Address]*BaseState, error)
 }
 
+// BalancerStateReader loads on-chain Balancer pool state.
+type BalancerStateReader interface {
+	ReadBalancerState(ctx context.Context, poolID marketbalancer.PoolID, spec marketbalancer.PoolSpec, blockNumber uint64) (*marketbalancer.BootstrapData, error)
+}
+
+// BalancerStateBatchReader loads on-chain Balancer pool state for many pools in one batched request.
+type BalancerStateBatchReader interface {
+	ReadManyBalancerStates(ctx context.Context, inputs []marketbalancer.BootstrapInput, blockNumber uint64) (map[marketbalancer.PoolID]*marketbalancer.BootstrapData, error)
+}
+
 // ChainReaders provides optional on-chain readers for pool diagnostics.
 type ChainReaders struct {
-	Head    HeadBlockReader
-	V4      V4BaseStateReader
-	V3      V3BaseStateReader
-	Pancake V3BaseStateReader
+	Head     HeadBlockReader
+	V4       V4BaseStateReader
+	V3       V3BaseStateReader
+	Pancake  V3BaseStateReader
+	Balancer BalancerStateReader
 }

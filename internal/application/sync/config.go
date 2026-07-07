@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
-	"github.com/ethereum/go-ethereum/common"
 )
 
 // Config holds sync-related runtime settings shared by V3 and V4.
@@ -34,15 +33,7 @@ func DefaultConfig() Config {
 }
 
 // RawLog is a decoded-free log entry fetched from the chain.
-type RawLog struct {
-	Address     common.Address
-	Topics      []common.Hash
-	Data        []byte
-	BlockNumber uint64
-	BlockHash   common.Hash
-	TxIndex     uint
-	LogIndex    uint
-}
+type RawLog = blockchain.RawLog
 
 // HeadSubscriber delivers new canonical block headers.
 type HeadSubscriber interface {

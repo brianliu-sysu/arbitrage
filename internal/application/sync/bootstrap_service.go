@@ -15,6 +15,7 @@ type BootstrapHooks[PoolID comparable, Pool any, Data any] struct {
 	SavePool                     func(context.Context, Pool) error
 	RestoreSnapshot              func(context.Context, Pool) error
 	ReadChainData                func(context.Context, PoolID, uint64) (Data, error)
+	ReadChainDataForMany         func(context.Context, []PoolID, uint64) (map[PoolID]Data, error)
 	NewPoolFromChain             func(PoolID, Data) (Pool, error)
 	UpdatePoolFromChain          func(Pool, Data)
 	IsInitialized                func(Pool) bool
@@ -46,6 +47,42 @@ func NewBootstrapService[PoolID comparable, Pool any, Data any](
 
 // Bootstrap loads or creates a pool and brings it to catching-up state.
 func (s *BootstrapService[PoolID, Pool, Data]) Bootstrap(ctx context.Context, poolID PoolID, blockNumber uint64) (Pool, error) {
+	return s.bootstrap(ctx, poolID, blockNumber, nil, false)
+}
+
+// BootstrapAll cold-starts many pools, batching chain reads when ReadChainDataForMany is configured.
+func (s *BootstrapService[PoolID, Pool, Data]) BootstrapAll(ctx context.Context, poolIDs []PoolID, blockNumber uint64) error {
+	var batchData map[PoolID]Data
+	if s.hooks.ReadChainDataForMany != nil && len(poolIDs) > 0 {
+		var err error
+		batchData, err = s.hooks.ReadChainDataForMany(ctx, poolIDs, blockNumber)
+		if err != nil {
+			return fmt.Errorf("read bootstrap data: %w", err)
+		}
+	}
+	for _, poolID := range poolIDs {
+		var preloaded *Data
+		hasPreloaded := false
+		if batchData != nil {
+			if data, ok := batchData[poolID]; ok {
+				preloaded = &data
+				hasPreloaded = true
+			}
+		}
+		if _, err := s.bootstrap(ctx, poolID, blockNumber, preloaded, hasPreloaded); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *BootstrapService[PoolID, Pool, Data]) bootstrap(
+	ctx context.Context,
+	poolID PoolID,
+	blockNumber uint64,
+	preloaded *Data,
+	hasPreloaded bool,
+) (Pool, error) {
 	var zero Pool
 
 	pool, err := s.hooks.LoadPool(ctx, poolID)
@@ -57,7 +94,7 @@ func (s *BootstrapService[PoolID, Pool, Data]) Bootstrap(ctx context.Context, po
 	chainBootstrapped := false
 
 	if s.hooks.IsNilPool(pool) {
-		chainData, err = s.hooks.ReadChainData(ctx, poolID, blockNumber)
+		chainData, err = s.readChainData(ctx, poolID, blockNumber, preloaded, hasPreloaded)
 		if err != nil {
 			return zero, fmt.Errorf("read bootstrap data: %w", err)
 		}
@@ -78,14 +115,14 @@ func (s *BootstrapService[PoolID, Pool, Data]) Bootstrap(ctx context.Context, po
 	}
 
 	if !s.hooks.IsInitialized(pool) {
-		chainData, err = s.hooks.ReadChainData(ctx, poolID, blockNumber)
+		chainData, err = s.readChainData(ctx, poolID, blockNumber, preloaded, hasPreloaded)
 		if err != nil {
 			return zero, fmt.Errorf("read bootstrap data: %w", err)
 		}
 		s.hooks.UpdatePoolFromChain(pool, chainData)
 		chainBootstrapped = true
 	} else if s.hooks.PoolLastBlock(pool) < blockNumber || NeedsChainRebootstrap(s.hooks.PoolLastBlock(pool), blockNumber, s.staleBlockThreshold) {
-		chainData, err = s.hooks.ReadChainData(ctx, poolID, blockNumber)
+		chainData, err = s.readChainData(ctx, poolID, blockNumber, preloaded, hasPreloaded)
 		if err != nil {
 			return zero, fmt.Errorf("read bootstrap data: %w", err)
 		}
@@ -104,4 +141,22 @@ func (s *BootstrapService[PoolID, Pool, Data]) Bootstrap(ctx context.Context, po
 		return zero, fmt.Errorf("save pool: %w", err)
 	}
 	return pool, nil
+}
+
+func (s *BootstrapService[PoolID, Pool, Data]) readChainData(
+	ctx context.Context,
+	poolID PoolID,
+	blockNumber uint64,
+	preloaded *Data,
+	hasPreloaded bool,
+) (Data, error) {
+	var zero Data
+	if hasPreloaded && preloaded != nil && (s.hooks.IsNilData == nil || !s.hooks.IsNilData(*preloaded)) {
+		return *preloaded, nil
+	}
+	data, err := s.hooks.ReadChainData(ctx, poolID, blockNumber)
+	if err != nil {
+		return zero, err
+	}
+	return data, nil
 }

@@ -15,10 +15,10 @@ type balancerPoolEntry struct {
 	spec marketbalancer.PoolSpec
 }
 
-func parseStaticBalancerPools(pools []config.StaticBalancerPoolConfig, defaultVault common.Address) ([]balancerPoolEntry, error) {
+func parseStaticBalancerPools(pools []config.StaticBalancerPoolConfig, defaultVault, defaultVaultV3 common.Address) ([]balancerPoolEntry, error) {
 	entries := make([]balancerPoolEntry, 0, len(pools))
 	for i, pool := range pools {
-		entry, err := balancerPoolEntryFromConfig(pool, defaultVault, i)
+		entry, err := balancerPoolEntryFromConfig(pool, defaultVault, defaultVaultV3, i)
 		if err != nil {
 			return nil, err
 		}
@@ -27,7 +27,7 @@ func parseStaticBalancerPools(pools []config.StaticBalancerPoolConfig, defaultVa
 	return entries, nil
 }
 
-func balancerPoolEntryFromConfig(pool config.StaticBalancerPoolConfig, defaultVault common.Address, index int) (balancerPoolEntry, error) {
+func balancerPoolEntryFromConfig(pool config.StaticBalancerPoolConfig, defaultVault, defaultVaultV3 common.Address, index int) (balancerPoolEntry, error) {
 	poolType := marketbalancer.PoolType(strings.ToLower(strings.TrimSpace(pool.Type)))
 	if err := poolType.Validate(); err != nil {
 		return balancerPoolEntry{}, fmt.Errorf("sync.balancer.pools[%d]: %w", index, err)
@@ -36,12 +36,17 @@ func balancerPoolEntryFromConfig(pool config.StaticBalancerPoolConfig, defaultVa
 	if (vault == common.Address{}) {
 		vault = defaultVault
 	}
+	version := marketbalancer.VaultV2
+	if vault == defaultVaultV3 {
+		version = marketbalancer.VaultV3
+	}
 	entry := balancerPoolEntry{
 		id: marketbalancer.PoolID(common.HexToHash(pool.ID)),
 		spec: marketbalancer.PoolSpec{
-			Address: common.HexToAddress(pool.Address),
-			Vault:   vault,
-			Type:    poolType,
+			Address:      common.HexToAddress(pool.Address),
+			Vault:        vault,
+			Type:         poolType,
+			VaultVersion: version,
 		},
 	}
 	return entry, nil

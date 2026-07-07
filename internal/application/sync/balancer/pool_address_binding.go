@@ -8,30 +8,71 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
+// PoolLogBinding groups tracked pools by vault version for log fetching.
+type PoolLogBinding struct {
+	PoolIDByAddress map[common.Address]marketbalancer.PoolID
+	V2PoolIDs       []marketbalancer.PoolID
+	V2PoolAddresses []common.Address
+	V3PoolAddresses []common.Address
+}
+
+func bindBalancerPools(
+	ctx context.Context,
+	registry marketbalancer.PoolRegistry,
+	parser EventParser,
+	poolIDs []marketbalancer.PoolID,
+) (PoolLogBinding, error) {
+	if registry == nil {
+		return PoolLogBinding{}, fmt.Errorf("balancer registry is not configured")
+	}
+	binding := PoolLogBinding{
+		PoolIDByAddress: make(map[common.Address]marketbalancer.PoolID, len(poolIDs)),
+	}
+	for _, poolID := range poolIDs {
+		spec, err := registry.GetSpec(ctx, poolID)
+		if err != nil {
+			return PoolLogBinding{}, fmt.Errorf("resolve pool spec %s: %w", poolID.String(), err)
+		}
+		if (spec.Address == common.Address{}) {
+			continue
+		}
+		binding.PoolIDByAddress[spec.Address] = poolID
+		if spec.VaultVersion.IsV3() {
+			binding.V3PoolAddresses = append(binding.V3PoolAddresses, spec.Address)
+			continue
+		}
+		binding.V2PoolIDs = append(binding.V2PoolIDs, poolID)
+		binding.V2PoolAddresses = append(binding.V2PoolAddresses, spec.Address)
+	}
+	if binder, ok := parser.(PoolAddressBinder); ok {
+		binder.SetPoolAddressMap(binding.PoolIDByAddress)
+	}
+	return binding, nil
+}
+
+func logFilterFromBinding(binding PoolLogBinding, fromBlock, toBlock uint64) LogFilter {
+	return LogFilter{
+		V2PoolIDs:       binding.V2PoolIDs,
+		V2PoolAddresses: binding.V2PoolAddresses,
+		V3PoolAddresses: binding.V3PoolAddresses,
+		FromBlock:       fromBlock,
+		ToBlock:         toBlock,
+	}
+}
+
+// bindBalancerPoolAddresses is kept for callers that only need pool contract addresses.
 func bindBalancerPoolAddresses(
 	ctx context.Context,
 	registry marketbalancer.PoolRegistry,
 	parser EventParser,
 	poolIDs []marketbalancer.PoolID,
 ) ([]common.Address, error) {
-	if registry == nil {
-		return nil, fmt.Errorf("balancer registry is not configured")
+	binding, err := bindBalancerPools(ctx, registry, parser, poolIDs)
+	if err != nil {
+		return nil, err
 	}
-	poolIDByAddress := make(map[common.Address]marketbalancer.PoolID, len(poolIDs))
-	addresses := make([]common.Address, 0, len(poolIDs))
-	for _, poolID := range poolIDs {
-		spec, err := registry.GetSpec(ctx, poolID)
-		if err != nil {
-			return nil, fmt.Errorf("resolve pool spec %s: %w", poolID.String(), err)
-		}
-		if (spec.Address == common.Address{}) {
-			continue
-		}
-		poolIDByAddress[spec.Address] = poolID
-		addresses = append(addresses, spec.Address)
-	}
-	if binder, ok := parser.(PoolAddressBinder); ok {
-		binder.SetPoolAddressMap(poolIDByAddress)
-	}
+	addresses := make([]common.Address, 0, len(binding.V2PoolAddresses)+len(binding.V3PoolAddresses))
+	addresses = append(addresses, binding.V2PoolAddresses...)
+	addresses = append(addresses, binding.V3PoolAddresses...)
 	return addresses, nil
 }

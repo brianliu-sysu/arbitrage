@@ -78,11 +78,12 @@ func (c PersistenceConfig) MemoryMode() bool {
 }
 
 type BlockchainConfig struct {
-	FactoryAddress       string `yaml:"factory_address"`
-	MulticallAddress     string `yaml:"multicall_address"`
-	PoolManagerAddress   string `yaml:"pool_manager_address"`
-	StateViewAddress     string `yaml:"state_view_address"`
-	BalancerVaultAddress string `yaml:"balancer_vault_address"`
+	FactoryAddress          string `yaml:"factory_address"`
+	MulticallAddress        string `yaml:"multicall_address"`
+	PoolManagerAddress      string `yaml:"pool_manager_address"`
+	StateViewAddress        string `yaml:"state_view_address"`
+	BalancerVaultAddress    string `yaml:"balancer_vault_address"`
+	BalancerVaultV3Address  string `yaml:"balancer_vault_v3_address"`
 }
 
 type SyncConfig struct {
@@ -185,6 +186,21 @@ type V4SubgraphPoolConfig struct {
 type BalancerSubgraphPoolConfig struct {
 	SubgraphPoolConfig `yaml:",inline"`
 	PoolTypes          []string `yaml:"pool_types"`
+	// Schema selects the subgraph query shape: "v2" (Balancer V2) or "v3" (Balancer V3).
+	// When empty, it is inferred from the endpoint URL.
+	Schema string `yaml:"schema"`
+}
+
+func (c BalancerSubgraphPoolConfig) ResolvedSchema() string {
+	switch strings.ToLower(strings.TrimSpace(c.Schema)) {
+	case "v2", "v3":
+		return strings.ToLower(strings.TrimSpace(c.Schema))
+	}
+	endpoint := strings.ToLower(c.Endpoint)
+	if strings.Contains(endpoint, "v3-pools") || strings.Contains(endpoint, "v3-vault") {
+		return "v3"
+	}
+	return "v2"
 }
 
 func (c BalancerSubgraphPoolConfig) IsEnabled() bool {
@@ -258,7 +274,8 @@ func Default() Config {
 			MulticallAddress:     "0xcA11bde05977b3631167028862bE2a173976CA11",
 			PoolManagerAddress:   "0x000000000004444c5dc75cB358380D2e3dE08A90",
 			StateViewAddress:     "0x7ffe42c4a5deea5b0fec41c94c136cf115597227",
-			BalancerVaultAddress: "0xBA12222222228d8Ba445958a75a0704d566BF2C8",
+			BalancerVaultAddress:   "0xBA12222222228d8Ba445958a75a0704d566BF2C8",
+			BalancerVaultV3Address: "0xbA1333333333a1BA1108E8412f11850A5C319bA9",
 		},
 		Sync: SyncConfig{
 			CatchupBatchSize: 2000,
@@ -472,14 +489,19 @@ func (c Config) BlockchainConfig() chaininfra.Config {
 	if (balancerVault == common.Address{}) {
 		balancerVault = common.HexToAddress(Default().Blockchain.BalancerVaultAddress)
 	}
+	balancerVaultV3 := common.HexToAddress(c.Blockchain.BalancerVaultV3Address)
+	if (balancerVaultV3 == common.Address{}) {
+		balancerVaultV3 = common.HexToAddress(Default().Blockchain.BalancerVaultV3Address)
+	}
 	return chaininfra.Config{
-		RPCURL:               c.RPC.URL,
-		WSURL:                c.RPC.WSURL,
-		FactoryAddress:       factory,
-		MulticallAddress:     multicall,
-		PoolManagerAddress:   poolManager,
-		StateViewAddress:     stateView,
-		BalancerVaultAddress: balancerVault,
+		RPCURL:                 c.RPC.URL,
+		WSURL:                  c.RPC.WSURL,
+		FactoryAddress:         factory,
+		MulticallAddress:       multicall,
+		PoolManagerAddress:     poolManager,
+		StateViewAddress:       stateView,
+		BalancerVaultAddress:   balancerVault,
+		BalancerVaultV3Address: balancerVaultV3,
 	}
 }
 

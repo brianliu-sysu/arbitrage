@@ -117,6 +117,37 @@ func TestWeightedPoolRejectsAmplificationUpdated(t *testing.T) {
 	}
 }
 
+func TestPoolApplyLiquidityAddedAndRemoved(t *testing.T) {
+	pool := newWeightedTestPool(t)
+	tokens := testBalancerTokens()
+
+	err := pool.Apply(NewLiquidityAddedEvent(testBalancerMeta(15), []*big.Int{big.NewInt(10), big.NewInt(20)}))
+	if err != nil {
+		t.Fatalf("apply liquidity added: %v", err)
+	}
+	if pool.Balances[tokens[0]].Cmp(big.NewInt(1010)) != 0 || pool.Balances[tokens[1]].Cmp(big.NewInt(2020)) != 0 {
+		t.Fatalf("unexpected balances after add: %v %v", pool.Balances[tokens[0]], pool.Balances[tokens[1]])
+	}
+
+	err = pool.Apply(NewLiquidityRemovedEvent(testBalancerMeta(16), []*big.Int{big.NewInt(10), big.NewInt(20)}))
+	if err != nil {
+		t.Fatalf("apply liquidity removed: %v", err)
+	}
+	if pool.Balances[tokens[0]].Cmp(big.NewInt(1000)) != 0 || pool.Balances[tokens[1]].Cmp(big.NewInt(2000)) != 0 {
+		t.Fatalf("unexpected balances after remove: %v %v", pool.Balances[tokens[0]], pool.Balances[tokens[1]])
+	}
+}
+
+func TestPoolApplyPausedStateChanged(t *testing.T) {
+	pool := newWeightedTestPool(t)
+	if err := pool.Apply(NewPoolPausedStateChangedEvent(testBalancerMeta(17), true)); err != nil {
+		t.Fatalf("apply paused: %v", err)
+	}
+	if !pool.Paused {
+		t.Fatal("expected pool to be paused")
+	}
+}
+
 func TestSnapshotRestore(t *testing.T) {
 	pool := newWeightedTestPool(t)
 	tokens := testBalancerTokens()

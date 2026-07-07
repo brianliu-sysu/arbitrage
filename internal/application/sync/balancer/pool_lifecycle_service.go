@@ -20,6 +20,9 @@ func NewPoolLifecycleService(
 			_, err := bootstrap.Bootstrap(ctx, poolID, blockNumber)
 			return err
 		},
+		BootstrapAll: func(ctx context.Context, poolIDs []marketbalancer.PoolID, blockNumber uint64) error {
+			return bootstrap.BootstrapAll(ctx, poolIDs, blockNumber)
+		},
 		ListTracked: registry.List,
 		Register: func(ctx context.Context, poolID marketbalancer.PoolID) error {
 			spec, err := registry.GetSpec(ctx, poolID)

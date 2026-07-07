@@ -5,7 +5,7 @@ import (
 	"math/big"
 	"strings"
 
-	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ4"
+	domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
@@ -35,7 +35,7 @@ func V4PoolLogTopics() []common.Hash {
 	return []common.Hash{topicV4Initialize, topicV4Swap, topicV4ModifyLiquidity}
 }
 
-func (p *V4ABIParser) ParsePoolEvents(logs []syncv4.RawLog) ([]marketv4.PoolEvent, error) {
+func (p *V4ABIParser) ParsePoolEvents(logs []domainchain.RawLog) ([]marketv4.PoolEvent, error) {
 	events := make([]marketv4.PoolEvent, 0, len(logs))
 	for _, log := range logs {
 		if len(log.Topics) == 0 {
@@ -52,7 +52,7 @@ func (p *V4ABIParser) ParsePoolEvents(logs []syncv4.RawLog) ([]marketv4.PoolEven
 	return events, nil
 }
 
-func (p *V4ABIParser) parseLog(log syncv4.RawLog) (*marketv4.PoolEvent, error) {
+func (p *V4ABIParser) parseLog(log domainchain.RawLog) (*marketv4.PoolEvent, error) {
 	if len(log.Topics) < 2 {
 		return nil, nil
 	}
@@ -75,7 +75,7 @@ func (p *V4ABIParser) parseLog(log syncv4.RawLog) (*marketv4.PoolEvent, error) {
 	}
 }
 
-func (p *V4ABIParser) parseInitialize(meta marketv4.EventMeta, log syncv4.RawLog) (*marketv4.PoolEvent, error) {
+func (p *V4ABIParser) parseInitialize(meta marketv4.EventMeta, log domainchain.RawLog) (*marketv4.PoolEvent, error) {
 	if len(log.Topics) < 4 {
 		return nil, fmt.Errorf("initialize event missing indexed topics")
 	}
@@ -95,7 +95,7 @@ func (p *V4ABIParser) parseInitialize(meta marketv4.EventMeta, log syncv4.RawLog
 	return &event, nil
 }
 
-func (p *V4ABIParser) parseSwap(meta marketv4.EventMeta, log syncv4.RawLog) (*marketv4.PoolEvent, error) {
+func (p *V4ABIParser) parseSwap(meta marketv4.EventMeta, log domainchain.RawLog) (*marketv4.PoolEvent, error) {
 	if len(log.Topics) < 3 {
 		return nil, fmt.Errorf("swap event missing indexed topics")
 	}
@@ -133,7 +133,7 @@ func (p *V4ABIParser) parseSwap(meta marketv4.EventMeta, log syncv4.RawLog) (*ma
 	return &event, nil
 }
 
-func (p *V4ABIParser) parseModifyLiquidity(meta marketv4.EventMeta, log syncv4.RawLog) (*marketv4.PoolEvent, error) {
+func (p *V4ABIParser) parseModifyLiquidity(meta marketv4.EventMeta, log domainchain.RawLog) (*marketv4.PoolEvent, error) {
 	if len(log.Topics) < 3 {
 		return nil, fmt.Errorf("modify liquidity event missing indexed topics")
 	}

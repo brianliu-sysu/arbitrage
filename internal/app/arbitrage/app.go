@@ -21,6 +21,7 @@ import (
 	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ3"
 	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ4"
 	"github.com/brianliu-sysu/uniswapv3/internal/config"
+	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	quotebalancerdomain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/balancer"
@@ -135,7 +136,8 @@ func newBalancerPoolRegistry(cfg config.Config) (*registry.CompositeBalancerRegi
 	if !cfg.Sync.Balancer.IsActive() {
 		return nil, nil
 	}
-	return registry.NewCompositeBalancerRegistry(cfg.Sync.Balancer, cfg.BlockchainConfig().BalancerVaultAddress)
+	chainCfg := cfg.BlockchainConfig()
+	return registry.NewCompositeBalancerRegistry(cfg.Sync.Balancer, chainCfg.BalancerVaultAddress, chainCfg.BalancerVaultV3Address)
 }
 
 type runtimeBundle struct {
@@ -156,16 +158,23 @@ func newRuntimeBundle(
 	v4PoolRegistry *registry.CompositeV4Registry,
 	balancerPoolRegistry *registry.CompositeBalancerRegistry,
 ) (*runtimeBundle, error) {
-	deps := chain.SyncDeps()
-	persistDeps := store.SyncDeps()
-
-	deps.Config = cfg.SyncConfig()
-	deps.Pools = persistDeps.Pools
-	deps.Snapshots = persistDeps.Snapshots
-	deps.Checkpoints = persistDeps.Checkpoints
-	deps.Registry = poolRegistry
-	deps.Health = append(deps.Health, persistDeps.Health...)
-	deps.Listener = syncv3.NopChangedPoolsListener{}
+	deps := syncv3.ServiceDeps{
+		Config:      cfg.SyncConfig(),
+		Pools:       store.Pools,
+		Snapshots:   store.Snapshots,
+		Checkpoints: store.Checkpoints,
+		Registry:    poolRegistry,
+		Fetcher:     chain.LogFetcher,
+		Parser:      chain.Parser,
+		Blocks:      chain.Client,
+		Bootstrap:   chain.PoolReader,
+		Subscriber:  chain.HeadSub,
+		Health:      []syncv3.HealthProbe{chain.Client},
+		Listener:    syncv3.NopChangedPoolsListener{},
+	}
+	if store.Postgres != nil {
+		deps.Health = append(deps.Health, store.Postgres)
+	}
 
 	var syncServices *syncv3.Services
 	if cfg.Sync.Univ3.IsActive() {
@@ -177,15 +186,23 @@ func newRuntimeBundle(
 		if pancakePoolRegistry == nil {
 			return nil, fmt.Errorf("pancake pool registry is required when sync.pancakev3 is enabled")
 		}
-		pancakeDeps := chain.SyncPancakeV3Deps()
-		pancakePersist := store.SyncPancakeV3Deps()
-		pancakeDeps.Config = cfg.SyncConfig()
-		pancakeDeps.Pools = pancakePersist.Pools
-		pancakeDeps.Snapshots = pancakePersist.Snapshots
-		pancakeDeps.Checkpoints = pancakePersist.Checkpoints
-		pancakeDeps.Registry = pancakePoolRegistry
-		pancakeDeps.Health = append(pancakeDeps.Health, pancakePersist.Health...)
-		pancakeDeps.Listener = syncpancakev3.NopChangedPoolsListener{}
+		pancakeDeps := syncpancakev3.ServiceDeps{
+			Config:      cfg.SyncConfig(),
+			Pools:       store.PancakePools,
+			Snapshots:   store.PancakeSnapshots,
+			Checkpoints: store.PancakeCheckpoints,
+			Registry:    pancakePoolRegistry,
+			Fetcher:     chain.PancakeLogFetcher,
+			Parser:      chain.PancakeParser,
+			Blocks:      chain.Client,
+			Bootstrap:   chain.PancakePoolReader,
+			Subscriber:  chain.HeadSub,
+			Health:      []syncpancakev3.HealthProbe{chain.Client},
+			Listener:    syncpancakev3.NopChangedPoolsListener{},
+		}
+		if store.Postgres != nil {
+			pancakeDeps.Health = append(pancakeDeps.Health, store.Postgres)
+		}
 		syncPancakeServices = syncpancakev3.NewServices(pancakeDeps)
 	}
 
@@ -194,15 +211,23 @@ func newRuntimeBundle(
 		if v4PoolRegistry == nil {
 			return nil, fmt.Errorf("univ4 pool registry is required when sync.univ4 is enabled")
 		}
-		v4Deps := chain.SyncV4Deps()
-		v4Persist := store.SyncV4Deps()
-		v4Deps.Config = cfg.SyncConfig()
-		v4Deps.Pools = v4Persist.Pools
-		v4Deps.Snapshots = v4Persist.Snapshots
-		v4Deps.Checkpoints = v4Persist.Checkpoints
-		v4Deps.Registry = v4PoolRegistry
-		v4Deps.Health = append(v4Deps.Health, v4Persist.Health...)
-		v4Deps.Listener = syncv4.NopChangedPoolsListener{}
+		v4Deps := syncv4.ServiceDeps{
+			Config:      cfg.SyncConfig(),
+			Pools:       store.V4Pools,
+			Snapshots:   store.V4Snapshots,
+			Checkpoints: store.V4Checkpoints,
+			Registry:    v4PoolRegistry,
+			Fetcher:     chain.V4LogFetcher,
+			Parser:      chain.V4Parser,
+			Blocks:      chain.Client,
+			Bootstrap:   chain.V4PoolReader,
+			Subscriber:  chain.HeadSub,
+			Health:      []syncv4.HealthProbe{chain.Client},
+			Listener:    syncv4.NopChangedPoolsListener{},
+		}
+		if store.Postgres != nil {
+			v4Deps.Health = append(v4Deps.Health, store.Postgres)
+		}
 		syncV4Services = syncv4.NewServices(v4Deps)
 	}
 
@@ -211,15 +236,23 @@ func newRuntimeBundle(
 		if balancerPoolRegistry == nil {
 			return nil, fmt.Errorf("balancer pool registry is required when sync.balancer is enabled")
 		}
-		balancerDeps := chain.SyncBalancerDeps()
-		balancerPersist := store.SyncBalancerDeps()
-		balancerDeps.Config = cfg.SyncConfig()
-		balancerDeps.Pools = balancerPersist.Pools
-		balancerDeps.Snapshots = balancerPersist.Snapshots
-		balancerDeps.Checkpoints = balancerPersist.Checkpoints
-		balancerDeps.Registry = balancerPoolRegistry
-		balancerDeps.Health = append(balancerDeps.Health, balancerPersist.Health...)
-		balancerDeps.Listener = syncbalancer.NopChangedPoolsListener{}
+		balancerDeps := syncbalancer.ServiceDeps{
+			Config:      cfg.SyncConfig(),
+			Pools:       store.BalancerPools,
+			Snapshots:   store.BalancerSnapshots,
+			Checkpoints: store.BalancerCheckpoints,
+			Registry:    balancerPoolRegistry,
+			Fetcher:     chain.BalancerLogFetcher,
+			Parser:      chain.BalancerParser,
+			Blocks:      chain.Client,
+			Bootstrap:   chain.BalancerPoolReader,
+			Subscriber:  chain.HeadSub,
+			Health:      []syncbalancer.HealthProbe{chain.Client},
+			Listener:    syncbalancer.NopChangedPoolsListener{},
+		}
+		if store.Postgres != nil {
+			balancerDeps.Health = append(balancerDeps.Health, store.Postgres)
+		}
 		syncBalancerServices = syncbalancer.NewServices(balancerDeps)
 	}
 
@@ -423,6 +456,7 @@ func newPoolsAppService(
 	poolRegistry *registry.CompositeRegistry,
 	pancakePoolRegistry *registry.PancakeCompositeRegistry,
 	v4PoolRegistry *registry.CompositeV4Registry,
+	balancerPoolRegistry *registry.CompositeBalancerRegistry,
 	chain *chaininfra.Services,
 ) *poolsapp.AppService {
 	var pancakeRegistry marketpancake.PoolRegistry
@@ -433,17 +467,30 @@ func newPoolsAppService(
 	if v4PoolRegistry != nil {
 		v4Registry = v4PoolRegistry.AsPoolRegistry()
 	}
+	var balancerRegistry marketbalancer.PoolRegistry
+	if balancerPoolRegistry != nil {
+		balancerRegistry = balancerPoolRegistry.AsPoolRegistry()
+	}
 
 	tokenService := assetapp.NewTokenMetadataService(store.Tokens, chain.ERC20)
+	chainReaders := chaininfra.NewPoolsChainReaders(chain.Client, chain.PoolReader, chain.PancakePoolReader, chain.V4PoolReader, chain.BalancerPoolReader)
 	return poolsapp.NewAppService(
 		store.Pools,
 		store.PancakePools,
 		store.V4Pools,
+		store.BalancerPools,
 		poolRegistry,
 		pancakeRegistry,
 		v4Registry,
+		balancerRegistry,
 		tokenService,
-		chaininfra.NewPoolsChainReaders(chain.Client, chain.PoolReader, chain.PancakePoolReader, chain.V4PoolReader).AsChainReaders(),
+		&poolsapp.ChainReaders{
+			Head:     chainReaders,
+			V4:       chainReaders,
+			V3:       chainReaders,
+			Pancake:  chainReaders.PancakeReader(),
+			Balancer: chainReaders,
+		},
 	)
 }
 

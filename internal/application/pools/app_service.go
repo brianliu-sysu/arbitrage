@@ -8,6 +8,7 @@ import (
 	assetapp "github.com/brianliu-sysu/uniswapv3/internal/application/asset"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/asset"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
+	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/common"
@@ -17,6 +18,7 @@ const (
 	PoolTypeUniv3      = "univ3"
 	PoolTypeUniv4      = "univ4"
 	PoolTypePancakeV3  = "pancakev3"
+	PoolTypeBalancer   = "balancer"
 )
 
 // TokenInfo is token metadata exposed by the pools API.
@@ -28,13 +30,15 @@ type TokenInfo struct {
 
 // PoolInfo is pool metadata exposed by the pools API.
 type PoolInfo struct {
-	PoolAddress string    `json:"poolAddress,omitempty"`
-	PoolID      string    `json:"poolId,omitempty"`
-	PoolType    string    `json:"poolType"`
-	Token0      TokenInfo `json:"token0"`
-	Token1      TokenInfo `json:"token1"`
-	Fee         uint32    `json:"fee"`
-	Hooks       string    `json:"hooks,omitempty"`
+	PoolAddress  string      `json:"poolAddress,omitempty"`
+	PoolID       string      `json:"poolId,omitempty"`
+	PoolType     string      `json:"poolType"`
+	BalancerType string      `json:"balancerType,omitempty"`
+	Token0       TokenInfo   `json:"token0,omitempty"`
+	Token1       TokenInfo   `json:"token1,omitempty"`
+	Tokens       []TokenInfo `json:"tokens,omitempty"`
+	Fee          uint32      `json:"fee,omitempty"`
+	Hooks        string      `json:"hooks,omitempty"`
 }
 
 // ListResponse is the pools API response payload.
@@ -45,35 +49,41 @@ type ListResponse struct {
 
 // AppService lists tracked pool metadata across protocols.
 type AppService struct {
-	univ3Pools       marketuniv3.PoolRepository
-	pancakePools     marketpancake.PoolRepository
-	v4Pools          marketuniv4.PoolRepository
-	univ3Registry    marketuniv3.PoolRegistry
-	pancakeRegistry  marketpancake.PoolRegistry
-	v4Registry       marketuniv4.PoolRegistry
-	tokens           *assetapp.TokenMetadataService
-	chain            *ChainReaders
+	univ3Pools        marketuniv3.PoolRepository
+	pancakePools      marketpancake.PoolRepository
+	v4Pools           marketuniv4.PoolRepository
+	balancerPools     marketbalancer.PoolRepository
+	univ3Registry     marketuniv3.PoolRegistry
+	pancakeRegistry   marketpancake.PoolRegistry
+	v4Registry        marketuniv4.PoolRegistry
+	balancerRegistry  marketbalancer.PoolRegistry
+	tokens            *assetapp.TokenMetadataService
+	chain             *ChainReaders
 }
 
 func NewAppService(
 	univ3Pools marketuniv3.PoolRepository,
 	pancakePools marketpancake.PoolRepository,
 	v4Pools marketuniv4.PoolRepository,
+	balancerPools marketbalancer.PoolRepository,
 	univ3Registry marketuniv3.PoolRegistry,
 	pancakeRegistry marketpancake.PoolRegistry,
 	v4Registry marketuniv4.PoolRegistry,
+	balancerRegistry marketbalancer.PoolRegistry,
 	tokens *assetapp.TokenMetadataService,
 	chain *ChainReaders,
 ) *AppService {
 	return &AppService{
-		univ3Pools:      univ3Pools,
-		pancakePools:    pancakePools,
-		v4Pools:         v4Pools,
-		univ3Registry:   univ3Registry,
-		pancakeRegistry: pancakeRegistry,
-		v4Registry:      v4Registry,
-		tokens:          tokens,
-		chain:           chain,
+		univ3Pools:       univ3Pools,
+		pancakePools:     pancakePools,
+		v4Pools:          v4Pools,
+		balancerPools:    balancerPools,
+		univ3Registry:    univ3Registry,
+		pancakeRegistry:  pancakeRegistry,
+		v4Registry:       v4Registry,
+		balancerRegistry: balancerRegistry,
+		tokens:           tokens,
+		chain:            chain,
 	}
 }
 
@@ -93,9 +103,16 @@ func (s *AppService) List(ctx context.Context) (*ListResponse, error) {
 	if err := s.appendV4Pools(ctx, &pools); err != nil {
 		return nil, err
 	}
+	if err := s.appendBalancerPools(ctx, &pools); err != nil {
+		return nil, err
+	}
 
 	tokenAddresses := make([]common.Address, 0, len(pools)*2)
 	for _, pool := range pools {
+		if pool.PoolType == PoolTypeBalancer {
+			tokenAddresses = append(tokenAddresses, balancerTokenAddresses([]PoolInfo{pool})...)
+			continue
+		}
 		if pool.Token0.Address != "" {
 			tokenAddresses = append(tokenAddresses, common.HexToAddress(pool.Token0.Address))
 		}
@@ -116,6 +133,18 @@ func (s *AppService) List(ctx context.Context) (*ListResponse, error) {
 	}
 
 	for i := range pools {
+		if pools[i].PoolType == PoolTypeBalancer {
+			for j := range pools[i].Tokens {
+				pools[i].Tokens[j] = enrichToken(pools[i].Tokens[j], tokenMeta)
+			}
+			if len(pools[i].Tokens) > 0 {
+				pools[i].Token0 = enrichToken(pools[i].Token0, tokenMeta)
+			}
+			if len(pools[i].Tokens) > 1 {
+				pools[i].Token1 = enrichToken(pools[i].Token1, tokenMeta)
+			}
+			continue
+		}
 		pools[i].Token0 = enrichToken(pools[i].Token0, tokenMeta)
 		pools[i].Token1 = enrichToken(pools[i].Token1, tokenMeta)
 	}
