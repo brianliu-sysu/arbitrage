@@ -14,10 +14,12 @@ import (
 type Services struct {
 	Client       *EthClient
 	Multicall    *Multicall
-	LogFetcher   *LogFetcher
-	HeadSub      *HeadSubscriber
-	Parser       *ABIParser
-	Factory      *FactoryReader
+	LogFetcher        *LogFetcher
+	PancakeLogFetcher *PancakeLogFetcher
+	HeadSub           *HeadSubscriber
+	Parser            *ABIParser
+	PancakeParser     *PancakeABIParser
+	Factory           *FactoryReader
 	PoolReader        *PoolReader
 	PancakePoolReader *PoolReader
 	V4LogFetcher      *V4LogFetcher
@@ -42,6 +44,12 @@ func NewServices(cfg Config) (*Services, error) {
 	if err != nil {
 		client.Close()
 		return nil, fmt.Errorf("create abi parser: %w", err)
+	}
+
+	pancakeParser, err := NewPancakeABIParser()
+	if err != nil {
+		client.Close()
+		return nil, fmt.Errorf("create pancake abi parser: %w", err)
 	}
 
 	factory, err := NewFactoryReader(client, cfg.FactoryAddress)
@@ -87,8 +95,10 @@ func NewServices(cfg Config) (*Services, error) {
 		Client:            client,
 		Multicall:         multicall,
 		LogFetcher:        NewLogFetcher(client),
+		PancakeLogFetcher: NewPancakeLogFetcher(client),
 		HeadSub:           NewHeadSubscriber(client),
 		Parser:            parser,
+		PancakeParser:     pancakeParser,
 		Factory:           factory,
 		PoolReader:        poolReader,
 		PancakePoolReader: pancakePoolReader,
@@ -120,8 +130,8 @@ func (s *Services) SyncDeps() syncv3.ServiceDeps {
 // SyncPancakeV3Deps returns application PancakeSwap V3 sync dependencies backed by this package.
 func (s *Services) SyncPancakeV3Deps() syncpancakev3.ServiceDeps {
 	return syncpancakev3.ServiceDeps{
-		Fetcher:    s.LogFetcher,
-		Parser:     s.Parser,
+		Fetcher:    s.PancakeLogFetcher,
+		Parser:     s.PancakeParser,
 		Blocks:     s.Client,
 		Bootstrap:  s.PancakePoolReader,
 		Subscriber: s.HeadSub,
