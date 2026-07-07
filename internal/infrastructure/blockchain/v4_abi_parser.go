@@ -13,9 +13,9 @@ import (
 )
 
 var (
-	topicV4Initialize       = crypto.Keccak256Hash([]byte("Initialize(bytes32,address,address,uint24,int24,address,uint160,int24)"))
-	topicV4Swap             = crypto.Keccak256Hash([]byte("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)"))
-	topicV4ModifyLiquidity  = crypto.Keccak256Hash([]byte("ModifyLiquidity(bytes32,address,int24,int24,int256,bytes32)"))
+	topicV4Initialize      = crypto.Keccak256Hash([]byte("Initialize(bytes32,address,address,uint24,int24,address,uint160,int24)"))
+	topicV4Swap            = crypto.Keccak256Hash([]byte("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)"))
+	topicV4ModifyLiquidity = crypto.Keccak256Hash([]byte("ModifyLiquidity(bytes32,address,int24,int24,int256,bytes32)"))
 )
 
 // V4ABIParser decodes Uniswap V4 PoolManager logs into domain events.

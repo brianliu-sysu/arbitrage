@@ -8,23 +8,23 @@ import (
 
 // Pool is the aggregate root for Uniswap V4 market state.
 type Pool struct {
-	ID      PoolID
-	Key     PoolKey
-	State   market.PoolState
-	Status  market.PoolStatus
-	Ticks   market.TickTable
-	Bitmap  market.TickBitmap
+	ID              PoolID
+	Key             PoolKey
+	State           market.PoolState
+	Status          market.PoolStatus
+	Ticks           market.TickTable
+	Bitmap          market.TickBitmap
 	LastBlockNumber uint64
 }
 
 func NewPool(id PoolID, key PoolKey) *Pool {
 	return &Pool{
-		ID:      id,
-		Key:     key,
-		State:   market.NewPoolState(),
-		Status:  market.PoolStatusUnknown,
-		Ticks:   market.NewTickTable(),
-		Bitmap:  market.NewTickBitmap(),
+		ID:     id,
+		Key:    key,
+		State:  market.NewPoolState(),
+		Status: market.PoolStatusUnknown,
+		Ticks:  market.NewTickTable(),
+		Bitmap: market.NewTickBitmap(),
 	}
 }
 

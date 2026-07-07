@@ -51,11 +51,6 @@ type PoolBootstrapReader interface {
 	ReadBootstrapData(ctx context.Context, poolID marketv4.PoolID, key marketv4.PoolKey, blockNumber uint64) (*BootstrapData, error)
 }
 
-// PoolBaseStateReader loads on-chain slot0 and liquidity for a V4 pool.
-type PoolBaseStateReader interface {
-	ReadPoolBaseState(ctx context.Context, poolID marketv4.PoolID, blockNumber uint64) (market.PoolState, error)
-}
-
 // ChangedPoolsListener receives pools updated after a block is applied.
 type ChangedPoolsListener interface {
 	OnPoolsChanged(ctx context.Context, blockNumber uint64, pools []marketv4.PoolID) error

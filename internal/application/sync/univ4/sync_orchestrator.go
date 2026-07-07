@@ -45,9 +45,8 @@ func (o *SyncOrchestrator) Start(ctx context.Context) error {
 	}
 
 	return syncapp.RunStartup(ctx, o.blocks, syncapp.SyncPhases{
-		StartAll:         o.lifecycle.StartAll,
-		CatchUpAll:       o.catchup.CatchUpAll,
-		RefreshFromChain: o.lifecycle.RefreshAllFromChain,
+		StartAll:   o.lifecycle.StartAll,
+		CatchUpAll: o.catchup.CatchUpAll,
 		MarkPoolsReady: func(ctx context.Context) error {
 			return o.blockApply.MarkPoolsReady(ctx, o.lifecycle.ListActive())
 		},
@@ -86,11 +85,7 @@ func NewServices(deps ServiceDeps) *Services {
 	snapshots := NewSnapshotService(deps.Snapshots, snapshotPolicy)
 	bootstrap := NewBootstrapService(deps.Pools, deps.Registry, deps.Bootstrap, snapshots, deps.Config.BootstrapStaleBlockThreshold)
 	lifecycle := NewPoolLifecycleService(deps.Registry, bootstrap, readiness)
-	var baseState PoolBaseStateReader
-	if reader, ok := deps.Bootstrap.(PoolBaseStateReader); ok {
-		baseState = reader
-	}
-	blockApply := NewBlockApplyService(deps.Pools, deps.Checkpoints, snapshots, readiness, baseState, deps.Listener)
+	blockApply := NewBlockApplyService(deps.Pools, deps.Checkpoints, snapshots, readiness, deps.Listener)
 	catchup := NewCatchupService(deps.Config, deps.Pools, deps.Checkpoints, deps.Fetcher, deps.Parser, blockApply, lifecycle, deps.Blocks)
 	reorg := NewReorgRecoveryService(deps.Config, deps.Blocks, deps.Checkpoints, deps.Pools, deps.Registry, deps.Bootstrap, snapshots, deps.Fetcher, deps.Parser, blockApply, readiness)
 	headSync := NewHeadSyncService(deps.Fetcher, deps.Parser, blockApply, lifecycle, reorg, readiness, catchup, deps.Blocks, deps.Subscriber)

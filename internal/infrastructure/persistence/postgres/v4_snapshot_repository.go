@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/persistence/codec"
 	"github.com/jackc/pgx/v5"
 )

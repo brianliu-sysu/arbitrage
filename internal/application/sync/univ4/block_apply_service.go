@@ -3,7 +3,6 @@ package syncv4
 import (
 	"context"
 	"fmt"
-	"math/big"
 	"sort"
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
@@ -20,7 +19,6 @@ type BlockApplyService struct {
 	checkpoints blockchain.V4CheckpointRepository
 	snapshots   *SnapshotService
 	readiness   *ReadinessService
-	baseState   PoolBaseStateReader
 	listener    ChangedPoolsListener
 	logger      *zap.Logger
 }
@@ -30,7 +28,6 @@ func NewBlockApplyService(
 	checkpoints blockchain.V4CheckpointRepository,
 	snapshots *SnapshotService,
 	readiness *ReadinessService,
-	baseState PoolBaseStateReader,
 	listener ChangedPoolsListener,
 ) *BlockApplyService {
 	if listener == nil {
@@ -41,7 +38,6 @@ func NewBlockApplyService(
 		checkpoints: checkpoints,
 		snapshots:   snapshots,
 		readiness:   readiness,
-		baseState:   baseState,
 		listener:    listener,
 		logger:      zap.NewNop(),
 	}
@@ -100,6 +96,23 @@ func (s *BlockApplyService) ApplyBlock(ctx context.Context, req ApplyBlockReques
 		}
 		if pool == nil {
 			return ApplyBlockResult{}, fmt.Errorf("pool %s not found", poolID)
+		}
+
+		if pool.LastBlockNumber >= req.BlockNumber {
+			s.logger.Debug("pool block already applied",
+				zap.String("protocol", "univ4"),
+				zap.String("pool", poolID.String()),
+				zap.Uint64("block", req.BlockNumber),
+				zap.Uint64("poolLastBlock", pool.LastBlockNumber),
+			)
+			pendingCheckpoints = append(pendingCheckpoints, newCheckpoint(poolID, req.BlockNumber, req.BlockHash))
+			if s.snapshots != nil {
+				if err := s.snapshots.MaybeCreateSnapshot(ctx, pool, req.BlockNumber); err != nil {
+					return ApplyBlockResult{}, fmt.Errorf("snapshot pool %s: %w", poolID, err)
+				}
+			}
+			changed = append(changed, poolID)
+			continue
 		}
 
 		poolLastBlock := pool.LastBlockNumber
@@ -226,48 +239,8 @@ func groupEventsByPool(events []marketv4.PoolEvent) map[marketv4.PoolID][]market
 }
 
 func (s *BlockApplyService) syncIdlePools(ctx context.Context, poolIDs []marketv4.PoolID, blockNumber uint64) error {
-	if s.baseState == nil {
-		if err := s.pools.AdvanceSyncProgressMany(ctx, poolIDs, blockNumber); err != nil {
-			return fmt.Errorf("advance sync progress: %w", err)
-		}
-		return nil
-	}
-
-	for _, poolID := range poolIDs {
-		pool, err := s.pools.Get(ctx, poolID)
-		if err != nil {
-			return fmt.Errorf("load pool %s: %w", poolID, err)
-		}
-		if pool == nil {
-			return fmt.Errorf("pool %s not found", poolID)
-		}
-
-		state, err := s.baseState.ReadPoolBaseState(ctx, poolID, blockNumber)
-		if err != nil {
-			return fmt.Errorf("read chain base state for pool %s at block %d: %w", poolID, blockNumber, err)
-		}
-		pool.State.SqrtPriceX96 = cloneBigInt(state.SqrtPriceX96)
-		pool.State.Tick = state.Tick
-		pool.State.Liquidity = cloneBigInt(state.Liquidity)
-		pool.LastBlockNumber = blockNumber
-		if err := s.pools.Save(ctx, pool); err != nil {
-			return fmt.Errorf("save anchored pool %s: %w", poolID, err)
-		}
-
-		s.logger.Debug("pool state anchored from chain",
-			append([]zap.Field{
-				zap.String("protocol", "univ4"),
-				zap.String("pool", poolID.String()),
-				zap.Uint64("block", blockNumber),
-			}, syncapp.PoolStateLogFields(pool.State, pool.LastBlockNumber, pool.Status)...)...,
-		)
+	if err := s.pools.AdvanceSyncProgressMany(ctx, poolIDs, blockNumber); err != nil {
+		return fmt.Errorf("advance sync progress: %w", err)
 	}
 	return nil
-}
-
-func cloneBigInt(value *big.Int) *big.Int {
-	if value == nil {
-		return nil
-	}
-	return new(big.Int).Set(value)
 }

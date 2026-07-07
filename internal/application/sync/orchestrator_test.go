@@ -32,7 +32,7 @@ func (r *startupBlockReader) GetBlockHeader(_ context.Context, blockNumber uint6
 	return blockchain.BlockHeader{}, nil
 }
 
-func TestRunStartupRefreshesBootstrapAtLatestHead(t *testing.T) {
+func TestRunStartupUsesCaughtUpHeadForLiveSync(t *testing.T) {
 	reader := &startupBlockReader{
 		headers: []blockchain.BlockHeader{
 			{Number: 100, Hash: common.HexToHash("0x100")},
@@ -42,6 +42,7 @@ func TestRunStartupRefreshesBootstrapAtLatestHead(t *testing.T) {
 
 	startCalls := make([]uint64, 0, 2)
 	catchupCalls := make([]uint64, 0, 1)
+	var localHead blockchain.BlockHeader
 
 	err := syncapp.RunStartup(context.Background(), reader, syncapp.SyncPhases{
 		StartAll: func(_ context.Context, blockNumber uint64) error {
@@ -53,7 +54,7 @@ func TestRunStartupRefreshesBootstrapAtLatestHead(t *testing.T) {
 			return nil
 		},
 		MarkPoolsReady: func(context.Context) error { return nil },
-		SetLocalHead:   func(blockchain.BlockHeader) {},
+		SetLocalHead:   func(head blockchain.BlockHeader) { localHead = head },
 		SetSystemReady: func(bool) {},
 		RunHeadSync:    func(context.Context) error { return nil },
 	})
@@ -61,13 +62,16 @@ func TestRunStartupRefreshesBootstrapAtLatestHead(t *testing.T) {
 		t.Fatalf("run startup: %v", err)
 	}
 
-	if len(startCalls) != 2 {
-		t.Fatalf("expected StartAll twice, got %d calls: %v", len(startCalls), startCalls)
+	if len(startCalls) != 1 || startCalls[0] != 100 {
+		t.Fatalf("expected StartAll at initial head 100, got %v", startCalls)
 	}
-	if startCalls[0] != 100 || startCalls[1] != 105 {
-		t.Fatalf("unexpected StartAll blocks: %v", startCalls)
+	if len(catchupCalls) != 1 || catchupCalls[0] != 100 {
+		t.Fatalf("expected CatchUpAll at initial head 100, got %v", catchupCalls)
 	}
-	if len(catchupCalls) != 1 || catchupCalls[0] != 105 {
-		t.Fatalf("expected CatchUpAll at refreshed head 105, got %v", catchupCalls)
+	if localHead.Number != 100 || localHead.Hash != common.HexToHash("0x100") {
+		t.Fatalf("expected local head to stay at caught-up block 100, got %+v", localHead)
+	}
+	if reader.calls != 1 {
+		t.Fatalf("expected latest header to be read once, got %d", reader.calls)
 	}
 }

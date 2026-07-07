@@ -5,8 +5,8 @@ import (
 	"fmt"
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
-	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"go.uber.org/zap"
 )
 
@@ -105,36 +105,6 @@ func (s *BootstrapService) Bootstrap(ctx context.Context, poolID marketv4.PoolID
 	if err := s.pools.Save(ctx, pool); err != nil {
 		return nil, fmt.Errorf("save pool: %w", err)
 	}
-	return pool, nil
-}
-
-// RefreshFromChain reloads full pool state from the current chain head.
-func (s *BootstrapService) RefreshFromChain(ctx context.Context, poolID marketv4.PoolID) (*marketv4.Pool, error) {
-	key, err := s.registry.GetKey(ctx, poolID)
-	if err != nil {
-		return nil, fmt.Errorf("resolve pool key: %w", err)
-	}
-
-	pool, err := s.pools.Get(ctx, poolID)
-	if err != nil {
-		return nil, fmt.Errorf("load pool: %w", err)
-	}
-	if pool == nil {
-		return nil, fmt.Errorf("pool %s not found", poolID)
-	}
-
-	chainData, err := s.readChainBootstrap(ctx, poolID, key)
-	if err != nil {
-		return nil, err
-	}
-	pool.Key = chainData.Key
-	applyBootstrapData(pool, chainData)
-	pool.LastBlockNumber = chainData.BlockNumber
-	pool.Status = market.PoolStatusCatchingUp
-	if err := s.pools.Save(ctx, pool); err != nil {
-		return nil, fmt.Errorf("save pool: %w", err)
-	}
-	s.logChainBootstrap(poolID, chainData)
 	return pool, nil
 }
 

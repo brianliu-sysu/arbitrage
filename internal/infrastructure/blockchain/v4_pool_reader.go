@@ -108,7 +108,6 @@ func (r *V4PoolReader) readBaseState(ctx context.Context, poolID marketv4.PoolID
 	if err != nil {
 		return nil, fmt.Errorf("getSlot0 tick: %w", err)
 	}
-
 	liquidityValues, err := r.viewABI.Unpack("getLiquidity", results[1].ReturnData)
 	if err != nil {
 		return nil, fmt.Errorf("unpack getLiquidity: %w", err)

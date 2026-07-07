@@ -124,7 +124,6 @@ func TestSnapshotRestore(t *testing.T) {
 	if err := pool.Apply(NewModifyLiquidityEvent(testMeta(2), common.Address{}, -120, 120, amount, common.Hash{})); err != nil {
 		t.Fatalf("modify liquidity: %v", err)
 	}
-
 	snapshot := NewSnapshot(pool, 2, time.Unix(0, 0).UTC())
 	pool.State.Liquidity = big.NewInt(0)
 

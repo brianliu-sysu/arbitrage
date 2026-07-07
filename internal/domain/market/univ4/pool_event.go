@@ -67,9 +67,9 @@ type PoolEvent struct {
 	Meta EventMeta
 	Kind EventKind
 
-	Initialize       *InitializeEvent
-	Swap             *SwapEvent
-	ModifyLiquidity  *ModifyLiquidityEvent
+	Initialize      *InitializeEvent
+	Swap            *SwapEvent
+	ModifyLiquidity *ModifyLiquidityEvent
 }
 
 func NewInitializeEvent(meta EventMeta, sqrtPriceX96 *big.Int, tick int32) PoolEvent {
