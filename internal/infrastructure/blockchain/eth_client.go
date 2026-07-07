@@ -117,6 +117,18 @@ func (c *EthClient) GetLatestBlockHeader(ctx context.Context) (domainchain.Block
 	return headerToDomain(header), nil
 }
 
+// ResolveBlockNumber returns blockNumber when non-zero, otherwise the latest head.
+func (c *EthClient) ResolveBlockNumber(ctx context.Context, blockNumber uint64) (uint64, error) {
+	if blockNumber != 0 {
+		return blockNumber, nil
+	}
+	header, err := c.GetLatestBlockHeader(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return header.Number, nil
+}
+
 func (c *EthClient) CallContract(ctx context.Context, to common.Address, data []byte, blockNumber uint64) ([]byte, error) {
 	return callContractWithRetry(ctx, c, to, data, blockNumber)
 }

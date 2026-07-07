@@ -15,7 +15,7 @@ type Services struct {
 	Client       *EthClient
 	Multicall    *Multicall
 	LogFetcher        *LogFetcher
-	PancakeLogFetcher *PancakeLogFetcher
+	PancakeLogFetcher *LogFetcher
 	HeadSub           *HeadSubscriber
 	Parser            *ABIParser
 	PancakeParser     *PancakeABIParser

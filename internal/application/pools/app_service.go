@@ -84,10 +84,10 @@ func (s *AppService) List(ctx context.Context) (*ListResponse, error) {
 	}
 
 	pools := make([]PoolInfo, 0)
-	if err := s.appendUniv3Pools(ctx, &pools); err != nil {
+	if err := appendCLV3PoolInfos(ctx, univ3CLV3Source(s), &pools); err != nil {
 		return nil, err
 	}
-	if err := s.appendPancakePools(ctx, &pools); err != nil {
+	if err := appendCLV3PoolInfos(ctx, pancakeCLV3Source(s), &pools); err != nil {
 		return nil, err
 	}
 	if err := s.appendV4Pools(ctx, &pools); err != nil {
@@ -136,60 +136,6 @@ func (s *AppService) List(ctx context.Context) (*ListResponse, error) {
 	})
 
 	return &ListResponse{Items: pools, Count: len(pools)}, nil
-}
-
-func (s *AppService) appendUniv3Pools(ctx context.Context, pools *[]PoolInfo) error {
-	if s.univ3Registry == nil || s.univ3Pools == nil {
-		return nil
-	}
-	addresses, err := s.univ3Registry.List(ctx)
-	if err != nil {
-		return fmt.Errorf("list univ3 pools: %w", err)
-	}
-	for _, address := range addresses {
-		pool, err := s.univ3Pools.Get(ctx, address)
-		if err != nil {
-			return fmt.Errorf("load univ3 pool %s: %w", address.Hex(), err)
-		}
-		if pool == nil {
-			continue
-		}
-		*pools = append(*pools, PoolInfo{
-			PoolAddress: address.Hex(),
-			PoolType:    PoolTypeUniv3,
-			Token0:      tokenInfoFromAddress(pool.Token0),
-			Token1:      tokenInfoFromAddress(pool.Token1),
-			Fee:         pool.Fee,
-		})
-	}
-	return nil
-}
-
-func (s *AppService) appendPancakePools(ctx context.Context, pools *[]PoolInfo) error {
-	if s.pancakeRegistry == nil || s.pancakePools == nil {
-		return nil
-	}
-	addresses, err := s.pancakeRegistry.List(ctx)
-	if err != nil {
-		return fmt.Errorf("list pancakev3 pools: %w", err)
-	}
-	for _, address := range addresses {
-		pool, err := s.pancakePools.Get(ctx, address)
-		if err != nil {
-			return fmt.Errorf("load pancakev3 pool %s: %w", address.Hex(), err)
-		}
-		if pool == nil {
-			continue
-		}
-		*pools = append(*pools, PoolInfo{
-			PoolAddress: address.Hex(),
-			PoolType:    PoolTypePancakeV3,
-			Token0:      tokenInfoFromAddress(pool.Token0),
-			Token1:      tokenInfoFromAddress(pool.Token1),
-			Fee:         pool.Fee,
-		})
-	}
-	return nil
 }
 
 func (s *AppService) appendV4Pools(ctx context.Context, pools *[]PoolInfo) error {

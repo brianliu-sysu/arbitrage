@@ -40,12 +40,9 @@ func (r *V4PoolReader) ReadBootstrapData(
 	key marketv4.PoolKey,
 	blockNumber uint64,
 ) (*syncv4.BootstrapData, error) {
-	if blockNumber == 0 {
-		header, err := r.client.GetLatestBlockHeader(ctx)
-		if err != nil {
-			return nil, err
-		}
-		blockNumber = header.Number
+	blockNumber, err := r.client.ResolveBlockNumber(ctx, blockNumber)
+	if err != nil {
+		return nil, err
 	}
 
 	baseResults, err := r.readBaseState(ctx, poolID, blockNumber)
@@ -127,22 +124,89 @@ func (r *V4PoolReader) readBaseState(ctx context.Context, poolID marketv4.PoolID
 // ReadBaseState loads slot0 and liquidity for a V4 pool at the given block.
 // blockNumber 0 uses the latest head.
 func (r *V4PoolReader) ReadBaseState(ctx context.Context, poolID marketv4.PoolID, blockNumber uint64) (*BasePoolState, error) {
-	if blockNumber == 0 {
-		header, err := r.client.GetLatestBlockHeader(ctx)
-		if err != nil {
-			return nil, err
-		}
-		blockNumber = header.Number
-	}
-	state, err := r.readBaseState(ctx, poolID, blockNumber)
+	states, err := r.ReadManyBaseStates(ctx, []marketv4.PoolID{poolID}, blockNumber)
 	if err != nil {
 		return nil, err
 	}
-	return &BasePoolState{
-		SqrtPriceX96: new(big.Int).Set(state.sqrtPriceX96),
-		Tick:         state.tick,
-		Liquidity:    new(big.Int).Set(state.liquidity),
-	}, nil
+	state, ok := states[poolID]
+	if !ok || state == nil {
+		return nil, fmt.Errorf("read base state for pool %s", poolID.String())
+	}
+	return state, nil
+}
+
+// ReadManyBaseStates loads slot0 and liquidity for many V4 pools in batched multicall requests.
+// blockNumber 0 uses the latest head. Missing or failed pools are omitted from the result map.
+func (r *V4PoolReader) ReadManyBaseStates(
+	ctx context.Context,
+	poolIDs []marketv4.PoolID,
+	blockNumber uint64,
+) (map[marketv4.PoolID]*BasePoolState, error) {
+	if len(poolIDs) == 0 {
+		return map[marketv4.PoolID]*BasePoolState{}, nil
+	}
+
+	blockNumber, err := r.client.ResolveBlockNumber(ctx, blockNumber)
+	if err != nil {
+		return nil, err
+	}
+
+	requests := make([]MulticallRequest, 0, len(poolIDs)*2)
+	for _, poolID := range poolIDs {
+		slot0Data, err := r.viewABI.Pack("getSlot0", poolID.Hash())
+		if err != nil {
+			return nil, fmt.Errorf("pack getSlot0: %w", err)
+		}
+		liquidityData, err := r.viewABI.Pack("getLiquidity", poolID.Hash())
+		if err != nil {
+			return nil, fmt.Errorf("pack getLiquidity: %w", err)
+		}
+		requests = append(requests,
+			MulticallRequest{Target: r.stateView, Data: slot0Data},
+			MulticallRequest{Target: r.stateView, Data: liquidityData},
+		)
+	}
+
+	results, err := r.multicall.Aggregate3(ctx, requests, blockNumber)
+	if err != nil {
+		return nil, err
+	}
+	if len(results) != len(requests) {
+		return nil, fmt.Errorf("expected %d v4 call results, got %d", len(requests), len(results))
+	}
+
+	out := make(map[marketv4.PoolID]*BasePoolState, len(poolIDs))
+	for i, poolID := range poolIDs {
+		slot0Result := results[i*2]
+		liquidityResult := results[i*2+1]
+		if !slot0Result.Success || !liquidityResult.Success {
+			continue
+		}
+
+		slot0Values, err := r.viewABI.Unpack("getSlot0", slot0Result.ReturnData)
+		if err != nil || len(slot0Values) < 2 {
+			continue
+		}
+		tick, err := abiInt24ToInt32(slot0Values[1])
+		if err != nil {
+			continue
+		}
+		liquidityValues, err := r.viewABI.Unpack("getLiquidity", liquidityResult.ReturnData)
+		if err != nil || len(liquidityValues) < 1 {
+			continue
+		}
+		liquidity, err := abiUintToBigInt(liquidityValues[0])
+		if err != nil {
+			continue
+		}
+
+		out[poolID] = &BasePoolState{
+			SqrtPriceX96: new(big.Int).Set(slot0Values[0].(*big.Int)),
+			Tick:         tick,
+			Liquidity:    new(big.Int).Set(liquidity),
+		}
+	}
+	return out, nil
 }
 
 // ReadPoolBaseState loads slot0 and liquidity for sync anchoring at a specific block.
@@ -287,33 +351,7 @@ func (r *V4PoolReader) callViewMethods(
 	blockNumber uint64,
 	requests []MulticallRequest,
 ) ([]MulticallResult, error) {
-	results, err := r.multicall.Aggregate3(ctx, requests, blockNumber)
-	if err != nil {
-		return r.directViewMethods(ctx, blockNumber, requests)
-	}
-	if needsDirectPoolFallback(results) {
-		return r.directViewMethods(ctx, blockNumber, requests)
-	}
-	return results, nil
-}
-
-func (r *V4PoolReader) directViewMethods(
-	ctx context.Context,
-	blockNumber uint64,
-	requests []MulticallRequest,
-) ([]MulticallResult, error) {
-	results := make([]MulticallResult, len(requests))
-	for i, request := range requests {
-		output, err := r.client.CallContract(ctx, request.Target, request.Data, blockNumber)
-		if err != nil {
-			return nil, fmt.Errorf("call state view: %w", err)
-		}
-		results[i] = MulticallResult{
-			Success:    len(output) > 0,
-			ReturnData: output,
-		}
-	}
-	return results, nil
+	return r.multicall.Aggregate3WithDirectFallback(ctx, requests, blockNumber)
 }
 
 func (r *V4PoolReader) tickInfoReturnData(
@@ -323,17 +361,11 @@ func (r *V4PoolReader) tickInfoReturnData(
 	callData []byte,
 	result MulticallResult,
 ) ([]byte, error) {
-	if result.Success && len(result.ReturnData) > 0 {
-		return result.ReturnData, nil
-	}
-	output, err := r.client.CallContract(ctx, r.stateView, callData, blockNumber)
+	returnData, err := multicallReturnDataOrDirect(ctx, r.client, r.stateView, callData, blockNumber, result)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("tick %d: %w", tick, err)
 	}
-	if len(output) == 0 {
-		return nil, fmt.Errorf("tick %d returned empty data", tick)
-	}
-	return output, nil
+	return returnData, nil
 }
 
 func (r *V4PoolReader) tickBitmapReturnData(
@@ -342,17 +374,7 @@ func (r *V4PoolReader) tickBitmapReturnData(
 	callData []byte,
 	result MulticallResult,
 ) ([]byte, error) {
-	if result.Success && len(result.ReturnData) > 0 {
-		return result.ReturnData, nil
-	}
-	output, err := r.client.CallContract(ctx, r.stateView, callData, blockNumber)
-	if err != nil {
-		return nil, err
-	}
-	if len(output) == 0 {
-		return nil, fmt.Errorf("tickBitmap returned empty data")
-	}
-	return output, nil
+	return multicallReturnDataOrDirect(ctx, r.client, r.stateView, callData, blockNumber, result)
 }
 
 const stateViewABIJSON = `[

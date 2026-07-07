@@ -67,8 +67,9 @@ func TestApplyBlockAdvancesIdlePoolWithoutReplacingState(t *testing.T) {
 	}
 	pool.LastBlockNumber = 9
 
+	poolRepo := &bootstrapV4PoolRepo{pool: pool}
 	service := NewBlockApplyService(
-		&bootstrapV4PoolRepo{pool: pool},
+		poolRepo,
 		newMemoryV4CheckpointRepo(),
 		nil,
 		NewReadinessService(),
@@ -86,7 +87,7 @@ func TestApplyBlockAdvancesIdlePoolWithoutReplacingState(t *testing.T) {
 		t.Fatalf("expected idle pool to be reported changed, got %v", result.ChangedPools)
 	}
 
-	synced, err := service.pools.Get(ctx, poolID)
+	synced, err := poolRepo.Get(ctx, poolID)
 	if err != nil {
 		t.Fatalf("load synced pool: %v", err)
 	}

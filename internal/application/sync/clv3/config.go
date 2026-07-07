@@ -71,12 +71,7 @@ type PoolRepository interface {
 }
 
 // SnapshotRepository stores CLMM V3 pool snapshots keyed by contract address.
-type SnapshotRepository interface {
-	Save(ctx context.Context, snapshot *marketclv3.Snapshot) error
-	GetLatest(ctx context.Context, poolAddress common.Address) (*marketclv3.Snapshot, error)
-	GetAtBlock(ctx context.Context, poolAddress common.Address, blockNumber uint64) (*marketclv3.Snapshot, error)
-	DeleteAfterBlock(ctx context.Context, poolAddress common.Address, blockNumber uint64) error
-}
+type SnapshotRepository = syncapp.SnapshotRepository[common.Address, marketclv3.Snapshot]
 
 // PoolFactory constructs a new pool aggregate for cold bootstrap.
 type PoolFactory func(address, token0, token1 common.Address, fee uint32, tickSpacing int32) *marketclv3.Pool

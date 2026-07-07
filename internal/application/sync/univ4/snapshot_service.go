@@ -2,7 +2,6 @@ package syncv4
 
 import (
 	"context"
-	"time"
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
@@ -10,83 +9,41 @@ import (
 
 type SnapshotPolicy = syncapp.SnapshotPolicy
 
-// SnapshotService creates and restores V4 pool snapshots.
-type SnapshotService struct {
-	snapshots marketv4.SnapshotRepository
-	policy    SnapshotPolicy
-	clock     func() time.Time
+type SnapshotService = syncapp.SnapshotService[marketv4.PoolID, marketv4.Pool, marketv4.Snapshot]
+
+var v4SnapshotOps = syncapp.SnapshotOps[marketv4.PoolID, marketv4.Pool, marketv4.Snapshot]{
+	PoolID:      func(pool *marketv4.Pool) marketv4.PoolID { return pool.ID },
+	NewSnapshot: marketv4.NewSnapshot,
+	RestoreTo:   func(snapshot *marketv4.Snapshot, pool *marketv4.Pool) { snapshot.RestoreTo(pool) },
+	BlockNumber: func(snapshot *marketv4.Snapshot) uint64 { return snapshot.BlockNumber },
+	LastBlock:   func(pool *marketv4.Pool) uint64 { return pool.LastBlockNumber },
+	IsInitialized: func(pool *marketv4.Pool) bool {
+		return pool.State.IsInitialized()
+	},
 }
 
 func NewSnapshotService(snapshots marketv4.SnapshotRepository, policy SnapshotPolicy) *SnapshotService {
-	return &SnapshotService{
-		snapshots: snapshots,
-		policy:    policy,
-		clock:     time.Now,
-	}
+	return syncapp.NewSnapshotService(snapshots, policy, v4SnapshotOps)
 }
 
-func (s *SnapshotService) LoadLatest(ctx context.Context, poolID marketv4.PoolID) (*marketv4.Snapshot, error) {
-	return s.snapshots.GetLatest(ctx, poolID)
-}
+type SnapshotScheduler = syncapp.SnapshotScheduler[marketv4.PoolID, marketv4.Pool]
 
-// LoadAtOrBefore returns an exact snapshot at blockNumber, or the latest snapshot at or before it.
-func (s *SnapshotService) LoadAtOrBefore(ctx context.Context, poolID marketv4.PoolID, blockNumber uint64) (*marketv4.Snapshot, error) {
-	exact, err := s.snapshots.GetAtBlock(ctx, poolID, blockNumber)
-	if err != nil {
-		return nil, err
-	}
-	if exact != nil {
-		return exact, nil
-	}
-	latest, err := s.snapshots.GetLatest(ctx, poolID)
-	if err != nil {
-		return nil, err
-	}
-	if latest != nil && latest.BlockNumber > blockNumber {
-		return nil, nil
-	}
-	return latest, nil
-}
-
-func (s *SnapshotService) Create(ctx context.Context, pool *marketv4.Pool, blockNumber uint64) error {
-	snapshot := marketv4.NewSnapshot(pool, blockNumber, s.clock().UTC())
-	return s.snapshots.Save(ctx, snapshot)
-}
-
-func (s *SnapshotService) MaybeCreateSnapshot(ctx context.Context, pool *marketv4.Pool, blockNumber uint64) error {
-	latest, err := s.snapshots.GetLatest(ctx, pool.ID)
-	if err != nil {
-		return err
-	}
-
-	lastBlock := uint64(0)
-	if latest != nil {
-		lastBlock = latest.BlockNumber
-	}
-	if !s.policy.ShouldSnapshot(lastBlock, blockNumber) {
-		return nil
-	}
-	return s.Create(ctx, pool, blockNumber)
-}
-
-func (s *SnapshotService) RestorePool(ctx context.Context, pool *marketv4.Pool) (*marketv4.Snapshot, error) {
-	snapshot, err := s.snapshots.GetLatest(ctx, pool.ID)
-	if err != nil {
-		return nil, err
-	}
-	if snapshot == nil {
-		return nil, nil
-	}
-	if pool.LastBlockNumber == 0 && pool.State.IsInitialized() {
-		return snapshot, nil
-	}
-	if pool.LastBlockNumber > 0 && snapshot.BlockNumber <= pool.LastBlockNumber {
-		return snapshot, nil
-	}
-	snapshot.RestoreTo(pool)
-	return snapshot, nil
-}
-
-func (s *SnapshotService) DeleteAfterBlock(ctx context.Context, poolID marketv4.PoolID, blockNumber uint64) error {
-	return s.snapshots.DeleteAfterBlock(ctx, poolID, blockNumber)
+func NewSnapshotScheduler(
+	config Config,
+	pools marketv4.PoolRepository,
+	snapshots *SnapshotService,
+	lifecycle *PoolLifecycleService,
+) *SnapshotScheduler {
+	return syncapp.NewSnapshotScheduler(syncapp.SnapshotSchedulerDeps[marketv4.PoolID, marketv4.Pool]{
+		FallbackInterval: config.SnapshotFallback,
+		Lifecycle:        lifecycle,
+		LoadPool: func(ctx context.Context, poolID marketv4.PoolID) (*marketv4.Pool, error) {
+			return pools.Get(ctx, poolID)
+		},
+		CreateSnapshot: func(ctx context.Context, pool *marketv4.Pool, blockNumber uint64) error {
+			return snapshots.Create(ctx, pool, blockNumber)
+		},
+		PoolLastBlock: func(pool *marketv4.Pool) uint64 { return pool.LastBlockNumber },
+		FormatPoolID:  func(poolID marketv4.PoolID) string { return poolID.String() },
+	})
 }

@@ -3,7 +3,6 @@ package clv3sync
 import (
 	"context"
 	"fmt"
-	"sort"
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
@@ -11,17 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// CatchupService replays historical blocks from checkpoint to a target height.
-type CatchupService struct {
-	config      Config
-	pools       PoolRepository
-	checkpoints blockchain.CheckpointRepository
-	fetcher     LogFetcher
-	parser      EventParser
-	blockApply  *BlockApplyService
-	lifecycle   *PoolLifecycleService
-	blocks      BlockReader
-}
+type CatchupService = syncapp.CatchupService[common.Address, marketclv3.PoolEvent]
 
 func NewCatchupService(
 	config Config,
@@ -33,94 +22,62 @@ func NewCatchupService(
 	lifecycle *PoolLifecycleService,
 	blocks BlockReader,
 ) *CatchupService {
-	return &CatchupService{
-		config:      config,
-		pools:       pools,
-		checkpoints: checkpoints,
-		fetcher:     fetcher,
-		parser:      parser,
-		blockApply:  blockApply,
-		lifecycle:   lifecycle,
-		blocks:      blocks,
-	}
-}
-
-type catchupPoolTask struct {
-	address   common.Address
-	fromBlock uint64
-}
-
-type catchupPoolGroup struct {
-	minFromBlock uint64
-	tasks        []catchupPoolTask
-}
-
-func (s *CatchupService) CatchUpAll(ctx context.Context, targetBlock uint64) error {
-	tasks, err := s.buildCatchupTasks(ctx, targetBlock)
-	if err != nil {
-		return err
-	}
-
-	groups := groupCatchupPools(
-		tasks,
-		s.config.CatchupPoolGroupSize,
-		s.config.CatchupBlockSpan,
+	return syncapp.NewCatchupService(
+		config,
+		lifecycle,
+		blocks,
+		syncapp.CatchupHooks[common.Address, marketclv3.PoolEvent]{
+			FormatPoolID: func(address common.Address) string { return address.Hex() },
+			LessPoolID: func(a, b common.Address) bool { return a.Hex() < b.Hex() },
+			LoadStartBlock: func(ctx context.Context, poolAddress common.Address) (uint64, error) {
+				return loadCLV3CatchupStartBlock(ctx, checkpoints, pools, poolAddress)
+			},
+			FetchLogs: func(ctx context.Context, poolAddresses []common.Address, fromBlock, toBlock uint64) ([]syncapp.RawLog, error) {
+				if fetcher == nil {
+					return nil, fmt.Errorf("log fetcher is not configured")
+				}
+				return fetcher.FetchLogs(ctx, LogFilter{
+					PoolAddresses: poolAddresses,
+					FromBlock:     fromBlock,
+					ToBlock:       toBlock,
+				})
+			},
+			ParseEvents: func(logs []syncapp.RawLog) ([]marketclv3.PoolEvent, error) {
+				if parser == nil {
+					return nil, fmt.Errorf("event parser is not configured")
+				}
+				return parser.ParsePoolEvents(logs)
+			},
+			EventBlockNumber: func(event marketclv3.PoolEvent) uint64 { return event.Meta.BlockNumber },
+			ApplyBlock: func(ctx context.Context, blockNumber uint64, blockHash common.Hash, events []marketclv3.PoolEvent, tracked []common.Address, suppressListener bool) error {
+				if blockApply == nil {
+					return fmt.Errorf("block apply service is not configured")
+				}
+				_, err := blockApply.ApplyBlock(ctx, ApplyBlockRequest{
+					BlockNumber:      blockNumber,
+					BlockHash:        blockHash,
+					Events:           events,
+					TrackedPools:     tracked,
+					SuppressListener: suppressListener,
+				})
+				return err
+			},
+		},
 	)
-	for _, group := range groups {
-		if err := s.catchUpGroup(ctx, group, targetBlock); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
-func (s *CatchupService) CatchUpPool(ctx context.Context, poolAddress common.Address, targetBlock uint64) error {
-	fromBlock, err := s.poolCatchupStartBlock(ctx, poolAddress)
-	if err != nil {
-		return fmt.Errorf("load catchup start for pool %s: %w", poolAddress.Hex(), err)
-	}
-	if fromBlock > targetBlock {
-		return nil
-	}
-
-	return s.catchUpGroup(ctx, catchupPoolGroup{
-		minFromBlock: fromBlock,
-		tasks:        []catchupPoolTask{{address: poolAddress, fromBlock: fromBlock}},
-	}, targetBlock)
-}
-
-func (s *CatchupService) buildCatchupTasks(ctx context.Context, targetBlock uint64) ([]catchupPoolTask, error) {
-	tasks := make([]catchupPoolTask, 0, len(s.lifecycle.ListActive()))
-	for _, poolAddress := range s.lifecycle.ListActive() {
-		fromBlock, err := s.poolCatchupStartBlock(ctx, poolAddress)
-		if err != nil {
-			return nil, fmt.Errorf("load catchup start for pool %s: %w", poolAddress.Hex(), err)
-		}
-		if fromBlock > targetBlock {
-			continue
-		}
-		tasks = append(tasks, catchupPoolTask{
-			address:   poolAddress,
-			fromBlock: fromBlock,
-		})
-	}
-
-	sort.Slice(tasks, func(i, j int) bool {
-		if tasks[i].fromBlock != tasks[j].fromBlock {
-			return tasks[i].fromBlock < tasks[j].fromBlock
-		}
-		return tasks[i].address.Hex() < tasks[j].address.Hex()
-	})
-	return tasks, nil
-}
-
-func (s *CatchupService) poolCatchupStartBlock(ctx context.Context, poolAddress common.Address) (uint64, error) {
-	checkpoint, err := s.checkpoints.Get(ctx, poolAddress)
+func loadCLV3CatchupStartBlock(
+	ctx context.Context,
+	checkpoints blockchain.CheckpointRepository,
+	pools PoolRepository,
+	poolAddress common.Address,
+) (uint64, error) {
+	checkpoint, err := checkpoints.Get(ctx, poolAddress)
 	if err != nil {
 		return 0, fmt.Errorf("load checkpoint: %w", err)
 	}
 
-	pool, err := s.pools.Get(ctx, poolAddress)
+	pool, err := pools.Get(ctx, poolAddress)
 	if err != nil {
 		return 0, fmt.Errorf("load pool: %w", err)
 	}
@@ -134,134 +91,4 @@ func (s *CatchupService) poolCatchupStartBlock(ctx context.Context, poolAddress 
 		poolLastBlock = pool.LastBlockNumber
 	}
 	return syncapp.CatchupStartBlock(checkpointBlock, poolLastBlock), nil
-}
-
-func groupCatchupPools(tasks []catchupPoolTask, maxPools, maxBlockSpan uint64) []catchupPoolGroup {
-	fromBlocks := make([]uint64, len(tasks))
-	for i, task := range tasks {
-		fromBlocks[i] = task.fromBlock
-	}
-
-	indexGroups := syncapp.GroupCatchupFromBlocks(fromBlocks, maxPools, maxBlockSpan)
-	groups := make([]catchupPoolGroup, 0, len(indexGroups))
-	for _, indexGroup := range indexGroups {
-		groupTasks := make([]catchupPoolTask, len(indexGroup.Indices))
-		for i, idx := range indexGroup.Indices {
-			groupTasks[i] = tasks[idx]
-		}
-		groups = append(groups, catchupPoolGroup{
-			minFromBlock: indexGroup.MinFromBlock,
-			tasks:        groupTasks,
-		})
-	}
-	return groups
-}
-
-func (s *CatchupService) catchUpGroup(ctx context.Context, group catchupPoolGroup, targetBlock uint64) error {
-	fromBlocks := make(map[common.Address]uint64, len(group.tasks))
-	poolAddresses := make([]common.Address, 0, len(group.tasks))
-	for _, task := range group.tasks {
-		fromBlocks[task.address] = task.fromBlock
-		poolAddresses = append(poolAddresses, task.address)
-	}
-
-	for start := group.minFromBlock; start <= targetBlock; {
-		end := start + s.config.CatchupBatchSize - 1
-		if end > targetBlock {
-			end = targetBlock
-		}
-		if err := s.catchUpRange(ctx, poolAddresses, fromBlocks, start, end); err != nil {
-			return fmt.Errorf("catch up blocks [%d,%d]: %w", start, end, err)
-		}
-		start = end + 1
-	}
-	return nil
-}
-
-func (s *CatchupService) catchUpRange(
-	ctx context.Context,
-	pools []common.Address,
-	fromBlocks map[common.Address]uint64,
-	fromBlock, toBlock uint64,
-) error {
-	logs, err := s.fetcher.FetchLogs(ctx, LogFilter{
-		PoolAddresses: pools,
-		FromBlock:     fromBlock,
-		ToBlock:       toBlock,
-	})
-	if err != nil {
-		return fmt.Errorf("fetch logs: %w", err)
-	}
-
-	events, err := s.parser.ParsePoolEvents(logs)
-	if err != nil {
-		return fmt.Errorf("parse events: %w", err)
-	}
-
-	blockHashes := syncapp.BlockHashesFromLogs(logs)
-	eventsByBlock := groupEventsByBlock(events)
-
-	missingHeaderBlocks := make([]uint64, 0)
-	for blockNumber := fromBlock; blockNumber <= toBlock; blockNumber++ {
-		if len(trackedPoolsForBlock(pools, fromBlocks, blockNumber)) == 0 {
-			continue
-		}
-		if _, ok := blockHashes[blockNumber]; !ok {
-			missingHeaderBlocks = append(missingHeaderBlocks, blockNumber)
-		}
-	}
-	if len(missingHeaderBlocks) > 0 {
-		fetched, err := syncapp.FetchBlockHeaders(ctx, s.blocks, missingHeaderBlocks, s.config.CatchupHeaderConcurrency)
-		if err != nil {
-			return err
-		}
-		for blockNumber, blockHash := range fetched {
-			blockHashes[blockNumber] = blockHash
-		}
-	}
-
-	for blockNumber := fromBlock; blockNumber <= toBlock; blockNumber++ {
-		trackedPools := trackedPoolsForBlock(pools, fromBlocks, blockNumber)
-		if len(trackedPools) == 0 {
-			continue
-		}
-
-		blockHash, ok := blockHashes[blockNumber]
-		if !ok {
-			return fmt.Errorf("missing block hash for block %d", blockNumber)
-		}
-		if _, err := s.blockApply.ApplyBlock(ctx, ApplyBlockRequest{
-			BlockNumber:      blockNumber,
-			BlockHash:        blockHash,
-			Events:           eventsByBlock[blockNumber],
-			TrackedPools:     trackedPools,
-			SuppressListener: true,
-		}); err != nil {
-			return fmt.Errorf("apply block %d: %w", blockNumber, err)
-		}
-	}
-	return nil
-}
-
-func trackedPoolsForBlock(
-	pools []common.Address,
-	fromBlocks map[common.Address]uint64,
-	blockNumber uint64,
-) []common.Address {
-	tracked := make([]common.Address, 0, len(pools))
-	for _, poolAddress := range pools {
-		if fromBlocks[poolAddress] <= blockNumber {
-			tracked = append(tracked, poolAddress)
-		}
-	}
-	return tracked
-}
-
-func groupEventsByBlock(events []marketclv3.PoolEvent) map[uint64][]marketclv3.PoolEvent {
-	grouped := make(map[uint64][]marketclv3.PoolEvent)
-	for _, event := range events {
-		blockNumber := event.Meta.BlockNumber
-		grouped[blockNumber] = append(grouped[blockNumber], event)
-	}
-	return grouped
 }

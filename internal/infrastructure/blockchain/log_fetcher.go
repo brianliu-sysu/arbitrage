@@ -9,15 +9,21 @@ import (
 	clv3sync "github.com/brianliu-sysu/uniswapv3/internal/application/sync/clv3"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 )
 
-// LogFetcher loads pool logs via eth_getLogs.
+// LogFetcher loads CLV3 pool logs via eth_getLogs.
 type LogFetcher struct {
 	client *EthClient
+	topics []common.Hash
 }
 
 func NewLogFetcher(client *EthClient) *LogFetcher {
-	return &LogFetcher{client: client}
+	return &LogFetcher{client: client, topics: PoolLogTopics()}
+}
+
+func NewPancakeLogFetcher(client *EthClient) *LogFetcher {
+	return &LogFetcher{client: client, topics: PancakePoolLogTopics()}
 }
 
 func (f *LogFetcher) FetchLogs(ctx context.Context, filter clv3sync.LogFilter) ([]syncapp.RawLog, error) {
@@ -32,14 +38,17 @@ func (f *LogFetcher) FetchLogs(ctx context.Context, filter clv3sync.LogFilter) (
 		FromBlock: new(big.Int).SetUint64(filter.FromBlock),
 		ToBlock:   new(big.Int).SetUint64(filter.ToBlock),
 		Addresses: filter.PoolAddresses,
-		Topics:    [][]common.Hash{PoolLogTopics()},
+		Topics:    [][]common.Hash{f.topics},
 	}
 
 	logs, err := f.client.FilterLogs(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("filter logs: %w", err)
 	}
+	return rawLogsFromEth(logs), nil
+}
 
+func rawLogsFromEth(logs []types.Log) []syncapp.RawLog {
 	rawLogs := make([]syncapp.RawLog, 0, len(logs))
 	for _, log := range logs {
 		rawLogs = append(rawLogs, syncapp.RawLog{
@@ -52,5 +61,5 @@ func (f *LogFetcher) FetchLogs(ctx context.Context, filter clv3sync.LogFilter) (
 			LogIndex:    log.Index,
 		})
 	}
-	return rawLogs, nil
+	return rawLogs
 }

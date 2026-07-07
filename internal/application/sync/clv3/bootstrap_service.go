@@ -2,7 +2,6 @@ package clv3sync
 
 import (
 	"context"
-	"fmt"
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
 	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
@@ -10,14 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// BootstrapService cold-starts a pool from chain state or snapshot.
-type BootstrapService struct {
-	pools               PoolRepository
-	newPool             PoolFactory
-	reader              PoolBootstrapReader
-	snapshot            *SnapshotService
-	staleBlockThreshold uint64
-}
+type BootstrapService = syncapp.BootstrapService[common.Address, *marketclv3.Pool, *BootstrapData]
 
 func NewBootstrapService(
 	pools PoolRepository,
@@ -26,76 +18,36 @@ func NewBootstrapService(
 	snapshot *SnapshotService,
 	staleBlockThreshold uint64,
 ) *BootstrapService {
-	if staleBlockThreshold == 0 {
-		staleBlockThreshold = DefaultConfig().BootstrapStaleBlockThreshold
-	}
-	return &BootstrapService{
-		pools:               pools,
-		newPool:             newPool,
-		reader:              reader,
-		snapshot:            snapshot,
-		staleBlockThreshold: staleBlockThreshold,
-	}
-}
-
-func (s *BootstrapService) Bootstrap(ctx context.Context, poolAddress common.Address, blockNumber uint64) (*marketclv3.Pool, error) {
-	pool, err := s.pools.Get(ctx, poolAddress)
-	if err != nil {
-		return nil, fmt.Errorf("load pool: %w", err)
-	}
-
-	chainBootstrapped := false
-
-	if pool == nil {
-		data, err := s.reader.ReadBootstrapData(ctx, poolAddress, blockNumber)
-		if err != nil {
-			return nil, fmt.Errorf("read bootstrap data: %w", err)
-		}
-		pool = s.newPool(poolAddress, data.Token0, data.Token1, data.Fee, data.TickSpacing)
-		applyBootstrapData(pool, data)
-		pool.Status = market.PoolStatusBootstrapping
-		chainBootstrapped = true
-	} else {
-		pool.Status = market.PoolStatusBootstrapping
-		if s.snapshot != nil {
-			if _, err := s.snapshot.RestorePool(ctx, pool); err != nil {
-				return nil, fmt.Errorf("restore snapshot: %w", err)
+	return syncapp.NewBootstrapService(staleBlockThreshold, syncapp.BootstrapHooks[common.Address, *marketclv3.Pool, *BootstrapData]{
+		IsNilPool: func(pool *marketclv3.Pool) bool { return pool == nil },
+		IsNilData: func(data *BootstrapData) bool { return data == nil },
+		LoadPool:  pools.Get,
+		SavePool:  pools.Save,
+		RestoreSnapshot: func(ctx context.Context, pool *marketclv3.Pool) error {
+			if snapshot == nil {
+				return nil
 			}
-		}
-	}
-
-	if !pool.State.IsInitialized() {
-		data, err := s.reader.ReadBootstrapData(ctx, poolAddress, blockNumber)
-		if err != nil {
-			return nil, fmt.Errorf("read bootstrap data: %w", err)
-		}
-		pool.Token0 = data.Token0
-		pool.Token1 = data.Token1
-		pool.Fee = data.Fee
-		pool.TickSpacing = data.TickSpacing
-		applyBootstrapData(pool, data)
-		chainBootstrapped = true
-	} else if pool.LastBlockNumber < blockNumber || syncapp.NeedsChainRebootstrap(pool.LastBlockNumber, blockNumber, s.staleBlockThreshold) {
-		data, err := s.reader.ReadBootstrapData(ctx, poolAddress, blockNumber)
-		if err != nil {
-			return nil, fmt.Errorf("read bootstrap data: %w", err)
-		}
-		pool.Token0 = data.Token0
-		pool.Token1 = data.Token1
-		pool.Fee = data.Fee
-		pool.TickSpacing = data.TickSpacing
-		applyBootstrapData(pool, data)
-		chainBootstrapped = true
-	}
-
-	if chainBootstrapped {
-		pool.LastBlockNumber = blockNumber
-	}
-	pool.Status = market.PoolStatusCatchingUp
-	if err := s.pools.Save(ctx, pool); err != nil {
-		return nil, fmt.Errorf("save pool: %w", err)
-	}
-	return pool, nil
+			_, err := snapshot.RestorePool(ctx, pool)
+			return err
+		},
+		ReadChainData: reader.ReadBootstrapData,
+		NewPoolFromChain: func(poolAddress common.Address, data *BootstrapData) (*marketclv3.Pool, error) {
+			return newPool(poolAddress, data.Token0, data.Token1, data.Fee, data.TickSpacing), nil
+		},
+		UpdatePoolFromChain: func(pool *marketclv3.Pool, data *BootstrapData) {
+			pool.Token0 = data.Token0
+			pool.Token1 = data.Token1
+			pool.Fee = data.Fee
+			pool.TickSpacing = data.TickSpacing
+			applyBootstrapData(pool, data)
+		},
+		IsInitialized: func(pool *marketclv3.Pool) bool { return pool.State.IsInitialized() },
+		PoolLastBlock: func(pool *marketclv3.Pool) uint64 { return pool.LastBlockNumber },
+		SetStatus:     func(pool *marketclv3.Pool, status market.PoolStatus) { pool.Status = status },
+		SetLastBlockOnChainBootstrap: func(pool *marketclv3.Pool, _ *BootstrapData, blockNumber uint64) {
+			pool.LastBlockNumber = blockNumber
+		},
+	})
 }
 
 func applyBootstrapData(pool *marketclv3.Pool, data *BootstrapData) {

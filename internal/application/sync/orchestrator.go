@@ -48,3 +48,71 @@ func RunStartup(ctx context.Context, blocks BlockReader, phases SyncPhases) erro
 
 	return phases.RunHeadSync(ctx)
 }
+
+// SyncOrchestrator coordinates bootstrap, catchup, and live head sync startup.
+type SyncOrchestrator[PoolID comparable] struct {
+	blocks     BlockReader
+	lifecycle  *PoolLifecycleService[PoolID]
+	catchup    interface {
+		CatchUpAll(context.Context, uint64) error
+	}
+	headSync interface {
+		Run(context.Context) error
+		SetLocalHead(blockchain.BlockHeader)
+	}
+	blockApply interface {
+		MarkPoolsReady(context.Context, []PoolID) error
+	}
+	scheduler interface {
+		Run(context.Context) error
+	}
+	readiness *ReadinessService[PoolID]
+}
+
+func NewSyncOrchestrator[PoolID comparable](
+	blocks BlockReader,
+	lifecycle *PoolLifecycleService[PoolID],
+	catchup interface {
+		CatchUpAll(context.Context, uint64) error
+	},
+	headSync interface {
+		Run(context.Context) error
+		SetLocalHead(blockchain.BlockHeader)
+	},
+	blockApply interface {
+		MarkPoolsReady(context.Context, []PoolID) error
+	},
+	scheduler interface {
+		Run(context.Context) error
+	},
+	readiness *ReadinessService[PoolID],
+) *SyncOrchestrator[PoolID] {
+	return &SyncOrchestrator[PoolID]{
+		blocks:     blocks,
+		lifecycle:  lifecycle,
+		catchup:    catchup,
+		headSync:   headSync,
+		blockApply: blockApply,
+		scheduler:  scheduler,
+		readiness:  readiness,
+	}
+}
+
+func (o *SyncOrchestrator[PoolID]) Start(ctx context.Context) error {
+	var schedulerRun func(context.Context) error
+	if o.scheduler != nil {
+		schedulerRun = o.scheduler.Run
+	}
+
+	return RunStartup(ctx, o.blocks, SyncPhases{
+		StartAll:   o.lifecycle.StartAll,
+		CatchUpAll: o.catchup.CatchUpAll,
+		MarkPoolsReady: func(ctx context.Context) error {
+			return o.blockApply.MarkPoolsReady(ctx, o.lifecycle.ListActive())
+		},
+		SetLocalHead:   o.headSync.SetLocalHead,
+		SetSystemReady: o.readiness.SetSystemReady,
+		RunHeadSync:    o.headSync.Run,
+		RunScheduler:   schedulerRun,
+	})
+}

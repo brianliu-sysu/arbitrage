@@ -1,21 +1,11 @@
 package syncv4
 
 import (
-	"context"
-
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 )
 
-// SyncOrchestrator coordinates V4 bootstrap, catchup, and live head sync startup.
-type SyncOrchestrator struct {
-	blocks     BlockReader
-	lifecycle  *PoolLifecycleService
-	catchup    *CatchupService
-	headSync   *HeadSyncService
-	blockApply *BlockApplyService
-	scheduler  *SnapshotScheduler
-	readiness  *ReadinessService
-}
+type SyncOrchestrator = syncapp.SyncOrchestrator[marketv4.PoolID]
 
 func NewSyncOrchestrator(
 	_ Config,
@@ -27,34 +17,15 @@ func NewSyncOrchestrator(
 	scheduler *SnapshotScheduler,
 	readiness *ReadinessService,
 ) *SyncOrchestrator {
-	return &SyncOrchestrator{
-		blocks:     blocks,
-		lifecycle:  lifecycle,
-		catchup:    catchup,
-		headSync:   headSync,
-		blockApply: blockApply,
-		scheduler:  scheduler,
-		readiness:  readiness,
-	}
-}
-
-func (o *SyncOrchestrator) Start(ctx context.Context) error {
-	var schedulerRun func(context.Context) error
-	if o.scheduler != nil {
-		schedulerRun = o.scheduler.Run
-	}
-
-	return syncapp.RunStartup(ctx, o.blocks, syncapp.SyncPhases{
-		StartAll:   o.lifecycle.StartAll,
-		CatchUpAll: o.catchup.CatchUpAll,
-		MarkPoolsReady: func(ctx context.Context) error {
-			return o.blockApply.MarkPoolsReady(ctx, o.lifecycle.ListActive())
-		},
-		SetLocalHead:   o.headSync.SetLocalHead,
-		SetSystemReady: o.readiness.SetSystemReady,
-		RunHeadSync:    o.headSync.Run,
-		RunScheduler:   schedulerRun,
-	})
+	return syncapp.NewSyncOrchestrator(
+		blocks,
+		lifecycle,
+		catchup,
+		headSync,
+		blockApply,
+		scheduler,
+		readiness,
+	)
 }
 
 // Services bundles the V4 sync application services for wiring.

@@ -113,6 +113,63 @@ func (m *Multicall) aggregate3Batch(ctx context.Context, requests []MulticallReq
 	return results, nil
 }
 
+// Aggregate3WithDirectFallback runs aggregate3 and falls back to individual eth_call when needed.
+func (m *Multicall) Aggregate3WithDirectFallback(
+	ctx context.Context,
+	requests []MulticallRequest,
+	blockNumber uint64,
+) ([]MulticallResult, error) {
+	results, err := m.Aggregate3(ctx, requests, blockNumber)
+	if err != nil {
+		return directMulticallResults(ctx, m.client, blockNumber, requests)
+	}
+	if needsDirectPoolFallback(results) {
+		return directMulticallResults(ctx, m.client, blockNumber, requests)
+	}
+	return results, nil
+}
+
+func directMulticallResults(
+	ctx context.Context,
+	client *EthClient,
+	blockNumber uint64,
+	requests []MulticallRequest,
+) ([]MulticallResult, error) {
+	results := make([]MulticallResult, len(requests))
+	for i, request := range requests {
+		output, err := client.CallContract(ctx, request.Target, request.Data, blockNumber)
+		if err != nil {
+			return nil, fmt.Errorf("call %s: %w", request.Target.Hex(), err)
+		}
+		results[i] = MulticallResult{
+			Success:    len(output) > 0,
+			ReturnData: output,
+		}
+	}
+	return results, nil
+}
+
+func multicallReturnDataOrDirect(
+	ctx context.Context,
+	client *EthClient,
+	target common.Address,
+	callData []byte,
+	blockNumber uint64,
+	result MulticallResult,
+) ([]byte, error) {
+	if result.Success && len(result.ReturnData) > 0 {
+		return result.ReturnData, nil
+	}
+	output, err := client.CallContract(ctx, target, callData, blockNumber)
+	if err != nil {
+		return nil, err
+	}
+	if len(output) == 0 {
+		return nil, fmt.Errorf("returned empty data")
+	}
+	return output, nil
+}
+
 type aggregate3Result struct {
 	Success    bool
 	ReturnData []byte

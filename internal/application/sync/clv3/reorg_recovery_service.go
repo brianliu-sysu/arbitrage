@@ -11,19 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// ReorgRecoveryService rolls back and replays pool state after a chain reorg.
-type ReorgRecoveryService struct {
-	config      Config
-	blocks      BlockReader
-	checkpoints blockchain.CheckpointRepository
-	pools       PoolRepository
-	bootstrap   PoolBootstrapReader
-	snapshots   *SnapshotService
-	fetcher     LogFetcher
-	parser      EventParser
-	blockApply  *BlockApplyService
-	readiness   *ReadinessService
-}
+type ReorgRecoveryService = syncapp.ReorgRecoveryService[common.Address, marketclv3.PoolEvent, *marketclv3.Pool]
 
 func NewReorgRecoveryService(
 	config Config,
@@ -37,99 +25,64 @@ func NewReorgRecoveryService(
 	blockApply *BlockApplyService,
 	readiness *ReadinessService,
 ) *ReorgRecoveryService {
-	return &ReorgRecoveryService{
-		config:      config,
-		blocks:      blocks,
-		checkpoints: checkpoints,
-		pools:       pools,
-		bootstrap:   bootstrap,
-		snapshots:   snapshots,
-		fetcher:     fetcher,
-		parser:      parser,
-		blockApply:  blockApply,
-		readiness:   readiness,
-	}
+	return syncapp.NewReorgRecoveryService(
+		config.ReorgMaxDepth,
+		blocks,
+		syncapp.ReorgRecoveryHooks[common.Address, marketclv3.PoolEvent, *marketclv3.Pool]{
+			FormatPoolID: func(address common.Address) string { return address.Hex() },
+			DeleteSnapshotsAfter: func(ctx context.Context, poolAddress common.Address, ancestor uint64) error {
+				return snapshots.DeleteAfterBlock(ctx, poolAddress, ancestor)
+			},
+			LoadPool:  pools.Get,
+			SavePool:  pools.Save,
+			IsNilPool: func(pool *marketclv3.Pool) bool { return pool == nil },
+			RestorePoolState: func(ctx context.Context, pool *marketclv3.Pool, poolAddress common.Address, ancestor uint64) (uint64, error) {
+				return restoreCLV3PoolState(ctx, snapshots, bootstrap, pool, poolAddress, ancestor)
+			},
+			SetPoolStatus: func(pool *marketclv3.Pool, status market.PoolStatus) { pool.Status = status },
+			SetPoolReady:  readiness.SetPoolReady,
+			FetchReplayLogs: func(ctx context.Context, poolAddress common.Address, fromBlock, toBlock uint64) ([]syncapp.RawLog, error) {
+				if fetcher == nil {
+					return nil, fmt.Errorf("log fetcher is not configured")
+				}
+				return fetcher.FetchLogs(ctx, LogFilter{
+					PoolAddresses: []common.Address{poolAddress},
+					FromBlock:     fromBlock,
+					ToBlock:       toBlock,
+				})
+			},
+			ParseEvents: func(logs []syncapp.RawLog) ([]marketclv3.PoolEvent, error) {
+				if parser == nil {
+					return nil, fmt.Errorf("event parser is not configured")
+				}
+				return parser.ParsePoolEvents(logs)
+			},
+			EventBlockNumber: func(event marketclv3.PoolEvent) uint64 { return event.Meta.BlockNumber },
+			ApplyBlock: func(ctx context.Context, blockNumber uint64, blockHash common.Hash, events []marketclv3.PoolEvent, tracked []common.Address) error {
+				if blockApply == nil {
+					return fmt.Errorf("block apply service is not configured")
+				}
+				_, err := blockApply.ApplyBlock(ctx, ApplyBlockRequest{
+					BlockNumber:  blockNumber,
+					BlockHash:    blockHash,
+					Events:       events,
+					TrackedPools: tracked,
+				})
+				return err
+			},
+		},
+	)
 }
 
-func (s *ReorgRecoveryService) DetectReorg(ctx context.Context, localHead, remoteHead blockchain.BlockHeader) (*blockchain.Reorg, error) {
-	return syncapp.DetectReorg(ctx, s.blocks, s.config.ReorgMaxDepth, localHead, remoteHead)
-}
-
-func (s *ReorgRecoveryService) Recover(ctx context.Context, reorg blockchain.Reorg, poolAddresses []common.Address) error {
-	for _, poolAddress := range poolAddresses {
-		s.readiness.SetPoolReady(poolAddress, false)
-
-		if err := s.snapshots.DeleteAfterBlock(ctx, poolAddress, reorg.CommonAncestor); err != nil {
-			return fmt.Errorf("delete snapshots for pool %s: %w", poolAddress.Hex(), err)
-		}
-
-		pool, err := s.pools.Get(ctx, poolAddress)
-		if err != nil {
-			return fmt.Errorf("load pool %s: %w", poolAddress.Hex(), err)
-		}
-		if pool == nil {
-			return fmt.Errorf("pool %s not found", poolAddress.Hex())
-		}
-
-		fromBlock, err := s.restorePoolState(ctx, pool, poolAddress, reorg.CommonAncestor)
-		if err != nil {
-			return fmt.Errorf("restore pool %s: %w", poolAddress.Hex(), err)
-		}
-
-		pool.Status = market.PoolStatusSyncing
-		if err := s.pools.Save(ctx, pool); err != nil {
-			return fmt.Errorf("save pool %s: %w", poolAddress.Hex(), err)
-		}
-
-		toBlock := reorg.RemoteHead.Number
-		if fromBlock > toBlock {
-			continue
-		}
-
-		logs, err := s.fetcher.FetchLogs(ctx, LogFilter{
-			PoolAddresses: []common.Address{poolAddress},
-			FromBlock:     fromBlock,
-			ToBlock:       toBlock,
-		})
-		if err != nil {
-			return fmt.Errorf("fetch replay logs for pool %s: %w", poolAddress.Hex(), err)
-		}
-		events, err := s.parser.ParsePoolEvents(logs)
-		if err != nil {
-			return fmt.Errorf("parse replay events for pool %s: %w", poolAddress.Hex(), err)
-		}
-
-		eventsByBlock := groupEventsByBlock(events)
-		for blockNumber := fromBlock; blockNumber <= toBlock; blockNumber++ {
-			header, err := s.blocks.GetBlockHeader(ctx, blockNumber)
-			if err != nil {
-				return fmt.Errorf("load block header %d: %w", blockNumber, err)
-			}
-			if _, err := s.blockApply.ApplyBlock(ctx, ApplyBlockRequest{
-				BlockNumber:    blockNumber,
-				BlockHash:      header.Hash,
-				Events:         eventsByBlock[blockNumber],
-				TrackedPools:   []common.Address{poolAddress},
-			}); err != nil {
-				return fmt.Errorf("replay block %d for pool %s: %w", blockNumber, poolAddress.Hex(), err)
-			}
-		}
-
-		pool, err = s.pools.Get(ctx, poolAddress)
-		if err != nil {
-			return fmt.Errorf("reload pool %s: %w", poolAddress.Hex(), err)
-		}
-		pool.Status = market.PoolStatusReady
-		if err := s.pools.Save(ctx, pool); err != nil {
-			return fmt.Errorf("save ready pool %s: %w", poolAddress.Hex(), err)
-		}
-		s.readiness.SetPoolReady(poolAddress, true)
-	}
-	return nil
-}
-
-func (s *ReorgRecoveryService) restorePoolState(ctx context.Context, pool *marketclv3.Pool, poolAddress common.Address, ancestor uint64) (uint64, error) {
-	snapshot, err := s.snapshots.LoadAtOrBefore(ctx, poolAddress, ancestor)
+func restoreCLV3PoolState(
+	ctx context.Context,
+	snapshots *SnapshotService,
+	bootstrap PoolBootstrapReader,
+	pool *marketclv3.Pool,
+	poolAddress common.Address,
+	ancestor uint64,
+) (uint64, error) {
+	snapshot, err := snapshots.LoadAtOrBefore(ctx, poolAddress, ancestor)
 	if err != nil {
 		return 0, err
 	}
@@ -139,8 +92,8 @@ func (s *ReorgRecoveryService) restorePoolState(ctx context.Context, pool *marke
 		return syncapp.ReorgReplayFromBlock(snapshot.BlockNumber, ancestor, true), nil
 	}
 
-	if s.bootstrap != nil {
-		data, err := s.bootstrap.ReadBootstrapData(ctx, poolAddress, ancestor)
+	if bootstrap != nil {
+		data, err := bootstrap.ReadBootstrapData(ctx, poolAddress, ancestor)
 		if err != nil {
 			return 0, fmt.Errorf("read chain bootstrap data: %w", err)
 		}

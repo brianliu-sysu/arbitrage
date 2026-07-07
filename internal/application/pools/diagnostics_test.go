@@ -111,6 +111,98 @@ func (r diagV4ReaderByPool) ReadV4BaseState(_ context.Context, poolID marketuniv
 	return state, nil
 }
 
+func (r diagV4ReaderByPool) ReadManyV4BaseStates(_ context.Context, poolIDs []marketuniv4.PoolID, _ uint64) (map[marketuniv4.PoolID]*BaseState, error) {
+	out := make(map[marketuniv4.PoolID]*BaseState, len(poolIDs))
+	for _, poolID := range poolIDs {
+		state, ok := r[poolID]
+		if !ok {
+			continue
+		}
+		out[poolID] = state
+	}
+	return out, nil
+}
+
+type diagV4BatchCallCounter struct {
+	diagV4ReaderByPool
+	calls int
+}
+
+func (r *diagV4BatchCallCounter) ReadManyV4BaseStates(ctx context.Context, poolIDs []marketuniv4.PoolID, blockNumber uint64) (map[marketuniv4.PoolID]*BaseState, error) {
+	r.calls++
+	return r.diagV4ReaderByPool.ReadManyV4BaseStates(ctx, poolIDs, blockNumber)
+}
+
+func TestDiagnosticsAllUsesBatchV4ChainReader(t *testing.T) {
+	matchedID := marketuniv4.PoolID(common.HexToHash("0x1"))
+	mismatchID := marketuniv4.PoolID(common.HexToHash("0x2"))
+	sqrtPrice, _ := new(big.Int).SetString("1182815765319608250048300092661", 10)
+	liquidity := big.NewInt(1000)
+
+	matchedPool := marketuniv4.NewPool(matchedID, marketuniv4.PoolKey{
+		Currency0: common.HexToAddress("0x1"),
+		Currency1: common.HexToAddress("0x2"),
+		Fee:       3000,
+	})
+	matchedPool.State.SqrtPriceX96 = sqrtPrice
+	matchedPool.State.Tick = 100
+	matchedPool.State.Liquidity = liquidity
+	matchedPool.LastBlockNumber = 200
+	matchedPool.Status = market.PoolStatusReady
+
+	mismatchPool := marketuniv4.NewPool(mismatchID, marketuniv4.PoolKey{
+		Currency0: common.HexToAddress("0x3"),
+		Currency1: common.HexToAddress("0x4"),
+		Fee:       3000,
+	})
+	mismatchPool.State.SqrtPriceX96 = big.NewInt(1)
+	mismatchPool.State.Tick = 10
+	mismatchPool.State.Liquidity = liquidity
+	mismatchPool.LastBlockNumber = 200
+	mismatchPool.Status = market.PoolStatusReady
+
+	repo := &diagV4PoolRepoByID{
+		pools: map[marketuniv4.PoolID]*marketuniv4.Pool{
+			matchedID:   matchedPool,
+			mismatchID: mismatchPool,
+		},
+	}
+
+	chainReader := &diagV4BatchCallCounter{diagV4ReaderByPool: diagV4ReaderByPool{
+		matchedID: {
+			SqrtPriceX96: new(big.Int).Set(sqrtPrice),
+			Tick:         100,
+			Liquidity:    new(big.Int).Set(liquidity),
+		},
+		mismatchID: {
+			SqrtPriceX96: new(big.Int).Set(sqrtPrice),
+			Tick:         100,
+			Liquidity:    new(big.Int).Set(liquidity),
+		},
+	}}
+
+	service := NewAppService(nil, nil, repo, nil, nil, &diagV4Registry{
+		poolIDs: []marketuniv4.PoolID{matchedID, mismatchID},
+	}, nil, &ChainReaders{
+		Head: diagHeadReader{head: 200},
+		V4:   chainReader,
+	})
+
+	resp, err := service.DiagnosticsAll(context.Background())
+	if err != nil {
+		t.Fatalf("diagnostics all: %v", err)
+	}
+	if chainReader.calls != 1 {
+		t.Fatalf("expected 1 batch chain read, got %d", chainReader.calls)
+	}
+	if resp.Count != 1 {
+		t.Fatalf("expected 1 mismatching pool, got %#v", resp)
+	}
+	if resp.Items[0].PoolID != mismatchID.String() {
+		t.Fatalf("unexpected pool: %s", resp.Items[0].PoolID)
+	}
+}
+
 func TestDiagnosticsAllReturnsMismatchingPoolsAtHead(t *testing.T) {
 	matchedID := marketuniv4.PoolID(common.HexToHash("0x1"))
 	mismatchID := marketuniv4.PoolID(common.HexToHash("0x2"))

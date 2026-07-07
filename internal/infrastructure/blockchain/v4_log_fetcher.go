@@ -50,18 +50,5 @@ func (f *V4LogFetcher) FetchLogs(ctx context.Context, filter syncv4.LogFilter) (
 	if err != nil {
 		return nil, fmt.Errorf("filter logs: %w", err)
 	}
-
-	rawLogs := make([]syncv4.RawLog, 0, len(logs))
-	for _, log := range logs {
-		rawLogs = append(rawLogs, syncv4.RawLog{
-			Address:     log.Address,
-			Topics:      log.Topics,
-			Data:        log.Data,
-			BlockNumber: log.BlockNumber,
-			BlockHash:   log.BlockHash,
-			TxIndex:     log.TxIndex,
-			LogIndex:    log.Index,
-		})
-	}
-	return rawLogs, nil
+	return rawLogsFromEth(logs), nil
 }

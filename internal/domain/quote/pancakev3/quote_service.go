@@ -36,3 +36,8 @@ func (s *QuoteService) QuoteRoute(pools map[common.Address]*marketpancake.Pool, 
 	}
 	return s.inner.QuoteRoute(clPools, route, amountIn)
 }
+
+// Engine returns the shared CLV3 quote engine.
+func (s *QuoteService) Engine() *quoteclv3.QuoteService {
+	return s.inner
+}

@@ -124,41 +124,85 @@ func (r *PoolReader) readBaseState(ctx context.Context, poolAddress common.Addre
 // ReadBaseState loads slot0 and liquidity for a V3-style pool at the given block.
 // blockNumber 0 uses the latest head.
 func (r *PoolReader) ReadBaseState(ctx context.Context, poolAddress common.Address, blockNumber uint64) (*BasePoolState, error) {
-	if blockNumber == 0 {
-		header, err := r.client.GetLatestBlockHeader(ctx)
-		if err != nil {
-			return nil, err
-		}
-		blockNumber = header.Number
-	}
-	state, err := r.readBaseState(ctx, poolAddress, blockNumber)
+	states, err := r.ReadManyBaseStates(ctx, []common.Address{poolAddress}, blockNumber)
 	if err != nil {
 		return nil, err
 	}
-	return &BasePoolState{
-		SqrtPriceX96: new(big.Int).Set(state.sqrtPriceX96),
-		Tick:         state.tick,
-		Liquidity:    new(big.Int).Set(state.liquidity),
-	}, nil
+	state, ok := states[poolAddress]
+	if !ok || state == nil {
+		return nil, fmt.Errorf("read base state for pool %s", poolAddress.Hex())
+	}
+	return state, nil
+}
+
+// ReadManyBaseStates loads slot0 and liquidity for many V3-style pools in batched multicall requests.
+// blockNumber 0 uses the latest head. Missing or failed pools are omitted from the result map.
+func (r *PoolReader) ReadManyBaseStates(
+	ctx context.Context,
+	poolAddresses []common.Address,
+	blockNumber uint64,
+) (map[common.Address]*BasePoolState, error) {
+	if len(poolAddresses) == 0 {
+		return map[common.Address]*BasePoolState{}, nil
+	}
+
+	blockNumber, err := r.client.ResolveBlockNumber(ctx, blockNumber)
+	if err != nil {
+		return nil, err
+	}
+
+	slot0Data, err := r.poolABI.Pack("slot0")
+	if err != nil {
+		return nil, fmt.Errorf("pack slot0: %w", err)
+	}
+	liquidityData, err := r.poolABI.Pack("liquidity")
+	if err != nil {
+		return nil, fmt.Errorf("pack liquidity: %w", err)
+	}
+
+	requests := make([]MulticallRequest, 0, len(poolAddresses)*2)
+	for _, poolAddress := range poolAddresses {
+		requests = append(requests,
+			MulticallRequest{Target: poolAddress, Data: slot0Data},
+			MulticallRequest{Target: poolAddress, Data: liquidityData},
+		)
+	}
+
+	results, err := r.multicall.Aggregate3(ctx, requests, blockNumber)
+	if err != nil {
+		return nil, err
+	}
+	if len(results) != len(requests) {
+		return nil, fmt.Errorf("expected %d pool call results, got %d", len(requests), len(results))
+	}
+
+	out := make(map[common.Address]*BasePoolState, len(poolAddresses))
+	for i, poolAddress := range poolAddresses {
+		slot0Result := results[i*2]
+		liquidityResult := results[i*2+1]
+		if !slot0Result.Success || !liquidityResult.Success {
+			continue
+		}
+
+		slot0, err := unpackSlot0(r.poolABI, slot0Result)
+		if err != nil {
+			continue
+		}
+		liquidity, err := unpackBigInt(r.poolABI, "liquidity", liquidityResult)
+		if err != nil {
+			continue
+		}
+
+		out[poolAddress] = &BasePoolState{
+			SqrtPriceX96: new(big.Int).Set(slot0.sqrtPriceX96),
+			Tick:         slot0.tick,
+			Liquidity:    new(big.Int).Set(liquidity),
+		}
+	}
+	return out, nil
 }
 
 func (r *PoolReader) callPoolMethods(
-	ctx context.Context,
-	poolAddress common.Address,
-	blockNumber uint64,
-	methods []string,
-) ([]MulticallResult, error) {
-	results, err := r.multicallPoolMethods(ctx, poolAddress, blockNumber, methods)
-	if err != nil {
-		return r.directPoolMethods(ctx, poolAddress, blockNumber, methods)
-	}
-	if needsDirectPoolFallback(results) {
-		return r.directPoolMethods(ctx, poolAddress, blockNumber, methods)
-	}
-	return results, nil
-}
-
-func (r *PoolReader) multicallPoolMethods(
 	ctx context.Context,
 	poolAddress common.Address,
 	blockNumber uint64,
@@ -172,39 +216,7 @@ func (r *PoolReader) multicallPoolMethods(
 		}
 		calls = append(calls, MulticallRequest{Target: poolAddress, Data: data})
 	}
-
-	results, err := r.multicall.Aggregate3(ctx, calls, blockNumber)
-	if err != nil {
-		return nil, err
-	}
-	if len(results) != len(calls) {
-		return nil, fmt.Errorf("expected %d pool call results, got %d", len(calls), len(results))
-	}
-	return results, nil
-}
-
-func (r *PoolReader) directPoolMethods(
-	ctx context.Context,
-	poolAddress common.Address,
-	blockNumber uint64,
-	methods []string,
-) ([]MulticallResult, error) {
-	results := make([]MulticallResult, len(methods))
-	for i, method := range methods {
-		data, err := r.poolABI.Pack(method)
-		if err != nil {
-			return nil, fmt.Errorf("pack %s: %w", method, err)
-		}
-		output, err := r.client.CallContract(ctx, poolAddress, data, blockNumber)
-		if err != nil {
-			return nil, fmt.Errorf("call %s: %w", method, err)
-		}
-		results[i] = MulticallResult{
-			Success:    len(output) > 0,
-			ReturnData: output,
-		}
-	}
-	return results, nil
+	return r.multicall.Aggregate3WithDirectFallback(ctx, calls, blockNumber)
 }
 
 func needsDirectPoolFallback(results []MulticallResult) bool {
@@ -318,22 +330,11 @@ func (r *PoolReader) tickReturnData(
 	blockNumber uint64,
 	result MulticallResult,
 ) ([]byte, error) {
-	if result.Success && len(result.ReturnData) > 0 {
-		return result.ReturnData, nil
-	}
-
 	data, err := r.poolABI.Pack("ticks", int32ToABIInt24(tick))
 	if err != nil {
 		return nil, fmt.Errorf("pack ticks: %w", err)
 	}
-	output, err := r.client.CallContract(ctx, poolAddress, data, blockNumber)
-	if err != nil {
-		return nil, err
-	}
-	if len(output) == 0 {
-		return nil, fmt.Errorf("returned empty data")
-	}
-	return output, nil
+	return multicallReturnDataOrDirect(ctx, r.client, poolAddress, data, blockNumber, result)
 }
 
 func (r *PoolReader) readTickBitmapWords(
@@ -392,22 +393,11 @@ func (r *PoolReader) tickBitmapReturnData(
 	blockNumber uint64,
 	result MulticallResult,
 ) ([]byte, error) {
-	if result.Success && len(result.ReturnData) > 0 {
-		return result.ReturnData, nil
-	}
-
 	data, err := r.poolABI.Pack("tickBitmap", wordPos)
 	if err != nil {
 		return nil, fmt.Errorf("pack tickBitmap: %w", err)
 	}
-	output, err := r.client.CallContract(ctx, poolAddress, data, blockNumber)
-	if err != nil {
-		return nil, err
-	}
-	if len(output) == 0 {
-		return nil, fmt.Errorf("returned empty data")
-	}
-	return output, nil
+	return multicallReturnDataOrDirect(ctx, r.client, poolAddress, data, blockNumber, result)
 }
 
 func bitmapFlipFromWord(bitmap *market.TickBitmap, wordPos int16, word *big.Int, tickSpacing int32, initialized *[]int32) {
