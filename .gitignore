@@ -5,3 +5,12 @@ bin
 *.yaml
 
 logs/
+
+# Executables
+/arbitrage
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
