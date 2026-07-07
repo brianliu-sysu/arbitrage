@@ -14,7 +14,7 @@ type OpportunityStatus string
 const (
 	OpportunityStatusDiscovered OpportunityStatus = "discovered"
 	OpportunityStatusAccepted   OpportunityStatus = "accepted"
-	OpportunityStatusRejected OpportunityStatus = "rejected"
+	OpportunityStatusRejected   OpportunityStatus = "rejected"
 )
 
 // Opportunity is an arbitrage opportunity discovered by the scanner.

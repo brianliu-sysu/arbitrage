@@ -11,11 +11,12 @@ import (
 	"testing"
 
 	quotecombined "github.com/brianliu-sysu/uniswapv3/internal/application/quote/combined"
-	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
+	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	quoteuniv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
 	quoteuniv4domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ4"
-	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	httpapi "github.com/brianliu-sysu/uniswapv3/internal/interfaces/http"
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -43,9 +44,11 @@ func TestQuoteCombinedHandlerReturnsMixedRouteJSON(t *testing.T) {
 		v3Repo,
 		nil,
 		v4Repo,
+		nil,
 		staticRegistry{addresses: []common.Address{poolAB}},
 		nil,
 		staticV4Registry{entries: map[marketv4.PoolID]marketv4.PoolKey{poolBCID: poolBC.Key}},
+		nil,
 		quoteunified.NewQuoteService(
 			quoteuniv3domain.NewQuoteService(),
 			nil,
@@ -92,10 +95,13 @@ func TestQuoteCombinedHandlerReturnsMixedRouteJSON(t *testing.T) {
 
 type combinedAlwaysReady struct{}
 
-func (combinedAlwaysReady) IsSystemReady() bool                  { return true }
-func (combinedAlwaysReady) IsV3PoolReady(_ common.Address) bool  { return true }
+func (combinedAlwaysReady) IsSystemReady() bool                        { return true }
+func (combinedAlwaysReady) IsV3PoolReady(_ common.Address) bool        { return true }
 func (combinedAlwaysReady) IsPancakeV3PoolReady(_ common.Address) bool { return true }
-func (combinedAlwaysReady) IsV4PoolReady(_ marketv4.PoolID) bool { return true }
+func (combinedAlwaysReady) IsV4PoolReady(_ marketv4.PoolID) bool       { return true }
+func (combinedAlwaysReady) IsBalancerPoolReady(_ marketbalancer.PoolID) bool {
+	return true
+}
 
 func setupV4Pool(token0, token1 common.Address, liquidity int64) (*marketv4.Pool, marketv4.PoolID) {
 	key := marketv4.PoolKey{

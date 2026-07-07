@@ -7,6 +7,7 @@ const (
 	PoolVersionV3 PoolVersion = iota + 1
 	PoolVersionPancakeV3
 	PoolVersionV4
+	PoolVersionBalancer
 	PoolVersionUnwrapWETH
 	PoolVersionWrapWETH
 )
@@ -19,6 +20,8 @@ func (v PoolVersion) String() string {
 		return "pancakev3"
 	case PoolVersionV4:
 		return "univ4"
+	case PoolVersionBalancer:
+		return "balancer"
 	case PoolVersionUnwrapWETH:
 		return "unwrap_weth"
 	case PoolVersionWrapWETH:

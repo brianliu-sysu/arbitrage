@@ -13,19 +13,21 @@ import (
 	assetapp "github.com/brianliu-sysu/uniswapv3/internal/application/asset"
 	poolsapp "github.com/brianliu-sysu/uniswapv3/internal/application/pools"
 	quotecombined "github.com/brianliu-sysu/uniswapv3/internal/application/quote/combined"
-	quoteuniv3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/univ3"
 	quotepancakev3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/pancakev3"
+	quoteuniv3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/univ3"
 	quoteuniv4 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/univ4"
-	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ3"
+	syncbalancer "github.com/brianliu-sysu/uniswapv3/internal/application/sync/balancer"
 	syncpancakev3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/pancakev3"
+	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ3"
 	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ4"
 	"github.com/brianliu-sysu/uniswapv3/internal/config"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
-	quoteuniv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
+	quotebalancerdomain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/balancer"
 	quotepancakev3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/pancakev3"
-	quoteuniv4domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ4"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
+	quoteuniv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
+	quoteuniv4domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ4"
 	chaininfra "github.com/brianliu-sysu/uniswapv3/internal/infrastructure/blockchain"
 	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/logging"
 	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/persistence"
@@ -60,6 +62,7 @@ func Module(params Params) fx.Option {
 			newPoolRegistry,
 			newPancakePoolRegistry,
 			newV4PoolRegistry,
+			newBalancerPoolRegistry,
 			newRuntimeBundle,
 			newQuoteV3AppService,
 			newQuotePancakeV3AppService,
@@ -128,10 +131,18 @@ func newV4PoolRegistry(cfg config.Config) (*registry.CompositeV4Registry, error)
 	return registry.NewCompositeV4Registry(cfg.Sync.Univ4)
 }
 
+func newBalancerPoolRegistry(cfg config.Config) (*registry.CompositeBalancerRegistry, error) {
+	if !cfg.Sync.Balancer.IsActive() {
+		return nil, nil
+	}
+	return registry.NewCompositeBalancerRegistry(cfg.Sync.Balancer, cfg.BlockchainConfig().BalancerVaultAddress)
+}
+
 type runtimeBundle struct {
 	Sync         *syncv3.Services
 	SyncPancake  *syncpancakev3.Services
 	SyncV4       *syncv4.Services
+	SyncBalancer *syncbalancer.Services
 	Arbitrage    *arbitrageapp.Services
 }
 
@@ -143,6 +154,7 @@ func newRuntimeBundle(
 	poolRegistry *registry.CompositeRegistry,
 	pancakePoolRegistry *registry.PancakeCompositeRegistry,
 	v4PoolRegistry *registry.CompositeV4Registry,
+	balancerPoolRegistry *registry.CompositeBalancerRegistry,
 ) (*runtimeBundle, error) {
 	deps := chain.SyncDeps()
 	persistDeps := store.SyncDeps()
@@ -194,6 +206,23 @@ func newRuntimeBundle(
 		syncV4Services = syncv4.NewServices(v4Deps)
 	}
 
+	var syncBalancerServices *syncbalancer.Services
+	if cfg.Sync.Balancer.IsActive() {
+		if balancerPoolRegistry == nil {
+			return nil, fmt.Errorf("balancer pool registry is required when sync.balancer is enabled")
+		}
+		balancerDeps := chain.SyncBalancerDeps()
+		balancerPersist := store.SyncBalancerDeps()
+		balancerDeps.Config = cfg.SyncConfig()
+		balancerDeps.Pools = balancerPersist.Pools
+		balancerDeps.Snapshots = balancerPersist.Snapshots
+		balancerDeps.Checkpoints = balancerPersist.Checkpoints
+		balancerDeps.Registry = balancerPoolRegistry
+		balancerDeps.Health = append(balancerDeps.Health, balancerPersist.Health...)
+		balancerDeps.Listener = syncbalancer.NopChangedPoolsListener{}
+		syncBalancerServices = syncbalancer.NewServices(balancerDeps)
+	}
+
 	triangleCfg := cfg.Arbitrage.Triangle
 	configuredStartTokens := triangleCfg.StartTokenAddresses()
 	minNetProfit := triangleCfg.MinNetProfit()
@@ -212,19 +241,25 @@ func newRuntimeBundle(
 	if syncV4Services != nil {
 		readiness.V4 = syncV4Services.Readiness
 	}
+	if syncBalancerServices != nil {
+		readiness.Balancer = syncBalancerServices.Readiness
+	}
 
 	arbitrageServices := arbitrageapp.NewServices(arbitrageapp.ServiceDeps{
-		Logger:              logger,
-		Pools:               store.Pools,
-		PancakePools:        store.PancakePools,
-		V4Pools:             store.V4Pools,
-		Registry:            poolRegistry,
-		PancakeRegistry:     pancakePoolRegistry.AsPoolRegistry(),
-		V4Registry:          v4PoolRegistry.AsPoolRegistry(),
+		Logger:           logger,
+		Pools:            store.Pools,
+		PancakePools:     store.PancakePools,
+		V4Pools:          store.V4Pools,
+		BalancerPools:    store.BalancerPools,
+		Registry:         poolRegistry,
+		PancakeRegistry:  pancakePoolRegistry.AsPoolRegistry(),
+		V4Registry:       v4PoolRegistry.AsPoolRegistry(),
+		BalancerRegistry: balancerPoolRegistry.AsPoolRegistry(),
 		Quotes: quoteunified.NewQuoteService(
 			quoteuniv3domain.NewQuoteService(),
 			quotepancakev3domain.NewQuoteService(),
 			quoteuniv4domain.NewQuoteService(),
+			quotebalancerdomain.NewQuoteService(),
 		),
 		Readiness:             readiness,
 		Repository:            store.Opportunities,
@@ -248,6 +283,11 @@ func newRuntimeBundle(
 		syncV4Services.BlockApply.SetLogger(logger.Named("sync.univ4"))
 		syncV4Services.Bootstrap.SetLogger(logger.Named("sync.univ4"))
 	}
+	if syncBalancerServices != nil {
+		syncBalancerServices.BlockApply.SetListener(arbitrageapp.BalancerPoolListener{Services: arbitrageServices})
+		syncBalancerServices.BlockApply.SetLogger(logger.Named("sync.balancer"))
+		syncBalancerServices.Bootstrap.SetLogger(logger.Named("sync.balancer"))
+	}
 	if cfg.TriangleArbitrageEnabled() {
 		arbitrageServices.LogDiagnostics(context.Background(), logger, "startup")
 	} else {
@@ -255,10 +295,11 @@ func newRuntimeBundle(
 	}
 
 	return &runtimeBundle{
-		Sync:        syncServices,
-		SyncPancake: syncPancakeServices,
-		SyncV4:      syncV4Services,
-		Arbitrage:   arbitrageServices,
+		Sync:         syncServices,
+		SyncPancake:  syncPancakeServices,
+		SyncV4:       syncV4Services,
+		SyncBalancer: syncBalancerServices,
+		Arbitrage:    arbitrageServices,
 	}, nil
 }
 
@@ -334,6 +375,7 @@ func newQuoteCombinedAppService(
 	poolRegistry *registry.CompositeRegistry,
 	pancakePoolRegistry *registry.PancakeCompositeRegistry,
 	v4PoolRegistry *registry.CompositeV4Registry,
+	balancerPoolRegistry *registry.CompositeBalancerRegistry,
 	bundle *runtimeBundle,
 ) *quotecombined.AppService {
 	maxHops := cfg.Quote.MaxHops
@@ -351,18 +393,24 @@ func newQuoteCombinedAppService(
 	if bundle.SyncV4 != nil {
 		readiness.V4 = bundle.SyncV4.Readiness
 	}
+	if bundle.SyncBalancer != nil {
+		readiness.Balancer = bundle.SyncBalancer.Readiness
+	}
 
 	return quotecombined.NewAppService(
 		store.Pools,
 		store.PancakePools,
 		store.V4Pools,
+		store.BalancerPools,
 		poolRegistry,
 		pancakePoolRegistry.AsPoolRegistry(),
 		v4PoolRegistry.AsPoolRegistry(),
+		balancerPoolRegistry.AsPoolRegistry(),
 		quoteunified.NewQuoteService(
 			quoteuniv3domain.NewQuoteService(),
 			quotepancakev3domain.NewQuoteService(),
 			quoteuniv4domain.NewQuoteService(),
+			quotebalancerdomain.NewQuoteService(),
 		),
 		readiness,
 		maxHops,
@@ -419,17 +467,18 @@ func newHTTPRouter(
 }
 
 type syncLifecycle struct {
-	runCtx              context.Context
-	cancel              context.CancelFunc
-	wg                  sync.WaitGroup
-	orchestrator        *syncv3.SyncOrchestrator
-	orchestratorPancake *syncpancakev3.SyncOrchestrator
-	orchestratorV4      *syncv4.SyncOrchestrator
-	bundle              *runtimeBundle
-	chain               *chaininfra.Services
-	store               *persistence.Services
-	cfg                 config.Config
-	logger              *zap.Logger
+	runCtx               context.Context
+	cancel               context.CancelFunc
+	wg                   sync.WaitGroup
+	orchestrator         *syncv3.SyncOrchestrator
+	orchestratorPancake  *syncpancakev3.SyncOrchestrator
+	orchestratorV4       *syncv4.SyncOrchestrator
+	orchestratorBalancer *syncbalancer.SyncOrchestrator
+	bundle               *runtimeBundle
+	chain                *chaininfra.Services
+	store                *persistence.Services
+	cfg                  config.Config
+	logger               *zap.Logger
 }
 
 func registerSyncLifecycle(
@@ -459,6 +508,9 @@ func registerSyncLifecycle(
 	if bundle.SyncV4 != nil {
 		runner.orchestratorV4 = bundle.SyncV4.NewOrchestrator(chain.Client)
 	}
+	if bundle.SyncBalancer != nil {
+		runner.orchestratorBalancer = bundle.SyncBalancer.NewOrchestrator(chain.Client)
+	}
 	lifecycle.Append(fx.Hook{
 		OnStart: runner.start,
 		OnStop:  runner.stop,
@@ -482,6 +534,9 @@ func (r *syncLifecycle) start(_ context.Context) error {
 		zap.Bool("univ4", r.cfg.Sync.Univ4.IsActive()),
 		zap.Int("univ4_poolmanager_pools", len(r.cfg.Sync.Univ4.PoolManager.Pools)),
 		zap.Bool("univ4_subgraph", r.cfg.Sync.Univ4.Subgraph.IsEnabled()),
+		zap.Bool("balancer", r.cfg.Sync.Balancer.IsActive()),
+		zap.Bool("balancer_subgraph", r.cfg.Sync.Balancer.Subgraph.IsEnabled()),
+		zap.Int("balancer_pools", len(r.cfg.Sync.Balancer.Pools)),
 	)
 
 	if r.orchestrator != nil {
@@ -499,6 +554,12 @@ func (r *syncLifecycle) start(_ context.Context) error {
 	if r.orchestratorV4 != nil {
 		r.runSync("univ4", func(ctx context.Context) error {
 			return r.orchestratorV4.Start(ctx)
+		})
+	}
+
+	if r.orchestratorBalancer != nil {
+		r.runSync("balancer", func(ctx context.Context) error {
+			return r.orchestratorBalancer.Start(ctx)
 		})
 	}
 
@@ -608,6 +669,14 @@ func (r *syncLifecycle) arbitrageProtocols() []arbitrageProtocolState {
 			name: "univ4",
 			ready: func() bool {
 				return r.bundle.SyncV4.Readiness.IsSystemReady()
+			},
+		})
+	}
+	if r.bundle.SyncBalancer != nil && r.bundle.SyncBalancer.Readiness != nil {
+		protocols = append(protocols, arbitrageProtocolState{
+			name: "balancer",
+			ready: func() bool {
+				return r.bundle.SyncBalancer.Readiness.IsSystemReady()
 			},
 		})
 	}

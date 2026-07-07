@@ -4,28 +4,32 @@ import (
 	"fmt"
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
-	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ3"
+	syncbalancer "github.com/brianliu-sysu/uniswapv3/internal/application/sync/balancer"
 	syncpancakev3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/pancakev3"
+	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ3"
 	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
 
 // Services bundles blockchain infrastructure adapters for sync wiring.
 type Services struct {
-	Client       *EthClient
-	Multicall    *Multicall
-	LogFetcher        *LogFetcher
-	PancakeLogFetcher *LogFetcher
-	HeadSub           *HeadSubscriber
-	Parser            *ABIParser
-	PancakeParser     *PancakeABIParser
-	Factory           *FactoryReader
-	PoolReader        *PoolReader
-	PancakePoolReader *PoolReader
-	V4LogFetcher      *V4LogFetcher
-	V4Parser     *V4ABIParser
-	V4PoolReader *V4PoolReader
-	ERC20        *ERC20Reader
+	Client             *EthClient
+	Multicall          *Multicall
+	LogFetcher         *LogFetcher
+	PancakeLogFetcher  *LogFetcher
+	HeadSub            *HeadSubscriber
+	Parser             *ABIParser
+	PancakeParser      *PancakeABIParser
+	Factory            *FactoryReader
+	PoolReader         *PoolReader
+	PancakePoolReader  *PoolReader
+	V4LogFetcher       *V4LogFetcher
+	V4Parser           *V4ABIParser
+	V4PoolReader       *V4PoolReader
+	BalancerLogFetcher *BalancerLogFetcher
+	BalancerParser     *BalancerABIParser
+	BalancerPoolReader *BalancerPoolReader
+	ERC20              *ERC20Reader
 }
 
 func NewServices(cfg Config) (*Services, error) {
@@ -76,6 +80,18 @@ func NewServices(cfg Config) (*Services, error) {
 		return nil, fmt.Errorf("create v4 abi parser: %w", err)
 	}
 
+	balancerParser, err := NewBalancerABIParser()
+	if err != nil {
+		client.Close()
+		return nil, fmt.Errorf("create balancer abi parser: %w", err)
+	}
+
+	balancerPoolReader, err := NewBalancerPoolReader(client, multicall)
+	if err != nil {
+		client.Close()
+		return nil, fmt.Errorf("create balancer pool reader: %w", err)
+	}
+
 	var v4PoolReader *V4PoolReader
 	if (cfg.StateViewAddress != common.Address{}) {
 		v4PoolReader, err = NewV4PoolReader(client, multicall, cfg.StateViewAddress)
@@ -92,20 +108,23 @@ func NewServices(cfg Config) (*Services, error) {
 	}
 
 	return &Services{
-		Client:            client,
-		Multicall:         multicall,
-		LogFetcher:        NewLogFetcher(client),
-		PancakeLogFetcher: NewPancakeLogFetcher(client),
-		HeadSub:           NewHeadSubscriber(client),
-		Parser:            parser,
-		PancakeParser:     pancakeParser,
-		Factory:           factory,
-		PoolReader:        poolReader,
-		PancakePoolReader: pancakePoolReader,
-		V4LogFetcher:      NewV4LogFetcher(client, cfg.PoolManagerAddress),
-		V4Parser:          v4Parser,
-		V4PoolReader:      v4PoolReader,
-		ERC20:             erc20Reader,
+		Client:             client,
+		Multicall:          multicall,
+		LogFetcher:         NewLogFetcher(client),
+		PancakeLogFetcher:  NewPancakeLogFetcher(client),
+		HeadSub:            NewHeadSubscriber(client),
+		Parser:             parser,
+		PancakeParser:      pancakeParser,
+		Factory:            factory,
+		PoolReader:         poolReader,
+		PancakePoolReader:  pancakePoolReader,
+		V4LogFetcher:       NewV4LogFetcher(client, cfg.PoolManagerAddress),
+		V4Parser:           v4Parser,
+		V4PoolReader:       v4PoolReader,
+		BalancerLogFetcher: NewBalancerLogFetcher(client, cfg.BalancerVaultAddress),
+		BalancerParser:     balancerParser,
+		BalancerPoolReader: balancerPoolReader,
+		ERC20:              erc20Reader,
 	}, nil
 }
 
@@ -146,6 +165,18 @@ func (s *Services) SyncV4Deps() syncv4.ServiceDeps {
 		Parser:     s.V4Parser,
 		Blocks:     s.Client,
 		Bootstrap:  s.V4PoolReader,
+		Subscriber: s.HeadSub,
+		Health:     []syncapp.HealthProbe{s.Client},
+	}
+}
+
+// SyncBalancerDeps returns application Balancer sync dependencies backed by this package.
+func (s *Services) SyncBalancerDeps() syncbalancer.ServiceDeps {
+	return syncbalancer.ServiceDeps{
+		Fetcher:    s.BalancerLogFetcher,
+		Parser:     s.BalancerParser,
+		Blocks:     s.Client,
+		Bootstrap:  s.BalancerPoolReader,
 		Subscriber: s.HeadSub,
 		Health:     []syncapp.HealthProbe{s.Client},
 	}

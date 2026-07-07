@@ -7,10 +7,11 @@ import (
 	"time"
 
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
-	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
+	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
 	marketuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
+	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -20,20 +21,22 @@ type ReadinessChecker interface {
 	IsV3PoolReady(poolAddress common.Address) bool
 	IsPancakeV3PoolReady(poolAddress common.Address) bool
 	IsV4PoolReady(poolID marketuniv4.PoolID) bool
+	IsBalancerPoolReady(poolID marketbalancer.PoolID) bool
 }
 
 // OpportunityService generates opportunities from affected routes.
 type OpportunityService struct {
-	univ3Pools       marketuniv3.PoolRepository
+	univ3Pools    marketuniv3.PoolRepository
 	pancakePools  marketpancake.PoolRepository
-	univ4Pools       marketuniv4.PoolRepository
-	quotes     *quoteunified.QuoteService
-	evaluator  *domainarb.Evaluator
-	optimizer  *domainarb.Optimizer
-	gas        domainarb.GasEstimator
-	strategies []domainarb.Strategy
-	readiness  ReadinessChecker
-	now        func() time.Time
+	univ4Pools    marketuniv4.PoolRepository
+	balancerPools marketbalancer.PoolRepository
+	quotes        *quoteunified.QuoteService
+	evaluator     *domainarb.Evaluator
+	optimizer     *domainarb.Optimizer
+	gas           domainarb.GasEstimator
+	strategies    []domainarb.Strategy
+	readiness     ReadinessChecker
+	now           func() time.Time
 }
 
 // GenerateRequest is the input for opportunity generation.
@@ -46,6 +49,7 @@ func NewOpportunityService(
 	univ3Pools marketuniv3.PoolRepository,
 	pancakePools marketpancake.PoolRepository,
 	univ4Pools marketuniv4.PoolRepository,
+	balancerPools marketbalancer.PoolRepository,
 	quotes *quoteunified.QuoteService,
 	gas domainarb.GasEstimator,
 	strategies []domainarb.Strategy,
@@ -54,16 +58,17 @@ func NewOpportunityService(
 	optimizerIterations int,
 ) *OpportunityService {
 	return &OpportunityService{
-		univ3Pools:      univ3Pools,
-		pancakePools: pancakePools,
-		univ4Pools:      univ4Pools,
-		quotes:     quotes,
-		evaluator:  domainarb.NewEvaluator(),
-		optimizer:  domainarb.NewOptimizer(minAmount, maxAmount, optimizerIterations),
-		gas:        gas,
-		strategies: append([]domainarb.Strategy(nil), strategies...),
-		readiness:  readiness,
-		now:        time.Now,
+		univ3Pools:    univ3Pools,
+		pancakePools:  pancakePools,
+		univ4Pools:    univ4Pools,
+		balancerPools: balancerPools,
+		quotes:        quotes,
+		evaluator:     domainarb.NewEvaluator(),
+		optimizer:     domainarb.NewOptimizer(minAmount, maxAmount, optimizerIterations),
+		gas:           gas,
+		strategies:    append([]domainarb.Strategy(nil), strategies...),
+		readiness:     readiness,
+		now:           time.Now,
 	}
 }
 
@@ -177,6 +182,10 @@ func (s *OpportunityService) ensureRouteReady(routeRef domainarb.RouteRef) error
 			if !s.readiness.IsV4PoolReady(hop.PoolV4) {
 				return fmt.Errorf("v4 pool %s is not ready", hop.PoolV4.String())
 			}
+		case quoteunified.PoolVersionBalancer:
+			if !s.readiness.IsBalancerPoolReady(hop.PoolBalancer) {
+				return fmt.Errorf("balancer pool %s is not ready", hop.PoolBalancer.String())
+			}
 		case quoteunified.PoolVersionWrapWETH, quoteunified.PoolVersionUnwrapWETH:
 			continue
 		default:
@@ -191,6 +200,7 @@ func (s *OpportunityService) loadRoutePools(ctx context.Context, route quoteunif
 		V3:        make(map[common.Address]*marketuniv3.Pool),
 		PancakeV3: make(map[common.Address]*marketpancake.Pool),
 		V4:        make(map[marketuniv4.PoolID]*marketuniv4.Pool),
+		Balancer:  make(map[marketbalancer.PoolID]*marketbalancer.Pool),
 	}
 
 	for _, hop := range route.Hops {
@@ -240,6 +250,21 @@ func (s *OpportunityService) loadRoutePools(ctx context.Context, route quoteunif
 				return quoteunified.RoutePools{}, fmt.Errorf("v4 pool %s not found", hop.PoolV4.String())
 			}
 			pools.V4[hop.PoolV4] = pool
+		case quoteunified.PoolVersionBalancer:
+			if _, ok := pools.Balancer[hop.PoolBalancer]; ok {
+				continue
+			}
+			if s.balancerPools == nil {
+				return quoteunified.RoutePools{}, fmt.Errorf("balancer pool repository is nil")
+			}
+			pool, err := s.balancerPools.Get(ctx, hop.PoolBalancer)
+			if err != nil {
+				return quoteunified.RoutePools{}, fmt.Errorf("load balancer pool %s: %w", hop.PoolBalancer.String(), err)
+			}
+			if pool == nil {
+				return quoteunified.RoutePools{}, fmt.Errorf("balancer pool %s not found", hop.PoolBalancer.String())
+			}
+			pools.Balancer[hop.PoolBalancer] = pool
 		case quoteunified.PoolVersionWrapWETH, quoteunified.PoolVersionUnwrapWETH:
 			continue
 		default:

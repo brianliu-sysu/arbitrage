@@ -28,8 +28,8 @@ type routeHopCombinedHTTPResponse struct {
 }
 
 type routeCombinedHTTPResponse struct {
-	TokenIn  string                           `json:"tokenIn"`
-	TokenOut string                           `json:"tokenOut"`
+	TokenIn  string                         `json:"tokenIn"`
+	TokenOut string                         `json:"tokenOut"`
 	Hops     []routeHopCombinedHTTPResponse `json:"hops"`
 }
 
@@ -151,6 +151,8 @@ func toRouteCombinedHTTPResponse(route quoteunified.Route) routeCombinedHTTPResp
 			item.PoolAddress = hop.PoolPancakeV3.Hex()
 		case quoteunified.PoolVersionV4:
 			item.PoolID = hop.PoolV4.String()
+		case quoteunified.PoolVersionBalancer:
+			item.PoolID = hop.PoolBalancer.String()
 		}
 		hops = append(hops, item)
 	}

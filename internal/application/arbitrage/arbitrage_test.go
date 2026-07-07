@@ -9,14 +9,15 @@ import (
 
 	arbitrageapp "github.com/brianliu-sysu/uniswapv3/internal/application/arbitrage"
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
-	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
-	quoteuniv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
-	quotepancakev3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/pancakev3"
-	quoteuniv4domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ4"
-	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
+	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
-	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
+	quotepancakev3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/pancakev3"
+	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
+	quoteuniv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
+	quoteuniv4domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -142,10 +143,13 @@ func (r *memoryOpportunityRepo) Delete(_ context.Context, id string) error {
 
 type alwaysReady struct{}
 
-func (alwaysReady) IsSystemReady() bool                         { return true }
-func (alwaysReady) IsV3PoolReady(_ common.Address) bool         { return true }
-func (alwaysReady) IsPancakeV3PoolReady(_ common.Address) bool   { return true }
-func (alwaysReady) IsV4PoolReady(_ marketuniv4.PoolID) bool        { return true }
+func (alwaysReady) IsSystemReady() bool                        { return true }
+func (alwaysReady) IsV3PoolReady(_ common.Address) bool        { return true }
+func (alwaysReady) IsPancakeV3PoolReady(_ common.Address) bool { return true }
+func (alwaysReady) IsV4PoolReady(_ marketuniv4.PoolID) bool    { return true }
+func (alwaysReady) IsBalancerPoolReady(_ marketbalancer.PoolID) bool {
+	return true
+}
 
 func testToken(index byte) common.Address {
 	return common.HexToAddress(fmt.Sprintf("0x000000000000000000000000000000000000000%x", index))
@@ -469,7 +473,7 @@ func (r *staticPoolRegistry) List(context.Context) ([]common.Address, error) {
 	return append([]common.Address(nil), r.addresses...), nil
 }
 
-func (r *staticPoolRegistry) Add(context.Context, common.Address) error  { return nil }
+func (r *staticPoolRegistry) Add(context.Context, common.Address) error    { return nil }
 func (r *staticPoolRegistry) Remove(context.Context, common.Address) error { return nil }
 
 func TestPublishServicePersistsOpportunity(t *testing.T) {

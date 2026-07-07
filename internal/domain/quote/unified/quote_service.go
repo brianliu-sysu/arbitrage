@@ -4,13 +4,15 @@ import (
 	"fmt"
 	"math/big"
 
-	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
-	quotepancakev3 "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/pancakev3"
-	quoteuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
-	quoteuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ4"
+	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
 	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
+	quotebalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/balancer"
+	quotepancakev3 "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/pancakev3"
+	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
+	quoteuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
+	quoteuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -19,16 +21,18 @@ type RoutePools struct {
 	V3        map[common.Address]*marketv3.Pool
 	PancakeV3 map[common.Address]*marketpancake.Pool
 	V4        map[marketv4.PoolID]*marketv4.Pool
+	Balancer  map[marketbalancer.PoolID]*marketbalancer.Pool
 }
 
 // QuoteService quotes swaps along unified routes by dispatching to V3-style or V4 math.
 type QuoteService struct {
-	v3      *quoteuniv3.QuoteService
-	pancake *quotepancakev3.QuoteService
-	v4      *quoteuniv4.QuoteService
+	v3       *quoteuniv3.QuoteService
+	pancake  *quotepancakev3.QuoteService
+	v4       *quoteuniv4.QuoteService
+	balancer *quotebalancer.QuoteService
 }
 
-func NewQuoteService(v3 *quoteuniv3.QuoteService, pancake *quotepancakev3.QuoteService, v4 *quoteuniv4.QuoteService) *QuoteService {
+func NewQuoteService(v3 *quoteuniv3.QuoteService, pancake *quotepancakev3.QuoteService, v4 *quoteuniv4.QuoteService, balancer ...*quotebalancer.QuoteService) *QuoteService {
 	if v3 == nil {
 		v3 = quoteuniv3.NewQuoteService()
 	}
@@ -38,7 +42,11 @@ func NewQuoteService(v3 *quoteuniv3.QuoteService, pancake *quotepancakev3.QuoteS
 	if v4 == nil {
 		v4 = quoteuniv4.NewQuoteService()
 	}
-	return &QuoteService{v3: v3, pancake: pancake, v4: v4}
+	balancerSvc := quotebalancer.NewQuoteService()
+	if len(balancer) > 0 && balancer[0] != nil {
+		balancerSvc = balancer[0]
+	}
+	return &QuoteService{v3: v3, pancake: pancake, v4: v4, balancer: balancerSvc}
 }
 
 // QuoteExactInput quotes an exact-input swap on a single Uniswap V3 pool.
@@ -69,6 +77,16 @@ func (s *QuoteService) QuoteExactInputV4(pool *marketv4.Pool, tokenIn, tokenOut 
 // QuoteExactOutputV4 quotes an exact-output swap on a single V4 pool.
 func (s *QuoteService) QuoteExactOutputV4(pool *marketv4.Pool, tokenIn, tokenOut common.Address, amountOut *big.Int) (quoteshared.QuoteResult, error) {
 	return s.v4.QuoteExactOutput(pool, tokenIn, tokenOut, amountOut)
+}
+
+// QuoteExactInputBalancer quotes an exact-input swap on a single Balancer pool.
+func (s *QuoteService) QuoteExactInputBalancer(pool *marketbalancer.Pool, tokenIn, tokenOut common.Address, amountIn *big.Int) (quoteshared.QuoteResult, error) {
+	return s.balancer.QuoteExactInput(pool, tokenIn, tokenOut, amountIn)
+}
+
+// QuoteExactOutputBalancer quotes an exact-output swap on a single Balancer pool.
+func (s *QuoteService) QuoteExactOutputBalancer(pool *marketbalancer.Pool, tokenIn, tokenOut common.Address, amountOut *big.Int) (quoteshared.QuoteResult, error) {
+	return s.balancer.QuoteExactOutput(pool, tokenIn, tokenOut, amountOut)
 }
 
 // QuoteRoute quotes an exact-input swap along a multi-hop unified route.
@@ -118,6 +136,12 @@ func (s *QuoteService) quoteHop(pools RoutePools, hop RouteHop, amountIn *big.In
 			return quoteshared.QuoteResult{}, fmt.Errorf("univ4 pool %s not found", hop.PoolV4.String())
 		}
 		return s.v4.QuoteExactInput(pool, hop.TokenIn, hop.TokenOut, amountIn)
+	case PoolVersionBalancer:
+		pool := pools.Balancer[hop.PoolBalancer]
+		if pool == nil {
+			return quoteshared.QuoteResult{}, fmt.Errorf("balancer pool %s not found", hop.PoolBalancer.String())
+		}
+		return s.balancer.QuoteExactInput(pool, hop.TokenIn, hop.TokenOut, amountIn)
 	case PoolVersionWrapWETH, PoolVersionUnwrapWETH:
 		return QuoteWETHBridge(hop, amountIn)
 	default:

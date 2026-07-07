@@ -6,12 +6,13 @@ import (
 
 // Config holds RPC and Uniswap contract addresses.
 type Config struct {
-	RPCURL             string
-	WSURL              string
-	FactoryAddress     common.Address
-	MulticallAddress   common.Address
-	PoolManagerAddress common.Address
-	StateViewAddress   common.Address
+	RPCURL               string
+	WSURL                string
+	FactoryAddress       common.Address
+	MulticallAddress     common.Address
+	PoolManagerAddress   common.Address
+	StateViewAddress     common.Address
+	BalancerVaultAddress common.Address
 }
 
 func DefaultConfig(rpcURL string) Config {

@@ -8,14 +8,15 @@ import (
 
 	quoteapp "github.com/brianliu-sysu/uniswapv3/internal/application/quote"
 	quotecombined "github.com/brianliu-sysu/uniswapv3/internal/application/quote/combined"
-	quoteuniv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
-	quotepancakev3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/pancakev3"
-	quoteuniv4domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ4"
-	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
+	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
 	marketuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
-	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	quotepancakev3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/pancakev3"
+	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
+	quoteuniv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
+	quoteuniv4domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -202,10 +203,13 @@ func (r staticV4Registry) Remove(_ context.Context, id marketuniv4.PoolID) error
 
 type alwaysReady struct{}
 
-func (alwaysReady) IsSystemReady() bool                         { return true }
-func (alwaysReady) IsV3PoolReady(_ common.Address) bool         { return true }
-func (alwaysReady) IsPancakeV3PoolReady(_ common.Address) bool   { return true }
-func (alwaysReady) IsV4PoolReady(_ marketuniv4.PoolID) bool        { return true }
+func (alwaysReady) IsSystemReady() bool                        { return true }
+func (alwaysReady) IsV3PoolReady(_ common.Address) bool        { return true }
+func (alwaysReady) IsPancakeV3PoolReady(_ common.Address) bool { return true }
+func (alwaysReady) IsV4PoolReady(_ marketuniv4.PoolID) bool    { return true }
+func (alwaysReady) IsBalancerPoolReady(_ marketbalancer.PoolID) bool {
+	return true
+}
 
 func testToken(index byte) common.Address {
 	return common.HexToAddress(fmt.Sprintf("0x000000000000000000000000000000000000000%x", index))
@@ -259,9 +263,11 @@ func newCombinedService(v3Repo *memoryV3PoolRepo, pancakeRepo *memoryPancakePool
 		v3Repo,
 		pancakeRepo,
 		v4Repo,
+		nil,
 		v3Reg,
 		pancakeReg,
 		v4Reg,
+		nil,
 		quoteunified.NewQuoteService(
 			quoteuniv3domain.NewQuoteService(),
 			quotepancakev3domain.NewQuoteService(),

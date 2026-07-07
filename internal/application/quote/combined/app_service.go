@@ -6,11 +6,12 @@ import (
 	"math/big"
 
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/asset"
-	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
-	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
+	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
 	marketuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
+	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
+	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -20,16 +21,19 @@ type ReadinessChecker interface {
 	IsV3PoolReady(poolAddress common.Address) bool
 	IsPancakeV3PoolReady(poolAddress common.Address) bool
 	IsV4PoolReady(poolID marketuniv4.PoolID) bool
+	IsBalancerPoolReady(poolID marketbalancer.PoolID) bool
 }
 
 // AppService orchestrates unified V3/PancakeV3/V4 route discovery and quoting.
 type AppService struct {
-	univ3Pools          marketuniv3.PoolRepository
+	univ3Pools       marketuniv3.PoolRepository
 	pancakePools     marketpancake.PoolRepository
-	univ4Pools          marketuniv4.PoolRepository
+	univ4Pools       marketuniv4.PoolRepository
+	balancerPools    marketbalancer.PoolRepository
 	v3Registry       marketuniv3.PoolRegistry
 	pancakeRegistry  marketpancake.PoolRegistry
 	v4Registry       marketuniv4.PoolRegistry
+	balancerRegistry marketbalancer.PoolRegistry
 	quotes           *quoteunified.QuoteService
 	readiness        ReadinessChecker
 	maxHops          int
@@ -39,9 +43,11 @@ func NewAppService(
 	univ3Pools marketuniv3.PoolRepository,
 	pancakePools marketpancake.PoolRepository,
 	univ4Pools marketuniv4.PoolRepository,
+	balancerPools marketbalancer.PoolRepository,
 	v3Registry marketuniv3.PoolRegistry,
 	pancakeRegistry marketpancake.PoolRegistry,
 	v4Registry marketuniv4.PoolRegistry,
+	balancerRegistry marketbalancer.PoolRegistry,
 	quotes *quoteunified.QuoteService,
 	readiness ReadinessChecker,
 	maxHops int,
@@ -50,15 +56,17 @@ func NewAppService(
 		maxHops = 3
 	}
 	return &AppService{
-		univ3Pools:         univ3Pools,
-		pancakePools:    pancakePools,
-		univ4Pools:         univ4Pools,
-		v3Registry:      v3Registry,
-		pancakeRegistry: pancakeRegistry,
-		v4Registry:      v4Registry,
-		quotes:          quotes,
-		readiness:       readiness,
-		maxHops:         maxHops,
+		univ3Pools:       univ3Pools,
+		pancakePools:     pancakePools,
+		univ4Pools:       univ4Pools,
+		balancerPools:    balancerPools,
+		v3Registry:       v3Registry,
+		pancakeRegistry:  pancakeRegistry,
+		v4Registry:       v4Registry,
+		balancerRegistry: balancerRegistry,
+		quotes:           quotes,
+		readiness:        readiness,
+		maxHops:          maxHops,
 	}
 }
 
@@ -75,7 +83,10 @@ func (s *AppService) Quote(ctx context.Context, req Request) (Response, error) {
 		return s.quoteSinglePoolByAddress(ctx, req, *req.PoolAddress)
 	}
 	if req.PoolID != nil {
-		return s.quoteSingleV4Pool(ctx, req, *req.PoolID)
+		return s.quoteSinglePoolByID(ctx, req, *req.PoolID)
+	}
+	if req.BalancerPoolID != nil {
+		return s.quoteSingleBalancerPool(ctx, req, *req.BalancerPoolID)
 	}
 	if req.IsExactOutput() {
 		return Response{}, fmt.Errorf("multi-hop exact-output quotes are not supported")
@@ -90,8 +101,18 @@ func validateQuoteRequest(req Request) error {
 	if req.TokenIn == req.TokenOut {
 		return fmt.Errorf("tokenIn and tokenOut must differ")
 	}
-	if req.PoolAddress != nil && req.PoolID != nil {
-		return fmt.Errorf("only one of poolAddress or poolId may be provided")
+	selectors := 0
+	if req.PoolAddress != nil {
+		selectors++
+	}
+	if req.PoolID != nil {
+		selectors++
+	}
+	if req.BalancerPoolID != nil {
+		selectors++
+	}
+	if selectors > 1 {
+		return fmt.Errorf("only one pool selector may be provided")
 	}
 
 	switch req.Mode {
@@ -134,7 +155,34 @@ func (s *AppService) quoteSinglePoolByAddress(ctx context.Context, req Request, 
 		}
 	}
 
+	if s.balancerPools != nil && s.balancerRegistry != nil {
+		poolID, ok, err := s.findBalancerPoolIDByAddress(ctx, poolAddress)
+		if err != nil {
+			return Response{}, err
+		}
+		if ok {
+			return s.quoteSingleBalancerPool(ctx, req, poolID)
+		}
+	}
+
 	return Response{}, fmt.Errorf("pool %s not found", poolAddress.Hex())
+}
+
+func (s *AppService) findBalancerPoolIDByAddress(ctx context.Context, poolAddress common.Address) (marketbalancer.PoolID, bool, error) {
+	poolIDs, err := s.balancerRegistry.List(ctx)
+	if err != nil {
+		return marketbalancer.PoolID{}, false, fmt.Errorf("list balancer pools: %w", err)
+	}
+	for _, poolID := range poolIDs {
+		spec, err := s.balancerRegistry.GetSpec(ctx, poolID)
+		if err != nil {
+			return marketbalancer.PoolID{}, false, fmt.Errorf("load balancer pool spec %s: %w", poolID.String(), err)
+		}
+		if spec.Address == poolAddress {
+			return poolID, true, nil
+		}
+	}
+	return marketbalancer.PoolID{}, false, nil
 }
 
 func (s *AppService) quoteSingleV3Pool(ctx context.Context, req Request, poolAddress common.Address, pool *marketuniv3.Pool) (Response, error) {
@@ -202,6 +250,48 @@ func (s *AppService) quoteSingleV4Pool(ctx context.Context, req Request, poolID 
 	}
 
 	route := quoteunified.NewDirectV4Route(poolID, req.TokenIn, req.TokenOut)
+	return newSinglePoolResponse(req, route, result), nil
+}
+
+func (s *AppService) quoteSinglePoolByID(ctx context.Context, req Request, poolID marketuniv4.PoolID) (Response, error) {
+	if s.univ4Pools != nil {
+		pool, err := s.univ4Pools.Get(ctx, poolID)
+		if err != nil {
+			return Response{}, fmt.Errorf("load pool %s: %w", poolID.String(), err)
+		}
+		if pool != nil {
+			return s.quoteSingleV4Pool(ctx, req, poolID)
+		}
+	}
+	return s.quoteSingleBalancerPool(ctx, req, marketbalancer.PoolID(poolID.Hash()))
+}
+
+func (s *AppService) quoteSingleBalancerPool(ctx context.Context, req Request, poolID marketbalancer.PoolID) (Response, error) {
+	if s.readiness != nil && !s.readiness.IsBalancerPoolReady(poolID) {
+		return Response{}, fmt.Errorf("pool %s is not ready", poolID.String())
+	}
+	if s.balancerPools == nil {
+		return Response{}, fmt.Errorf("balancer pool repository is nil")
+	}
+	pool, err := s.balancerPools.Get(ctx, poolID)
+	if err != nil {
+		return Response{}, fmt.Errorf("load pool %s: %w", poolID.String(), err)
+	}
+	if pool == nil {
+		return Response{}, fmt.Errorf("pool %s not found", poolID.String())
+	}
+
+	var result quoteshared.QuoteResult
+	if req.IsExactInput() {
+		result, err = s.quotes.QuoteExactInputBalancer(pool, req.TokenIn, req.TokenOut, req.AmountIn)
+	} else {
+		result, err = s.quotes.QuoteExactOutputBalancer(pool, req.TokenIn, req.TokenOut, req.AmountOut)
+	}
+	if err != nil {
+		return Response{}, fmt.Errorf("quote pool %s: %w", poolID.String(), err)
+	}
+
+	route := quoteunified.NewDirectBalancerRoute(poolID, req.TokenIn, req.TokenOut)
 	return newSinglePoolResponse(req, route, result), nil
 }
 
@@ -353,6 +443,32 @@ func (s *AppService) buildPoolGraph(ctx context.Context) (quoteunified.PoolGraph
 		}
 	}
 
+	if s.balancerRegistry != nil && s.balancerPools != nil {
+		poolIDs, err := s.balancerRegistry.List(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list balancer pools: %w", err)
+		}
+		for _, poolID := range poolIDs {
+			pool, err := s.balancerPools.Get(ctx, poolID)
+			if err != nil {
+				return nil, fmt.Errorf("load balancer pool %s: %w", poolID.String(), err)
+			}
+			if pool == nil || len(pool.Tokens) < 2 {
+				continue
+			}
+			for i := 0; i < len(pool.Tokens); i++ {
+				for j := i + 1; j < len(pool.Tokens); j++ {
+					edges = append(edges, quoteunified.PoolEdge{
+						Version:      quoteunified.PoolVersionBalancer,
+						PoolBalancer: pool.ID,
+						Token0:       pool.Tokens[i],
+						Token1:       pool.Tokens[j],
+					})
+				}
+			}
+		}
+	}
+
 	if len(edges) == 0 {
 		return nil, fmt.Errorf("no pools available for routing")
 	}
@@ -365,6 +481,7 @@ func (s *AppService) loadRoutePools(ctx context.Context, route quoteunified.Rout
 		V3:        make(map[common.Address]*marketuniv3.Pool),
 		PancakeV3: make(map[common.Address]*marketpancake.Pool),
 		V4:        make(map[marketuniv4.PoolID]*marketuniv4.Pool),
+		Balancer:  make(map[marketbalancer.PoolID]*marketbalancer.Pool),
 	}
 
 	for _, hop := range route.Hops {
@@ -405,6 +522,18 @@ func (s *AppService) loadRoutePools(ctx context.Context, route quoteunified.Rout
 				return quoteunified.RoutePools{}, fmt.Errorf("univ4 pool %s not found", hop.PoolV4.String())
 			}
 			pools.V4[hop.PoolV4] = pool
+		case quoteunified.PoolVersionBalancer:
+			if _, ok := pools.Balancer[hop.PoolBalancer]; ok {
+				continue
+			}
+			pool, err := s.balancerPools.Get(ctx, hop.PoolBalancer)
+			if err != nil {
+				return quoteunified.RoutePools{}, fmt.Errorf("load balancer pool %s: %w", hop.PoolBalancer.String(), err)
+			}
+			if pool == nil {
+				return quoteunified.RoutePools{}, fmt.Errorf("balancer pool %s not found", hop.PoolBalancer.String())
+			}
+			pools.Balancer[hop.PoolBalancer] = pool
 		case quoteunified.PoolVersionWrapWETH, quoteunified.PoolVersionUnwrapWETH:
 			continue
 		default:
@@ -432,6 +561,10 @@ func (s *AppService) ensureRouteReady(route quoteunified.Route) error {
 		case quoteunified.PoolVersionV4:
 			if !s.readiness.IsV4PoolReady(hop.PoolV4) {
 				return fmt.Errorf("univ4 pool %s is not ready", hop.PoolV4.String())
+			}
+		case quoteunified.PoolVersionBalancer:
+			if !s.readiness.IsBalancerPoolReady(hop.PoolBalancer) {
+				return fmt.Errorf("balancer pool %s is not ready", hop.PoolBalancer.String())
 			}
 		case quoteunified.PoolVersionWrapWETH, quoteunified.PoolVersionUnwrapWETH:
 			continue

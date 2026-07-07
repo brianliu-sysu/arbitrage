@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
+	syncbalancer "github.com/brianliu-sysu/uniswapv3/internal/application/sync/balancer"
+	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -275,6 +277,128 @@ func TestV4ABIParserModifyLiquidityEvent(t *testing.T) {
 	}
 }
 
+func TestBalancerABIParserSwapEvent(t *testing.T) {
+	parser, vaultABI := mustBalancerParserAndABI(t)
+
+	poolID := marketbalancer.PoolID(common.HexToHash("0x1000000000000000000000000000000000000000000000000000000000000000"))
+	tokenIn := common.HexToAddress("0x0000000000000000000000000000000000000001")
+	tokenOut := common.HexToAddress("0x0000000000000000000000000000000000000002")
+	data, err := vaultABI.Events["Swap"].Inputs.NonIndexed().Pack(big.NewInt(100), big.NewInt(90))
+	if err != nil {
+		t.Fatalf("pack balancer swap: %v", err)
+	}
+
+	events, err := parser.ParsePoolEvents([]syncbalancer.RawLog{{
+		Topics: []common.Hash{
+			topicBalancerSwap,
+			poolID.Hash(),
+			common.BytesToHash(tokenIn.Bytes()),
+			common.BytesToHash(tokenOut.Bytes()),
+		},
+		Data:        data,
+		BlockNumber: 300,
+		TxIndex:     1,
+		LogIndex:    2,
+	}})
+	if err != nil {
+		t.Fatalf("parse balancer swap: %v", err)
+	}
+	if len(events) != 1 || events[0].Kind != marketbalancer.EventKindSwap {
+		t.Fatalf("unexpected events: %#v", events)
+	}
+	swap := events[0].Swap
+	if swap == nil || swap.TokenIn != tokenIn || swap.TokenOut != tokenOut ||
+		swap.AmountIn.Cmp(big.NewInt(100)) != 0 || swap.AmountOut.Cmp(big.NewInt(90)) != 0 {
+		t.Fatalf("unexpected swap payload: %#v", swap)
+	}
+}
+
+func TestBalancerABIParserPoolBalanceChangedEvent(t *testing.T) {
+	parser, vaultABI := mustBalancerParserAndABI(t)
+
+	poolID := marketbalancer.PoolID(common.HexToHash("0x2000000000000000000000000000000000000000000000000000000000000000"))
+	tokens := []common.Address{
+		common.HexToAddress("0x0000000000000000000000000000000000000001"),
+		common.HexToAddress("0x0000000000000000000000000000000000000002"),
+	}
+	deltas := []*big.Int{big.NewInt(-100), big.NewInt(250)}
+	protocolFees := []*big.Int{big.NewInt(0), big.NewInt(0)}
+	data, err := vaultABI.Events["PoolBalanceChanged"].Inputs.NonIndexed().Pack(tokens, deltas, protocolFees)
+	if err != nil {
+		t.Fatalf("pack balancer balance changed: %v", err)
+	}
+
+	events, err := parser.ParsePoolEvents([]syncbalancer.RawLog{{
+		Topics: []common.Hash{
+			topicBalancerPoolBalanceChanged,
+			poolID.Hash(),
+			common.Hash{},
+		},
+		Data:        data,
+		BlockNumber: 301,
+	}})
+	if err != nil {
+		t.Fatalf("parse balancer balance changed: %v", err)
+	}
+	if len(events) != 1 || events[0].Kind != marketbalancer.EventKindPoolBalanceChanged {
+		t.Fatalf("unexpected events: %#v", events)
+	}
+	balanceChanged := events[0].PoolBalanceChanged
+	if balanceChanged == nil || len(balanceChanged.Tokens) != 2 || len(balanceChanged.Deltas) != 2 {
+		t.Fatalf("unexpected balance changed payload: %#v", balanceChanged)
+	}
+	if balanceChanged.Tokens[0] != tokens[0] || balanceChanged.Deltas[0].Cmp(deltas[0]) != 0 ||
+		balanceChanged.Tokens[1] != tokens[1] || balanceChanged.Deltas[1].Cmp(deltas[1]) != 0 {
+		t.Fatalf("unexpected balance changed values: %#v", balanceChanged)
+	}
+}
+
+func TestBalancerABIParserPoolContractEvents(t *testing.T) {
+	parser, _, poolABI := mustBalancerParserAndABIs(t)
+
+	poolID := marketbalancer.PoolID(common.HexToHash("0x3000000000000000000000000000000000000000000000000000000000000000"))
+	poolAddress := common.HexToAddress("0x00000000000000000000000000000000000000aa")
+	parser.SetPoolAddressMap(map[common.Address]marketbalancer.PoolID{poolAddress: poolID})
+
+	feeData, err := poolABI.Events["SwapFeePercentageChanged"].Inputs.NonIndexed().Pack(big.NewInt(1000000000000000))
+	if err != nil {
+		t.Fatalf("pack swap fee changed: %v", err)
+	}
+	ampData, err := poolABI.Events["AmpUpdateStopped"].Inputs.NonIndexed().Pack(big.NewInt(1500))
+	if err != nil {
+		t.Fatalf("pack amp update stopped: %v", err)
+	}
+
+	events, err := parser.ParsePoolEvents([]syncbalancer.RawLog{
+		{
+			Address:     poolAddress,
+			Topics:      []common.Hash{topicBalancerSwapFeeChanged},
+			Data:        feeData,
+			BlockNumber: 302,
+		},
+		{
+			Address:     poolAddress,
+			Topics:      []common.Hash{topicBalancerAmpUpdateStopped},
+			Data:        ampData,
+			BlockNumber: 303,
+		},
+	})
+	if err != nil {
+		t.Fatalf("parse pool contract events: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %#v", events)
+	}
+	if events[0].Meta.PoolID != poolID || events[0].SwapFeePercentageChanged == nil ||
+		events[0].SwapFeePercentageChanged.SwapFeePercentage.Cmp(big.NewInt(1000000000000000)) != 0 {
+		t.Fatalf("unexpected swap fee event: %#v", events[0])
+	}
+	if events[1].Meta.PoolID != poolID || events[1].AmplificationUpdated == nil ||
+		events[1].AmplificationUpdated.Amplification.Cmp(big.NewInt(1500)) != 0 {
+		t.Fatalf("unexpected amplification event: %#v", events[1])
+	}
+}
+
 func TestSortTokens(t *testing.T) {
 	tokenA := common.HexToAddress("0x0000000000000000000000000000000000000002")
 	tokenB := common.HexToAddress("0x0000000000000000000000000000000000000001")
@@ -327,4 +451,26 @@ func mustV4ParserAndABI(t *testing.T) (*V4ABIParser, abi.ABI) {
 		t.Fatalf("new v4 parser: %v", err)
 	}
 	return parser, mustV4ManagerABI(t)
+}
+
+func mustBalancerParserAndABI(t *testing.T) (*BalancerABIParser, abi.ABI) {
+	parser, vaultABI, _ := mustBalancerParserAndABIs(t)
+	return parser, vaultABI
+}
+
+func mustBalancerParserAndABIs(t *testing.T) (*BalancerABIParser, abi.ABI, abi.ABI) {
+	t.Helper()
+	parser, err := NewBalancerABIParser()
+	if err != nil {
+		t.Fatalf("new balancer parser: %v", err)
+	}
+	vaultABI, err := abi.JSON(strings.NewReader(balancerVaultEventsABI))
+	if err != nil {
+		t.Fatalf("parse balancer abi: %v", err)
+	}
+	poolABI, err := abi.JSON(strings.NewReader(balancerPoolEventsABI))
+	if err != nil {
+		t.Fatalf("parse balancer pool abi: %v", err)
+	}
+	return parser, vaultABI, poolABI
 }

@@ -4,9 +4,10 @@ import (
 	"sync"
 
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
+	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
+	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
-	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -50,11 +51,15 @@ func (s *ScanService) ClearTriangleRoutes() {
 	s.triangleRouteIDs = nil
 }
 
-// FindAffected returns routes that depend on any changed Uniswap V3, Pancake V3, or V4 pool.
-func (s *ScanService) FindAffected(univ3Pools, pancakePools []common.Address, univ4Pools []marketuniv4.PoolID) []domainarb.RouteRef {
+// FindAffected returns routes that depend on any changed synced pool.
+func (s *ScanService) FindAffected(univ3Pools, pancakePools []common.Address, univ4Pools []marketuniv4.PoolID, balancerPoolsArg ...[]marketbalancer.PoolID) []domainarb.RouteRef {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.graph.AffectedRoutes(univ3Pools, pancakePools, univ4Pools)
+	var balancerPools []marketbalancer.PoolID
+	if len(balancerPoolsArg) > 0 {
+		balancerPools = balancerPoolsArg[0]
+	}
+	return s.graph.AffectedRoutes(univ3Pools, pancakePools, univ4Pools, balancerPools)
 }
 
 // Routes returns all registered routes.

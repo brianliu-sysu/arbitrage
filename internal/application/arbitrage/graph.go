@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"reflect"
 
-	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
+	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
 	marketuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
+	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 )
 
-// BuildUnifiedPoolGraph builds a routing graph from tracked Uniswap V3, Pancake V3, and V4 pools.
+// BuildUnifiedPoolGraph builds a routing graph from tracked V3, Pancake V3, V4, and Balancer pools.
 func BuildUnifiedPoolGraph(
 	ctx context.Context,
 	v3Registry marketuniv3.PoolRegistry,
@@ -20,6 +21,8 @@ func BuildUnifiedPoolGraph(
 	pancakePools marketpancake.PoolRepository,
 	v4Registry marketuniv4.PoolRegistry,
 	univ4Pools marketuniv4.PoolRepository,
+	balancerRegistry marketbalancer.PoolRegistry,
+	balancerPools marketbalancer.PoolRepository,
 ) (quoteunified.PoolGraph, error) {
 	edges := make([]quoteunified.PoolEdge, 0)
 
@@ -89,6 +92,32 @@ func BuildUnifiedPoolGraph(
 		}
 	}
 
+	if interfacePresent(balancerRegistry) && balancerPools != nil {
+		poolIDs, err := balancerRegistry.List(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list balancer pools: %w", err)
+		}
+		for _, poolID := range poolIDs {
+			pool, err := balancerPools.Get(ctx, poolID)
+			if err != nil {
+				return nil, fmt.Errorf("load balancer pool %s: %w", poolID.String(), err)
+			}
+			if pool == nil || len(pool.Tokens) < 2 {
+				continue
+			}
+			for i := 0; i < len(pool.Tokens); i++ {
+				for j := i + 1; j < len(pool.Tokens); j++ {
+					edges = append(edges, quoteunified.PoolEdge{
+						Version:      quoteunified.PoolVersionBalancer,
+						PoolBalancer: pool.ID,
+						Token0:       pool.Tokens[i],
+						Token1:       pool.Tokens[j],
+					})
+				}
+			}
+		}
+	}
+
 	if len(edges) == 0 {
 		return nil, fmt.Errorf("no pools available for routing")
 	}
@@ -98,7 +127,7 @@ func BuildUnifiedPoolGraph(
 
 // BuildPoolGraph builds a Uniswap V3-only routing graph from tracked pools.
 func BuildPoolGraph(ctx context.Context, registry marketuniv3.PoolRegistry, pools marketuniv3.PoolRepository) (quoteunified.PoolGraph, error) {
-	return BuildUnifiedPoolGraph(ctx, registry, pools, nil, nil, nil, nil)
+	return BuildUnifiedPoolGraph(ctx, registry, pools, nil, nil, nil, nil, nil, nil)
 }
 
 func interfacePresent(value any) bool {

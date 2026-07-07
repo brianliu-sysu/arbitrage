@@ -3,8 +3,9 @@ package arbitrage
 import (
 	"sort"
 
-	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
+	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
+	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -100,12 +101,16 @@ func (g *DependencyGraph) Remove(routeID string) {
 }
 
 // AffectedRoutes returns routes that depend on any of the changed pools.
-func (g *DependencyGraph) AffectedRoutes(v3Pools, pancakePools []common.Address, v4Pools []marketv4.PoolID) []RouteRef {
-	if len(v3Pools) == 0 && len(pancakePools) == 0 && len(v4Pools) == 0 {
+func (g *DependencyGraph) AffectedRoutes(v3Pools, pancakePools []common.Address, v4Pools []marketv4.PoolID, balancerPoolsArg ...[]marketbalancer.PoolID) []RouteRef {
+	var balancerPools []marketbalancer.PoolID
+	if len(balancerPoolsArg) > 0 {
+		balancerPools = balancerPoolsArg[0]
+	}
+	if len(v3Pools) == 0 && len(pancakePools) == 0 && len(v4Pools) == 0 && len(balancerPools) == 0 {
 		return nil
 	}
 
-	changedKeys := make([]string, 0, len(v3Pools)+len(pancakePools)+len(v4Pools))
+	changedKeys := make([]string, 0, len(v3Pools)+len(pancakePools)+len(v4Pools)+len(balancerPools))
 	for _, pool := range v3Pools {
 		changedKeys = append(changedKeys, PoolRefFromV3(pool).Key())
 	}
@@ -114,6 +119,9 @@ func (g *DependencyGraph) AffectedRoutes(v3Pools, pancakePools []common.Address,
 	}
 	for _, pool := range v4Pools {
 		changedKeys = append(changedKeys, PoolRefFromV4(pool).Key())
+	}
+	for _, pool := range balancerPools {
+		changedKeys = append(changedKeys, PoolRefFromBalancer(pool).Key())
 	}
 
 	seen := make(map[string]struct{})

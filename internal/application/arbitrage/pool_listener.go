@@ -3,6 +3,7 @@ package arbitrageapp
 import (
 	"context"
 
+	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -31,14 +32,27 @@ func (l PancakePoolListener) OnPoolsChanged(ctx context.Context, blockNumber uin
 	return l.Services.OnPancakePoolsChanged(ctx, blockNumber, pools)
 }
 
+// BalancerPoolListener adapts arbitrage services to the Balancer sync ChangedPoolsListener interface.
+type BalancerPoolListener struct {
+	Services *Services
+}
+
+func (l BalancerPoolListener) OnPoolsChanged(ctx context.Context, blockNumber uint64, pools []marketbalancer.PoolID) error {
+	if l.Services == nil {
+		return nil
+	}
+	return l.Services.OnBalancerPoolsChanged(ctx, blockNumber, pools)
+}
+
 func (s *Services) notifyPoolsChanged(
 	ctx context.Context,
 	blockNumber uint64,
 	univ3Pools []common.Address,
 	pancakePools []common.Address,
 	univ4Pools []marketuniv4.PoolID,
+	balancerPools []marketbalancer.PoolID,
 ) error {
-	routes := s.Scan.FindAffected(univ3Pools, pancakePools, univ4Pools)
+	routes := s.Scan.FindAffected(univ3Pools, pancakePools, univ4Pools, balancerPools)
 	opportunities, err := s.Opportunities.Generate(ctx, GenerateRequest{
 		BlockNumber: blockNumber,
 		Routes:      routes,
@@ -51,15 +65,20 @@ func (s *Services) notifyPoolsChanged(
 
 // OnPoolsChanged implements the Uniswap V3 sync ChangedPoolsListener interface.
 func (s *Services) OnPoolsChanged(ctx context.Context, blockNumber uint64, pools []common.Address) error {
-	return s.notifyPoolsChanged(ctx, blockNumber, pools, nil, nil)
+	return s.notifyPoolsChanged(ctx, blockNumber, pools, nil, nil, nil)
 }
 
 // OnPancakePoolsChanged handles PancakeSwap V3 pool updates after a block is applied.
 func (s *Services) OnPancakePoolsChanged(ctx context.Context, blockNumber uint64, pools []common.Address) error {
-	return s.notifyPoolsChanged(ctx, blockNumber, nil, pools, nil)
+	return s.notifyPoolsChanged(ctx, blockNumber, nil, pools, nil, nil)
 }
 
 // OnV4PoolsChanged handles V4 pool updates after a block is applied.
 func (s *Services) OnV4PoolsChanged(ctx context.Context, blockNumber uint64, pools []marketuniv4.PoolID) error {
-	return s.notifyPoolsChanged(ctx, blockNumber, nil, nil, pools)
+	return s.notifyPoolsChanged(ctx, blockNumber, nil, nil, pools, nil)
+}
+
+// OnBalancerPoolsChanged handles Balancer pool updates after a block is applied.
+func (s *Services) OnBalancerPoolsChanged(ctx context.Context, blockNumber uint64, pools []marketbalancer.PoolID) error {
+	return s.notifyPoolsChanged(ctx, blockNumber, nil, nil, nil, pools)
 }

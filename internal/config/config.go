@@ -78,10 +78,11 @@ func (c PersistenceConfig) MemoryMode() bool {
 }
 
 type BlockchainConfig struct {
-	FactoryAddress     string `yaml:"factory_address"`
-	MulticallAddress   string `yaml:"multicall_address"`
-	PoolManagerAddress string `yaml:"pool_manager_address"`
-	StateViewAddress   string `yaml:"state_view_address"`
+	FactoryAddress       string `yaml:"factory_address"`
+	MulticallAddress     string `yaml:"multicall_address"`
+	PoolManagerAddress   string `yaml:"pool_manager_address"`
+	StateViewAddress     string `yaml:"state_view_address"`
+	BalancerVaultAddress string `yaml:"balancer_vault_address"`
 }
 
 type SyncConfig struct {
@@ -96,6 +97,7 @@ type SyncConfig struct {
 	Univ3                        Univ3SyncConfig     `yaml:"univ3"`
 	PancakeV3                    PancakeV3SyncConfig `yaml:"pancakev3"`
 	Univ4                        Univ4SyncConfig     `yaml:"univ4"`
+	Balancer                     BalancerSyncConfig  `yaml:"balancer"`
 }
 
 // Univ3SyncConfig configures Uniswap V3 pool sync sources.
@@ -117,6 +119,21 @@ type Univ4SyncConfig struct {
 	Enabled     bool                 `yaml:"enabled"`
 	PoolManager V4PoolManagerConfig  `yaml:"poolmanager"`
 	Subgraph    V4SubgraphPoolConfig `yaml:"subgraph"`
+}
+
+// BalancerSyncConfig configures Balancer weighted/stable pool sync sources.
+type BalancerSyncConfig struct {
+	Enabled  bool                       `yaml:"enabled"`
+	Pools    []StaticBalancerPoolConfig `yaml:"pools"`
+	Subgraph BalancerSubgraphPoolConfig `yaml:"subgraph"`
+}
+
+// StaticBalancerPoolConfig defines a Balancer pool tracked by Vault PoolID.
+type StaticBalancerPoolConfig struct {
+	ID      string `yaml:"id"`
+	Address string `yaml:"address"`
+	Vault   string `yaml:"vault"`
+	Type    string `yaml:"type"`
 }
 
 // V4PoolManagerConfig lists V4 pools tracked via static PoolKey definitions.
@@ -162,6 +179,23 @@ const DefaultV4HooksAddress = "0x0000000000000000000000000000000000000000"
 type V4SubgraphPoolConfig struct {
 	SubgraphPoolConfig `yaml:",inline"`
 	Hooks              []string `yaml:"hooks"`
+}
+
+// BalancerSubgraphPoolConfig discovers Balancer weighted/stable pools from a subgraph.
+type BalancerSubgraphPoolConfig struct {
+	SubgraphPoolConfig `yaml:",inline"`
+	PoolTypes          []string `yaml:"pool_types"`
+}
+
+func (c BalancerSubgraphPoolConfig) IsEnabled() bool {
+	return c.SubgraphPoolConfig.IsEnabled()
+}
+
+func (c BalancerSubgraphPoolConfig) ResolvedPoolTypes() []string {
+	if len(c.PoolTypes) == 0 {
+		return []string{"Weighted", "Stable"}
+	}
+	return c.PoolTypes
 }
 
 func DefaultV4SubgraphHooks() []string {
@@ -220,10 +254,11 @@ func Default() Config {
 	return Config{
 		App: AppConfig{Name: "univ3-arbitrage"},
 		Blockchain: BlockchainConfig{
-			FactoryAddress:     "0x1F98431c8aD98523631AE4a59f267346ea31F984",
-			MulticallAddress:   "0xcA11bde05977b3631167028862bE2a173976CA11",
-			PoolManagerAddress: "0x000000000004444c5dc75cB358380D2e3dE08A90",
-			StateViewAddress:   "0x7ffe42c4a5deea5b0fec41c94c136cf115597227",
+			FactoryAddress:       "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+			MulticallAddress:     "0xcA11bde05977b3631167028862bE2a173976CA11",
+			PoolManagerAddress:   "0x000000000004444c5dc75cB358380D2e3dE08A90",
+			StateViewAddress:     "0x7ffe42c4a5deea5b0fec41c94c136cf115597227",
+			BalancerVaultAddress: "0xBA12222222228d8Ba445958a75a0704d566BF2C8",
 		},
 		Sync: SyncConfig{
 			CatchupBatchSize: 2000,
@@ -263,6 +298,19 @@ func Default() Config {
 						RefreshInterval:        10 * time.Minute,
 					},
 					Hooks: DefaultV4SubgraphHooks(),
+				},
+			},
+			Balancer: BalancerSyncConfig{
+				Enabled: false,
+				Subgraph: BalancerSubgraphPoolConfig{
+					SubgraphPoolConfig: SubgraphPoolConfig{
+						First:                  100,
+						OrderBy:                "totalLiquidity",
+						OrderDirection:         "desc",
+						MinTotalValueLockedUSD: "1000000",
+						RefreshInterval:        10 * time.Minute,
+					},
+					PoolTypes: []string{"Weighted", "Stable"},
 				},
 			},
 		},
@@ -325,6 +373,9 @@ func (c Config) Validate() error {
 	if c.Sync.Univ4.Subgraph.Enabled && c.Sync.Univ4.Subgraph.Endpoint == "" {
 		return fmt.Errorf("sync.univ4.subgraph.endpoint is required when subgraph is enabled")
 	}
+	if c.Sync.Balancer.Subgraph.Enabled && c.Sync.Balancer.Subgraph.Endpoint == "" {
+		return fmt.Errorf("sync.balancer.subgraph.endpoint is required when subgraph is enabled")
+	}
 	for i, pool := range c.Sync.Univ3.Pools {
 		if pool.Address == "" {
 			return fmt.Errorf("sync.univ3.pools[%d].address is required", i)
@@ -340,6 +391,15 @@ func (c Config) Validate() error {
 			return fmt.Errorf("sync.univ4.poolmanager.pools[%d] requires currency0 and currency1", i)
 		}
 	}
+	for i, pool := range c.Sync.Balancer.Pools {
+		if pool.ID == "" || pool.Address == "" {
+			return fmt.Errorf("sync.balancer.pools[%d] requires id and address", i)
+		}
+		poolType := strings.ToLower(strings.TrimSpace(pool.Type))
+		if poolType != "weighted" && poolType != "stable" {
+			return fmt.Errorf("sync.balancer.pools[%d].type must be weighted or stable", i)
+		}
+	}
 	if c.Sync.Univ4.IsActive() {
 		if c.Blockchain.PoolManagerAddress == "" {
 			return fmt.Errorf("blockchain.pool_manager_address is required when sync.univ4 is enabled")
@@ -352,6 +412,14 @@ func (c Config) Validate() error {
 		}
 		if !isStrictHexAddress(c.Blockchain.StateViewAddress) {
 			return fmt.Errorf("blockchain.state_view_address must be a 20-byte hex address")
+		}
+	}
+	if c.Sync.Balancer.IsActive() {
+		if c.Blockchain.BalancerVaultAddress == "" {
+			return fmt.Errorf("blockchain.balancer_vault_address is required when sync.balancer is enabled")
+		}
+		if !isStrictHexAddress(c.Blockchain.BalancerVaultAddress) {
+			return fmt.Errorf("blockchain.balancer_vault_address must be a 20-byte hex address")
 		}
 	}
 	return nil
@@ -400,13 +468,18 @@ func (c Config) BlockchainConfig() chaininfra.Config {
 	if (stateView == common.Address{}) {
 		stateView = common.HexToAddress(Default().Blockchain.StateViewAddress)
 	}
+	balancerVault := common.HexToAddress(c.Blockchain.BalancerVaultAddress)
+	if (balancerVault == common.Address{}) {
+		balancerVault = common.HexToAddress(Default().Blockchain.BalancerVaultAddress)
+	}
 	return chaininfra.Config{
-		RPCURL:             c.RPC.URL,
-		WSURL:              c.RPC.WSURL,
-		FactoryAddress:     factory,
-		MulticallAddress:   multicall,
-		PoolManagerAddress: poolManager,
-		StateViewAddress:   stateView,
+		RPCURL:               c.RPC.URL,
+		WSURL:                c.RPC.WSURL,
+		FactoryAddress:       factory,
+		MulticallAddress:     multicall,
+		PoolManagerAddress:   poolManager,
+		StateViewAddress:     stateView,
+		BalancerVaultAddress: balancerVault,
 	}
 }
 
@@ -482,6 +555,13 @@ func (c Univ4SyncConfig) IsActive() bool {
 		return false
 	}
 	return len(c.PoolManager.Pools) > 0 || c.Subgraph.IsEnabled()
+}
+
+func (c BalancerSyncConfig) IsActive() bool {
+	if !c.Enabled {
+		return false
+	}
+	return len(c.Pools) > 0 || c.Subgraph.IsEnabled()
 }
 
 func (c Config) TriangleArbitrageEnabled() bool {

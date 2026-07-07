@@ -7,7 +7,7 @@ import (
 )
 
 // PoolRef identifies a pool across protocols.
-// V3 pools use a deployed contract address; V4 pools use a PoolId (bytes32).
+// V3 pools use a deployed contract address; V4 and Balancer pools use a PoolId (bytes32).
 type PoolRef struct {
 	Protocol Protocol
 	Address  common.Address
@@ -31,15 +31,28 @@ func PoolRefFromV4(poolID common.Hash) PoolRef {
 	return PoolRef{Protocol: ProtocolV4, PoolID: poolID}
 }
 
+func PoolRefFromBalancer(poolID common.Hash) PoolRef {
+	return PoolRef{Protocol: ProtocolBalancer, PoolID: poolID}
+}
+
 func (r PoolRef) IsZero() bool {
 	return r.Protocol == ProtocolUnknown ||
 		(isAddressProtocol(r.Protocol) && r.Address == (common.Address{})) ||
-		(r.Protocol == ProtocolV4 && r.PoolID == (common.Hash{}))
+		(isPoolIDProtocol(r.Protocol) && r.PoolID == (common.Hash{}))
 }
 
 func isAddressProtocol(protocol Protocol) bool {
 	switch protocol {
 	case ProtocolUniswapV3, ProtocolPancakeV3:
+		return true
+	default:
+		return false
+	}
+}
+
+func isPoolIDProtocol(protocol Protocol) bool {
+	switch protocol {
+	case ProtocolV4, ProtocolBalancer:
 		return true
 	default:
 		return false
@@ -54,6 +67,8 @@ func (r PoolRef) String() string {
 		return fmt.Sprintf("pancakev3:%s", r.Address.Hex())
 	case ProtocolV4:
 		return fmt.Sprintf("univ4:%s", r.PoolID.Hex())
+	case ProtocolBalancer:
+		return fmt.Sprintf("balancer:%s", r.PoolID.Hex())
 	default:
 		return "unknown"
 	}

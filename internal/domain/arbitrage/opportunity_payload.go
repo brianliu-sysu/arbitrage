@@ -5,29 +5,29 @@ import (
 	"fmt"
 	"math/big"
 
-	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
+	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	"github.com/ethereum/go-ethereum/common"
 )
 
 type opportunityPayload struct {
-	ID          string              `json:"id"`
-	StrategyID  string              `json:"strategyId,omitempty"`
-	Status      OpportunityStatus   `json:"status,omitempty"`
-	PoolRef     string              `json:"poolRef,omitempty"`
-	BlockNumber uint64              `json:"blockNumber"`
-	Route       opportunityRoute    `json:"route,omitempty"`
-	AmountIn    string              `json:"amountIn,omitempty"`
-	AmountOut   string              `json:"amountOut,omitempty"`
-	GrossProfit string              `json:"grossProfit,omitempty"`
-	GasCost     string              `json:"gasCost,omitempty"`
-	NetProfit   string              `json:"netProfit,omitempty"`
+	ID          string            `json:"id"`
+	StrategyID  string            `json:"strategyId,omitempty"`
+	Status      OpportunityStatus `json:"status,omitempty"`
+	PoolRef     string            `json:"poolRef,omitempty"`
+	BlockNumber uint64            `json:"blockNumber"`
+	Route       opportunityRoute  `json:"route,omitempty"`
+	AmountIn    string            `json:"amountIn,omitempty"`
+	AmountOut   string            `json:"amountOut,omitempty"`
+	GrossProfit string            `json:"grossProfit,omitempty"`
+	GasCost     string            `json:"gasCost,omitempty"`
+	NetProfit   string            `json:"netProfit,omitempty"`
 }
 
 type opportunityRoute struct {
-	TokenIn  string                   `json:"tokenIn"`
-	TokenOut string                   `json:"tokenOut"`
-	Hops     []opportunityRouteHop    `json:"hops,omitempty"`
+	TokenIn  string                `json:"tokenIn"`
+	TokenOut string                `json:"tokenOut"`
+	Hops     []opportunityRouteHop `json:"hops,omitempty"`
 }
 
 type opportunityRouteHop struct {

@@ -11,19 +11,19 @@ import (
 
 // Diagnostics summarizes arbitrage scanner state for operators.
 type Diagnostics struct {
-	Routes              int
-	StartTokens         int
-	GraphEdges          int
-	ArbitrageReady      bool
-	Readiness           quotecombined.ReadinessDiagnostics
-	RefreshError        string
+	Routes         int
+	StartTokens    int
+	GraphEdges     int
+	ArbitrageReady bool
+	Readiness      quotecombined.ReadinessDiagnostics
+	RefreshError   string
 }
 
 // CollectDiagnostics gathers the current arbitrage scanner state.
 func (s *Services) CollectDiagnostics(ctx context.Context) Diagnostics {
 	d := Diagnostics{
-		Routes:       len(s.Scan.Routes()),
-		StartTokens:  len(s.StartTokens()),
+		Routes:      len(s.Scan.Routes()),
+		StartTokens: len(s.StartTokens()),
 	}
 	if s.readiness != nil {
 		if combined, ok := s.readiness.(*quotecombined.SyncReadiness); ok {
@@ -84,6 +84,8 @@ func (s *Services) countGraphEdges(ctx context.Context) (int, error) {
 		s.routeDeps.PancakePools,
 		s.routeDeps.V4Registry,
 		s.routeDeps.V4Pools,
+		s.routeDeps.BalancerRegistry,
+		s.routeDeps.BalancerPools,
 	)
 	if err != nil {
 		return 0, err

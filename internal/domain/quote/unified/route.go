@@ -1,6 +1,7 @@
 package unified
 
 import (
+	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -11,6 +12,7 @@ type RouteHop struct {
 	PoolV3        common.Address
 	PoolPancakeV3 common.Address
 	PoolV4        marketv4.PoolID
+	PoolBalancer  marketbalancer.PoolID
 	TokenIn       common.Address
 	TokenOut      common.Address
 }
@@ -60,6 +62,20 @@ func NewDirectV4Route(poolID marketv4.PoolID, tokenIn, tokenOut common.Address) 
 			PoolV4:   poolID,
 			TokenIn:  tokenIn,
 			TokenOut: tokenOut,
+		}},
+	}
+}
+
+// NewDirectBalancerRoute builds a single-hop Balancer route.
+func NewDirectBalancerRoute(poolID marketbalancer.PoolID, tokenIn, tokenOut common.Address) Route {
+	return Route{
+		TokenIn:  tokenIn,
+		TokenOut: tokenOut,
+		Hops: []RouteHop{{
+			Version:      PoolVersionBalancer,
+			PoolBalancer: poolID,
+			TokenIn:      tokenIn,
+			TokenOut:     tokenOut,
 		}},
 	}
 }

@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
+	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
+	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -15,6 +16,7 @@ type PoolRef struct {
 	V3        common.Address
 	PancakeV3 common.Address
 	V4        marketv4.PoolID
+	Balancer  marketbalancer.PoolID
 }
 
 func PoolRefFromV3(address common.Address) PoolRef {
@@ -29,6 +31,10 @@ func PoolRefFromV4(id marketv4.PoolID) PoolRef {
 	return PoolRef{Version: quoteunified.PoolVersionV4, V4: id}
 }
 
+func PoolRefFromBalancer(id marketbalancer.PoolID) PoolRef {
+	return PoolRef{Version: quoteunified.PoolVersionBalancer, Balancer: id}
+}
+
 func PoolRefFromHop(hop quoteunified.RouteHop) PoolRef {
 	switch hop.Version {
 	case quoteunified.PoolVersionV3:
@@ -37,6 +43,8 @@ func PoolRefFromHop(hop quoteunified.RouteHop) PoolRef {
 		return PoolRefFromPancakeV3(hop.PoolPancakeV3)
 	case quoteunified.PoolVersionV4:
 		return PoolRefFromV4(hop.PoolV4)
+	case quoteunified.PoolVersionBalancer:
+		return PoolRefFromBalancer(hop.PoolBalancer)
 	case quoteunified.PoolVersionUnwrapWETH:
 		return PoolRef{Version: quoteunified.PoolVersionUnwrapWETH}
 	case quoteunified.PoolVersionWrapWETH:
@@ -55,6 +63,8 @@ func (p PoolRef) Key() string {
 		return "pancakev3:" + p.PancakeV3.Hex()
 	case quoteunified.PoolVersionV4:
 		return "v4:" + p.V4.String()
+	case quoteunified.PoolVersionBalancer:
+		return "balancer:" + p.Balancer.String()
 	case quoteunified.PoolVersionUnwrapWETH:
 		return "unwrap:weth"
 	case quoteunified.PoolVersionWrapWETH:
@@ -103,6 +113,12 @@ func poolRefFromKey(key string) (PoolRef, error) {
 			return PoolRef{}, fmt.Errorf("invalid v4 pool ref key %q", key)
 		}
 		return PoolRefFromV4(marketv4.PoolID(hash)), nil
+	case strings.HasPrefix(key, "balancer:"):
+		hash := common.HexToHash(key[len("balancer:"):])
+		if hash == (common.Hash{}) {
+			return PoolRef{}, fmt.Errorf("invalid balancer pool ref key %q", key)
+		}
+		return PoolRefFromBalancer(marketbalancer.PoolID(hash)), nil
 	default:
 		return PoolRef{}, fmt.Errorf("unsupported pool ref key %q", key)
 	}

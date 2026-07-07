@@ -3,21 +3,23 @@ package combined
 import (
 	"math/big"
 
+	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
+	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
-	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
 
 // Request is the unified quote use case input.
 type Request struct {
-	TokenIn     common.Address
-	TokenOut    common.Address
-	Mode        quoteshared.QuoteMode
-	AmountIn    *big.Int
-	AmountOut   *big.Int
-	PoolAddress *common.Address
-	PoolID      *marketuniv4.PoolID
+	TokenIn        common.Address
+	TokenOut       common.Address
+	Mode           quoteshared.QuoteMode
+	AmountIn       *big.Int
+	AmountOut      *big.Int
+	PoolAddress    *common.Address
+	PoolID         *marketuniv4.PoolID
+	BalancerPoolID *marketbalancer.PoolID
 }
 
 func (r Request) IsExactInput() bool {

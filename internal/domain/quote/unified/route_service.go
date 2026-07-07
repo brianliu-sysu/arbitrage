@@ -3,8 +3,9 @@ package unified
 import (
 	"fmt"
 
-	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/asset"
+	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -14,6 +15,7 @@ type PoolEdge struct {
 	PoolV3        common.Address
 	PoolPancakeV3 common.Address
 	PoolV4        marketv4.PoolID
+	PoolBalancer  marketbalancer.PoolID
 	Token0        common.Address
 	Token1        common.Address
 }
@@ -85,6 +87,7 @@ func (rs *RouteService) FindRoutes(tokenIn, tokenOut common.Address) ([]Route, e
 				PoolV3:        edge.poolV3,
 				PoolPancakeV3: edge.poolPancakeV3,
 				PoolV4:        edge.poolV4,
+				PoolBalancer:  edge.poolBalancer,
 				TokenIn:       current.token,
 				TokenOut:      nextToken,
 			}
@@ -121,6 +124,7 @@ type adjacencyEdge struct {
 	poolV3        common.Address
 	poolPancakeV3 common.Address
 	poolV4        marketv4.PoolID
+	poolBalancer  marketbalancer.PoolID
 	a             common.Address
 	b             common.Address
 }
@@ -140,6 +144,7 @@ func buildAdjacency(edges []PoolEdge) map[common.Address][]adjacencyEdge {
 			poolV3:        edge.PoolV3,
 			poolPancakeV3: edge.PoolPancakeV3,
 			poolV4:        edge.PoolV4,
+			poolBalancer:  edge.PoolBalancer,
 			a:             edge.Token0,
 			b:             edge.Token1,
 		}

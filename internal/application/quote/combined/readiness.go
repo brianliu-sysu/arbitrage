@@ -1,10 +1,12 @@
 package combined
 
 import (
-	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
-	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ3"
+	syncbalancer "github.com/brianliu-sysu/uniswapv3/internal/application/sync/balancer"
 	syncpancakev3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/pancakev3"
+	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ3"
 	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ4"
+	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
+	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -22,13 +24,15 @@ type ReadinessDiagnostics struct {
 	V3             ProtocolReadinessDiagnostics `json:"univ3"`
 	Pancake        ProtocolReadinessDiagnostics `json:"pancakev3"`
 	V4             ProtocolReadinessDiagnostics `json:"univ4"`
+	Balancer       ProtocolReadinessDiagnostics `json:"balancer"`
 }
 
 // SyncReadiness adapts sync readiness services for unified quoting.
 type SyncReadiness struct {
-	V3      *syncv3.ReadinessService
-	Pancake *syncpancakev3.ReadinessService
-	V4      *syncv4.ReadinessService
+	V3       *syncv3.ReadinessService
+	Pancake  *syncpancakev3.ReadinessService
+	V4       *syncv4.ReadinessService
+	Balancer *syncbalancer.ReadinessService
 }
 
 func (r *SyncReadiness) IsSystemReady() bool {
@@ -42,6 +46,9 @@ func (r *SyncReadiness) IsSystemReady() bool {
 		return false
 	}
 	if r.V4 != nil && !r.V4.IsSystemReady() {
+		return false
+	}
+	if r.Balancer != nil && !r.Balancer.IsSystemReady() {
 		return false
 	}
 	return true
@@ -79,6 +86,15 @@ func (r *SyncReadiness) Diagnostics() ReadinessDiagnostics {
 			TotalPools:  snap.TotalPools,
 		}
 	}
+	if r.Balancer != nil {
+		snap := r.Balancer.Snapshot()
+		d.Balancer = ProtocolReadinessDiagnostics{
+			Enabled:     true,
+			SystemReady: snap.SystemReady,
+			ReadyPools:  snap.ReadyPools,
+			TotalPools:  snap.TotalPools,
+		}
+	}
 	return d
 }
 
@@ -101,4 +117,11 @@ func (r *SyncReadiness) IsV4PoolReady(poolID marketuniv4.PoolID) bool {
 		return false
 	}
 	return r.V4.IsPoolReady(poolID)
+}
+
+func (r *SyncReadiness) IsBalancerPoolReady(poolID marketbalancer.PoolID) bool {
+	if r == nil || r.Balancer == nil {
+		return false
+	}
+	return r.Balancer.IsPoolReady(poolID)
 }

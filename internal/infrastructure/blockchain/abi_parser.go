@@ -8,11 +8,11 @@ import (
 )
 
 var (
-	topicInitialize = crypto.Keccak256Hash([]byte("Initialize(uint160,int24)"))
-	topicSwap       = crypto.Keccak256Hash([]byte("Swap(address,address,int256,int256,uint160,uint128,int24)"))
+	topicInitialize  = crypto.Keccak256Hash([]byte("Initialize(uint160,int24)"))
+	topicSwap        = crypto.Keccak256Hash([]byte("Swap(address,address,int256,int256,uint160,uint128,int24)"))
 	topicPancakeSwap = crypto.Keccak256Hash([]byte("Swap(address,address,int256,int256,uint160,uint128,int24,uint128,uint128)"))
-	topicMint       = crypto.Keccak256Hash([]byte("Mint(address,address,int24,int24,uint128,uint256,uint256)"))
-	topicBurn       = crypto.Keccak256Hash([]byte("Burn(address,int24,int24,uint128,uint256,uint256)"))
+	topicMint        = crypto.Keccak256Hash([]byte("Mint(address,address,int24,int24,uint128,uint256,uint256)"))
+	topicBurn        = crypto.Keccak256Hash([]byte("Burn(address,int24,int24,uint128,uint256,uint256)"))
 )
 
 // ABIParser decodes Uniswap V3 pool logs into domain events.
