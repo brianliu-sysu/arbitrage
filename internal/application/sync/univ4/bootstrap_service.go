@@ -10,9 +10,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// chainHeadBlock means "read chain state at the current head when the RPC call runs".
-const chainHeadBlock = uint64(0)
-
 // BootstrapService cold-starts a V4 pool from chain state or snapshot.
 type BootstrapService struct {
 	pools               marketv4.PoolRepository
@@ -65,7 +62,7 @@ func (s *BootstrapService) Bootstrap(ctx context.Context, poolID marketv4.PoolID
 	var chainData *BootstrapData
 
 	if pool == nil {
-		chainData, err = s.readChainBootstrap(ctx, poolID, key)
+		chainData, err = s.readChainBootstrap(ctx, poolID, key, blockNumber)
 		if err != nil {
 			return nil, err
 		}
@@ -82,14 +79,14 @@ func (s *BootstrapService) Bootstrap(ctx context.Context, poolID marketv4.PoolID
 	}
 
 	if !pool.State.IsInitialized() {
-		chainData, err = s.readChainBootstrap(ctx, poolID, key)
+		chainData, err = s.readChainBootstrap(ctx, poolID, key, blockNumber)
 		if err != nil {
 			return nil, err
 		}
 		pool.Key = chainData.Key
 		applyBootstrapData(pool, chainData)
 	} else if pool.LastBlockNumber < blockNumber || syncapp.NeedsChainRebootstrap(pool.LastBlockNumber, blockNumber, s.staleBlockThreshold) {
-		chainData, err = s.readChainBootstrap(ctx, poolID, key)
+		chainData, err = s.readChainBootstrap(ctx, poolID, key, blockNumber)
 		if err != nil {
 			return nil, err
 		}
@@ -112,8 +109,9 @@ func (s *BootstrapService) readChainBootstrap(
 	ctx context.Context,
 	poolID marketv4.PoolID,
 	key marketv4.PoolKey,
+	blockNumber uint64,
 ) (*BootstrapData, error) {
-	data, err := s.reader.ReadBootstrapData(ctx, poolID, key, chainHeadBlock)
+	data, err := s.reader.ReadBootstrapData(ctx, poolID, key, blockNumber)
 	if err != nil {
 		return nil, fmt.Errorf("read bootstrap data: %w", err)
 	}

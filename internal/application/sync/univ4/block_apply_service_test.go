@@ -182,3 +182,118 @@ func TestApplyBlockSkipsEventsWhenBlockAlreadyApplied(t *testing.T) {
 		t.Fatalf("expected checkpoint at block 10, got %+v", checkpoint)
 	}
 }
+
+func TestApplyBlockIgnoresEventsForUntrackedPools(t *testing.T) {
+	ctx := context.Background()
+	key := marketv4.PoolKey{
+		Currency0:   common.HexToAddress("0x0000000000000000000000000000000000000001"),
+		Currency1:   common.HexToAddress("0x0000000000000000000000000000000000000002"),
+		Fee:         500,
+		TickSpacing: 60,
+	}
+	trackedID, err := marketv4.ComputePoolID(key)
+	if err != nil {
+		t.Fatalf("compute tracked pool id: %v", err)
+	}
+	untrackedKey := key
+	untrackedKey.Fee = 3000
+	untrackedID, err := marketv4.ComputePoolID(untrackedKey)
+	if err != nil {
+		t.Fatalf("compute untracked pool id: %v", err)
+	}
+
+	trackedPool := marketv4.NewPool(trackedID, key)
+	trackedPool.State = market.PoolState{
+		SqrtPriceX96: big.NewInt(100),
+		Tick:         0,
+		Liquidity:    big.NewInt(1000),
+	}
+	trackedPool.LastBlockNumber = 9
+
+	untrackedPool := marketv4.NewPool(untrackedID, untrackedKey)
+	untrackedPool.State = market.PoolState{
+		SqrtPriceX96: big.NewInt(200),
+		Tick:         1,
+		Liquidity:    big.NewInt(2000),
+	}
+	untrackedPool.LastBlockNumber = 9
+
+	poolRepo := &multiV4PoolRepo{pools: map[marketv4.PoolID]*marketv4.Pool{
+		trackedID:   trackedPool,
+		untrackedID: untrackedPool,
+	}}
+	service := NewBlockApplyService(
+		poolRepo,
+		newMemoryV4CheckpointRepo(),
+		nil,
+		NewReadinessService(),
+		nil,
+	)
+
+	event := marketv4.NewSwapEvent(
+		marketv4.EventMeta{PoolID: untrackedID, BlockNumber: 10, TxIndex: 1, LogIndex: 1},
+		common.Address{},
+		big.NewInt(1),
+		big.NewInt(-1),
+		big.NewInt(300),
+		big.NewInt(3000),
+		2,
+		3000,
+	)
+
+	result, err := service.ApplyBlock(ctx, ApplyBlockRequest{
+		BlockNumber:  10,
+		BlockHash:    common.HexToHash("0x10"),
+		Events:       []marketv4.PoolEvent{event},
+		TrackedPools: []marketv4.PoolID{trackedID},
+	})
+	if err != nil {
+		t.Fatalf("apply block: %v", err)
+	}
+	if len(result.ChangedPools) != 1 || result.ChangedPools[0] != trackedID {
+		t.Fatalf("expected only tracked pool changed, got %v", result.ChangedPools)
+	}
+
+	syncedUntracked, err := poolRepo.Get(ctx, untrackedID)
+	if err != nil {
+		t.Fatalf("load untracked pool: %v", err)
+	}
+	if syncedUntracked.LastBlockNumber != 9 || syncedUntracked.State.Tick != 1 || syncedUntracked.State.SqrtPriceX96.Cmp(big.NewInt(200)) != 0 {
+		t.Fatalf("untracked pool should not be mutated, got last=%d state=%+v", syncedUntracked.LastBlockNumber, syncedUntracked.State)
+	}
+}
+
+type multiV4PoolRepo struct {
+	pools map[marketv4.PoolID]*marketv4.Pool
+}
+
+func (r *multiV4PoolRepo) Save(_ context.Context, pool *marketv4.Pool) error {
+	r.pools[pool.ID] = pool.Clone()
+	return nil
+}
+
+func (r *multiV4PoolRepo) Get(_ context.Context, id marketv4.PoolID) (*marketv4.Pool, error) {
+	pool := r.pools[id]
+	if pool == nil {
+		return nil, nil
+	}
+	return pool.Clone(), nil
+}
+
+func (r *multiV4PoolRepo) Delete(_ context.Context, id marketv4.PoolID) error {
+	delete(r.pools, id)
+	return nil
+}
+
+func (r *multiV4PoolRepo) AdvanceSyncProgress(ctx context.Context, id marketv4.PoolID, blockNumber uint64) error {
+	return r.AdvanceSyncProgressMany(ctx, []marketv4.PoolID{id}, blockNumber)
+}
+
+func (r *multiV4PoolRepo) AdvanceSyncProgressMany(_ context.Context, ids []marketv4.PoolID, blockNumber uint64) error {
+	for _, id := range ids {
+		if pool := r.pools[id]; pool != nil && pool.LastBlockNumber < blockNumber {
+			pool.LastBlockNumber = blockNumber
+		}
+	}
+	return nil
+}

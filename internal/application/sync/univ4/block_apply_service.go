@@ -77,11 +77,15 @@ func (s *BlockApplyService) ApplyBlock(ctx context.Context, req ApplyBlockReques
 	}
 
 	grouped := groupEventsByPool(req.Events)
+	trackedSet := trackedPoolSet(req.TrackedPools)
 	changedSet := make(map[marketv4.PoolID]struct{}, len(grouped))
 	changed := make([]marketv4.PoolID, 0, len(req.TrackedPools))
 	pendingCheckpoints := make([]*blockchain.V4Checkpoint, 0, len(req.TrackedPools))
 
 	for poolID, events := range grouped {
+		if _, ok := trackedSet[poolID]; !ok {
+			continue
+		}
 		changedSet[poolID] = struct{}{}
 		sort.Slice(events, func(i, j int) bool {
 			if events[i].Meta.TxIndex != events[j].Meta.TxIndex {
@@ -236,6 +240,14 @@ func groupEventsByPool(events []marketv4.PoolEvent) map[marketv4.PoolID][]market
 		grouped[poolID] = append(grouped[poolID], event)
 	}
 	return grouped
+}
+
+func trackedPoolSet(poolIDs []marketv4.PoolID) map[marketv4.PoolID]struct{} {
+	tracked := make(map[marketv4.PoolID]struct{}, len(poolIDs))
+	for _, poolID := range poolIDs {
+		tracked[poolID] = struct{}{}
+	}
+	return tracked
 }
 
 func (s *BlockApplyService) syncIdlePools(ctx context.Context, poolIDs []marketv4.PoolID, blockNumber uint64) error {

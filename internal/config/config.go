@@ -16,15 +16,15 @@ import (
 
 // Config is the root application configuration loaded from YAML.
 type Config struct {
-	App        AppConfig        `yaml:"app"`
-	RPC        RPCConfig        `yaml:"rpc"`
+	App         AppConfig         `yaml:"app"`
+	RPC         RPCConfig         `yaml:"rpc"`
 	Persistence PersistenceConfig `yaml:"persistence"`
-	Blockchain BlockchainConfig `yaml:"blockchain"`
-	Sync       SyncConfig       `yaml:"sync"`
-	HTTP       HTTPConfig       `yaml:"http"`
-	Quote      QuoteConfig      `yaml:"quote"`
-	Arbitrage  ArbitrageConfig  `yaml:"arbitrage"`
-	Log        LogConfig        `yaml:"log"`
+	Blockchain  BlockchainConfig  `yaml:"blockchain"`
+	Sync        SyncConfig        `yaml:"sync"`
+	HTTP        HTTPConfig        `yaml:"http"`
+	Quote       QuoteConfig       `yaml:"quote"`
+	Arbitrage   ArbitrageConfig   `yaml:"arbitrage"`
+	Log         LogConfig         `yaml:"log"`
 }
 
 type AppConfig struct {
@@ -54,8 +54,8 @@ type TriangleArbitrageConfig struct {
 }
 
 type RPCConfig struct {
-	URL    string `yaml:"url"`
-	WSURL  string `yaml:"ws_url"`
+	URL   string `yaml:"url"`
+	WSURL string `yaml:"ws_url"`
 }
 
 type DatabaseConfig struct {
@@ -68,9 +68,9 @@ type RedisConfig struct {
 
 // PersistenceConfig selects the storage backend for pools, snapshots, and opportunities.
 type PersistenceConfig struct {
-	Memory   bool             `yaml:"memory"`
-	Database DatabaseConfig   `yaml:"database"`
-	Redis    RedisConfig      `yaml:"redis"`
+	Memory   bool           `yaml:"memory"`
+	Database DatabaseConfig `yaml:"database"`
+	Redis    RedisConfig    `yaml:"redis"`
 }
 
 func (c PersistenceConfig) MemoryMode() bool {
@@ -85,17 +85,17 @@ type BlockchainConfig struct {
 }
 
 type SyncConfig struct {
-	CatchupBatchSize             uint64        `yaml:"catchup_batch_size"`
-	CatchupPoolGroupSize         uint64        `yaml:"catchup_pool_group_size"`
-	CatchupBlockSpan             uint64        `yaml:"catchup_block_span"`
-	CatchupHeaderConcurrency     int           `yaml:"catchup_header_concurrency"`
-	BootstrapStaleBlockThreshold uint64        `yaml:"bootstrap_stale_block_threshold"`
-	SnapshotInterval             uint64        `yaml:"snapshot_interval"`
-	SnapshotFallback             time.Duration `yaml:"snapshot_fallback"`
-	ReorgMaxDepth                uint64        `yaml:"reorg_max_depth"`
-	Univ3                        Univ3SyncConfig      `yaml:"univ3"`
-	PancakeV3                    PancakeV3SyncConfig  `yaml:"pancakev3"`
-	Univ4                        Univ4SyncConfig      `yaml:"univ4"`
+	CatchupBatchSize             uint64              `yaml:"catchup_batch_size"`
+	CatchupPoolGroupSize         uint64              `yaml:"catchup_pool_group_size"`
+	CatchupBlockSpan             uint64              `yaml:"catchup_block_span"`
+	CatchupHeaderConcurrency     int                 `yaml:"catchup_header_concurrency"`
+	BootstrapStaleBlockThreshold uint64              `yaml:"bootstrap_stale_block_threshold"`
+	SnapshotInterval             uint64              `yaml:"snapshot_interval"`
+	SnapshotFallback             time.Duration       `yaml:"snapshot_fallback"`
+	ReorgMaxDepth                uint64              `yaml:"reorg_max_depth"`
+	Univ3                        Univ3SyncConfig     `yaml:"univ3"`
+	PancakeV3                    PancakeV3SyncConfig `yaml:"pancakev3"`
+	Univ4                        Univ4SyncConfig     `yaml:"univ4"`
 }
 
 // Univ3SyncConfig configures Uniswap V3 pool sync sources.
@@ -114,9 +114,9 @@ type PancakeV3SyncConfig struct {
 
 // Univ4SyncConfig configures Uniswap V4 pool sync sources.
 type Univ4SyncConfig struct {
-	Enabled      bool                  `yaml:"enabled"`
-	PoolManager  V4PoolManagerConfig   `yaml:"poolmanager"`
-	Subgraph     V4SubgraphPoolConfig  `yaml:"subgraph"`
+	Enabled     bool                 `yaml:"enabled"`
+	PoolManager V4PoolManagerConfig  `yaml:"poolmanager"`
+	Subgraph    V4SubgraphPoolConfig `yaml:"subgraph"`
 }
 
 // V4PoolManagerConfig lists V4 pools tracked via static PoolKey definitions.
@@ -149,8 +149,8 @@ type SubgraphPoolConfig struct {
 	OrderBy                string        `yaml:"order_by"`
 	OrderDirection         string        `yaml:"order_direction"`
 	MinTotalValueLockedUSD string        `yaml:"min_total_value_locked_usd"`
-	MinVolume24hUSD          string        `yaml:"min_volume_24h_usd"`
-	Token0                   string        `yaml:"token0"`
+	MinVolume24hUSD        string        `yaml:"min_volume_24h_usd"`
+	Token0                 string        `yaml:"token0"`
 	Token1                 string        `yaml:"token1"`
 	FeeTiers               []uint32      `yaml:"fee_tiers"`
 }
@@ -222,7 +222,7 @@ func Default() Config {
 		Blockchain: BlockchainConfig{
 			FactoryAddress:     "0x1F98431c8aD98523631AE4a59f267346ea31F984",
 			MulticallAddress:   "0xcA11bde05977b3631167028862bE2a173976CA11",
-			PoolManagerAddress: "0x000000000004444c5dc75cb35838093bd135961",
+			PoolManagerAddress: "0x000000000004444c5dc75cB358380D2e3dE08A90",
 			StateViewAddress:   "0x7ffe42c4a5deea5b0fec41c94c136cf115597227",
 		},
 		Sync: SyncConfig{
@@ -344,11 +344,24 @@ func (c Config) Validate() error {
 		if c.Blockchain.PoolManagerAddress == "" {
 			return fmt.Errorf("blockchain.pool_manager_address is required when sync.univ4 is enabled")
 		}
+		if !isStrictHexAddress(c.Blockchain.PoolManagerAddress) {
+			return fmt.Errorf("blockchain.pool_manager_address must be a 20-byte hex address")
+		}
 		if c.Blockchain.StateViewAddress == "" {
 			return fmt.Errorf("blockchain.state_view_address is required when sync.univ4 is enabled")
 		}
+		if !isStrictHexAddress(c.Blockchain.StateViewAddress) {
+			return fmt.Errorf("blockchain.state_view_address must be a 20-byte hex address")
+		}
 	}
 	return nil
+}
+
+func isStrictHexAddress(address string) bool {
+	address = strings.TrimSpace(address)
+	hex := strings.TrimPrefix(address, "0x")
+	hex = strings.TrimPrefix(hex, "0X")
+	return len(hex) == 40 && common.IsHexAddress(address)
 }
 
 func (c Config) PersistenceConfig() persistence.Config {

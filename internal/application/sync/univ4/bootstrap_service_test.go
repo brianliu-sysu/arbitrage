@@ -16,6 +16,7 @@ type stubV4BootstrapReader struct {
 	tick        int32
 	liquidity   *big.Int
 	blockNumber uint64
+	requested   []uint64
 }
 
 func (r *stubV4BootstrapReader) ReadBootstrapData(
@@ -24,6 +25,7 @@ func (r *stubV4BootstrapReader) ReadBootstrapData(
 	_ marketv4.PoolKey,
 	blockNumber uint64,
 ) (*BootstrapData, error) {
+	r.requested = append(r.requested, blockNumber)
 	if blockNumber == 0 {
 		blockNumber = r.blockNumber
 	}
@@ -212,5 +214,8 @@ func TestBootstrapRefreshesPoolBehindHead(t *testing.T) {
 	}
 	if pool.LastBlockNumber != 25_473_776 {
 		t.Fatalf("expected last block 25473776, got %d", pool.LastBlockNumber)
+	}
+	if len(reader.requested) != 1 || reader.requested[0] != 25_473_776 {
+		t.Fatalf("expected bootstrap reader to use requested block 25473776, got %v", reader.requested)
 	}
 }

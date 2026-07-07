@@ -112,3 +112,19 @@ func TestLogConfigResolvedPaths(t *testing.T) {
 		t.Fatalf("unexpected error output paths: %#v", errorPaths)
 	}
 }
+
+func TestValidateRejectsShortV4PoolManagerAddress(t *testing.T) {
+	cfg := config.Default()
+	cfg.Persistence.Memory = true
+	cfg.Sync.Univ3.Enabled = false
+	cfg.Sync.Univ3.Subgraph.Enabled = false
+	cfg.Sync.Univ4.Enabled = true
+	cfg.Sync.Univ4.Subgraph.Enabled = true
+	cfg.Sync.Univ4.Subgraph.Endpoint = "https://example.com/subgraph"
+	cfg.Blockchain.PoolManagerAddress = "0x000000000004444c5dc75cb35838093bd135961"
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected invalid pool manager address error")
+	}
+}
