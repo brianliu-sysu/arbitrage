@@ -13,6 +13,7 @@ import (
 	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	"github.com/ethereum/go-ethereum/common"
+	"go.uber.org/zap"
 )
 
 // ReadinessChecker gates scanning on pool and system readiness across protocols.
@@ -36,6 +37,7 @@ type OpportunityService struct {
 	gas           domainarb.GasEstimator
 	strategies    []domainarb.Strategy
 	readiness     ReadinessChecker
+	logger        *zap.Logger
 	now           func() time.Time
 }
 
@@ -56,7 +58,11 @@ func NewOpportunityService(
 	readiness ReadinessChecker,
 	minAmount, maxAmount *big.Int,
 	optimizerIterations int,
+	logger *zap.Logger,
 ) *OpportunityService {
+	if logger == nil {
+		logger = zap.NewNop()
+	}
 	return &OpportunityService{
 		univ3Pools:    univ3Pools,
 		pancakePools:  pancakePools,
@@ -68,6 +74,7 @@ func NewOpportunityService(
 		gas:           gas,
 		strategies:    append([]domainarb.Strategy(nil), strategies...),
 		readiness:     readiness,
+		logger:        logger,
 		now:           time.Now,
 	}
 }
@@ -80,36 +87,84 @@ func (s *OpportunityService) SetStrategies(strategies []domainarb.Strategy) {
 // Generate evaluates affected routes and returns accepted opportunities.
 func (s *OpportunityService) Generate(ctx context.Context, req GenerateRequest) ([]*domainarb.Opportunity, error) {
 	if s.readiness != nil && !s.readiness.IsSystemReady() {
+		s.logger.Debug("arbitrage scan skipped",
+			zap.Uint64("block", req.BlockNumber),
+			zap.String("reason", "system_not_ready"),
+			zap.Int("routes", len(req.Routes)),
+			zap.Int("strategies", len(s.strategies)),
+		)
 		return nil, nil
 	}
 	if len(req.Routes) == 0 {
+		s.logger.Debug("arbitrage scan skipped",
+			zap.Uint64("block", req.BlockNumber),
+			zap.String("reason", "no_affected_routes"),
+			zap.Int("strategies", len(s.strategies)),
+		)
 		return nil, nil
 	}
 	if len(s.strategies) == 0 {
+		s.logger.Debug("arbitrage scan skipped",
+			zap.Uint64("block", req.BlockNumber),
+			zap.String("reason", "no_strategies"),
+			zap.Int("routes", len(req.Routes)),
+		)
 		return nil, nil
 	}
 
 	opportunities := make([]*domainarb.Opportunity, 0)
+	routeNotReady := 0
+	strategyMismatches := 0
+	quoteErrors := 0
+	nonProfitable := 0
 	for _, routeRef := range req.Routes {
 		if err := s.ensureRouteReady(routeRef); err != nil {
+			routeNotReady++
+			s.logger.Debug("arbitrage route skipped",
+				zap.Uint64("block", req.BlockNumber),
+				zap.String("route", routeRef.ID),
+				zap.String("reason", "route_not_ready"),
+				zap.Error(err),
+			)
 			continue
 		}
 
 		for _, strategy := range s.strategies {
 			if !matchesStrategy(strategy, routeRef) {
+				strategyMismatches++
 				continue
 			}
 
 			opp, err := s.generateForRoute(ctx, req.BlockNumber, strategy, routeRef)
 			if err != nil {
+				quoteErrors++
+				s.logger.Debug("arbitrage route skipped",
+					zap.Uint64("block", req.BlockNumber),
+					zap.String("route", routeRef.ID),
+					zap.String("strategy", strategy.ID),
+					zap.String("reason", "generate_failed"),
+					zap.Error(err),
+				)
 				continue
 			}
 			if opp != nil {
 				opportunities = append(opportunities, opp)
+			} else {
+				nonProfitable++
 			}
 		}
 	}
 
+	s.logger.Debug("arbitrage scan completed",
+		zap.Uint64("block", req.BlockNumber),
+		zap.Int("routes", len(req.Routes)),
+		zap.Int("strategies", len(s.strategies)),
+		zap.Int("route_not_ready", routeNotReady),
+		zap.Int("strategy_mismatches", strategyMismatches),
+		zap.Int("generate_errors", quoteErrors),
+		zap.Int("rejected", nonProfitable),
+		zap.Int("opportunities", len(opportunities)),
+	)
 	return opportunities, nil
 }
 
@@ -134,6 +189,13 @@ func (s *OpportunityService) generateForRoute(
 		return nil, err
 	}
 	if optimized.AmountIn.Sign() <= 0 {
+		s.logger.Debug("arbitrage route rejected",
+			zap.Uint64("block", blockNumber),
+			zap.String("route", routeRef.ID),
+			zap.String("strategy", strategy.ID),
+			zap.String("reason", "no_positive_gross_profit"),
+			zap.String("best_gross_profit", optimized.GrossProfit.String()),
+		)
 		return nil, nil
 	}
 
@@ -151,6 +213,19 @@ func (s *OpportunityService) generateForRoute(
 		GasCost:     gas.CostWei,
 	})
 	if !evaluation.Accepted {
+		s.logger.Debug("arbitrage route rejected",
+			zap.Uint64("block", blockNumber),
+			zap.String("route", routeRef.ID),
+			zap.String("strategy", strategy.ID),
+			zap.String("reason", "profit_filter"),
+			zap.String("amount_in", evaluation.AmountIn.String()),
+			zap.String("amount_out", evaluation.AmountOut.String()),
+			zap.String("gross_profit", evaluation.GrossProfit.String()),
+			zap.String("gas_cost", gas.CostWei.String()),
+			zap.String("net_profit", evaluation.NetProfit.String()),
+			zap.Bool("profitable", evaluation.Profitable),
+			zap.String("min_net_profit", bigIntString(strategy.MinNetProfitWei)),
+		)
 		return nil, nil
 	}
 
@@ -162,6 +237,13 @@ func (s *OpportunityService) generateForRoute(
 
 func matchesStrategy(strategy domainarb.Strategy, routeRef domainarb.RouteRef) bool {
 	return domainarb.MatchesStrategy(strategy, routeRef.Route)
+}
+
+func bigIntString(value *big.Int) string {
+	if value == nil {
+		return ""
+	}
+	return value.String()
 }
 
 func (s *OpportunityService) ensureRouteReady(routeRef domainarb.RouteRef) error {

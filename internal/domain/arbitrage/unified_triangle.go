@@ -113,7 +113,7 @@ func FindUnifiedTriangleRoutes(graph quoteunified.PoolGraph, startToken common.A
 					continue
 				}
 
-				id := UnifiedTriangleRouteID(route)
+				id := UnifiedTriangleRouteIDWithPools(route)
 				if _, ok := seen[id]; ok {
 					continue
 				}
@@ -124,7 +124,7 @@ func FindUnifiedTriangleRoutes(graph quoteunified.PoolGraph, startToken common.A
 	}
 
 	sort.Slice(routes, func(i, j int) bool {
-		return UnifiedTriangleRouteID(routes[i]) < UnifiedTriangleRouteID(routes[j])
+		return UnifiedTriangleRouteIDWithPools(routes[i]) < UnifiedTriangleRouteIDWithPools(routes[j])
 	})
 	return routes
 }

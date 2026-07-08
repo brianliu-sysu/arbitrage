@@ -60,6 +60,7 @@ func (o *Optimizer) Optimize(quoter AmountOutQuoter) (OptimizationResult, error)
 	}
 
 	current := new(big.Int).Set(o.MinAmount)
+	var lastQuoteErr error
 	for i := 0; i <= o.Iterations; i++ {
 		if current.Cmp(o.MaxAmount) > 0 {
 			current.Set(o.MaxAmount)
@@ -67,7 +68,9 @@ func (o *Optimizer) Optimize(quoter AmountOutQuoter) (OptimizationResult, error)
 
 		amountOut, err := quoter.QuoteAmountOut(new(big.Int).Set(current))
 		if err != nil {
-			return OptimizationResult{}, fmt.Errorf("quote amount %s: %w", current, err)
+			lastQuoteErr = fmt.Errorf("quote amount %s: %w", current, err)
+			current.Add(current, step)
+			continue
 		}
 
 		grossProfit := new(big.Int).Sub(amountOut, current)
@@ -80,6 +83,9 @@ func (o *Optimizer) Optimize(quoter AmountOutQuoter) (OptimizationResult, error)
 		}
 
 		current.Add(current, step)
+	}
+	if best.AmountIn.Sign() == 0 && lastQuoteErr != nil {
+		return OptimizationResult{}, lastQuoteErr
 	}
 
 	return best, nil

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	"github.com/ethereum/go-ethereum/common"
@@ -34,6 +35,9 @@ type HeadSyncService[PoolID comparable, Event any] struct {
 
 	mu        sync.RWMutex
 	localHead blockchain.BlockHeader
+
+	reconnectInitialDelay time.Duration
+	reconnectMaxDelay     time.Duration
 }
 
 func NewHeadSyncService[PoolID comparable, Event any](
@@ -45,12 +49,14 @@ func NewHeadSyncService[PoolID comparable, Event any](
 	hooks HeadSyncHooks[PoolID, Event],
 ) *HeadSyncService[PoolID, Event] {
 	return &HeadSyncService[PoolID, Event]{
-		lifecycle:  lifecycle,
-		reorg:      reorg,
-		catchup:    catchup,
-		blocks:     blocks,
-		subscriber: subscriber,
-		hooks:      hooks,
+		lifecycle:             lifecycle,
+		reorg:                 reorg,
+		catchup:               catchup,
+		blocks:                blocks,
+		subscriber:            subscriber,
+		hooks:                 hooks,
+		reconnectInitialDelay: time.Second,
+		reconnectMaxDelay:     30 * time.Second,
 	}
 }
 
@@ -66,25 +72,73 @@ func (s *HeadSyncService[PoolID, Event]) LocalHead() blockchain.BlockHeader {
 	return s.localHead
 }
 
-func (s *HeadSyncService[PoolID, Event]) Run(ctx context.Context) error {
-	heads, err := s.subscriber.SubscribeNewHead(ctx)
-	if err != nil {
-		return fmt.Errorf("subscribe new head: %w", err)
+func (s *HeadSyncService[PoolID, Event]) SetReconnectBackoff(initial, max time.Duration) {
+	if initial <= 0 {
+		initial = time.Second
 	}
+	if max <= 0 || max < initial {
+		max = initial
+	}
+	s.reconnectInitialDelay = initial
+	s.reconnectMaxDelay = max
+}
+
+func (s *HeadSyncService[PoolID, Event]) Run(ctx context.Context) error {
+	delay := s.reconnectInitialDelay
 
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case head, ok := <-heads:
-			if !ok {
-				return fmt.Errorf("head subscription closed")
+		heads, err := s.subscriber.SubscribeNewHead(ctx)
+		if err != nil {
+			if waitErr := waitForReconnect(ctx, delay); waitErr != nil {
+				return waitErr
 			}
-			if err := s.handleHead(ctx, head); err != nil {
-				return err
+			delay = nextReconnectDelay(delay, s.reconnectMaxDelay)
+			continue
+		}
+		delay = s.reconnectInitialDelay
+
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case head, ok := <-heads:
+				if !ok {
+					if waitErr := waitForReconnect(ctx, delay); waitErr != nil {
+						return waitErr
+					}
+					delay = nextReconnectDelay(delay, s.reconnectMaxDelay)
+					goto reconnect
+				}
+				delay = s.reconnectInitialDelay
+				if err := s.handleHead(ctx, head); err != nil {
+					return err
+				}
 			}
 		}
+	reconnect:
 	}
+}
+
+func waitForReconnect(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func nextReconnectDelay(current, max time.Duration) time.Duration {
+	if current <= 0 {
+		current = time.Second
+	}
+	next := current * 2
+	if next > max {
+		return max
+	}
+	return next
 }
 
 func (s *HeadSyncService[PoolID, Event]) handleHead(ctx context.Context, head blockchain.BlockHeader) error {

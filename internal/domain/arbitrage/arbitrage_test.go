@@ -72,6 +72,18 @@ func (q linearQuoter) QuoteAmountOut(amountIn *big.Int) (*big.Int, error) {
 	return new(big.Int).Add(amountIn, q.gain), nil
 }
 
+type thresholdQuoter struct {
+	minAmount *big.Int
+	gain      *big.Int
+}
+
+func (q thresholdQuoter) QuoteAmountOut(amountIn *big.Int) (*big.Int, error) {
+	if amountIn.Cmp(q.minAmount) < 0 {
+		return nil, fmt.Errorf("amount too small")
+	}
+	return new(big.Int).Add(amountIn, q.gain), nil
+}
+
 func TestOptimizerFindsBestAmount(t *testing.T) {
 	optimizer := NewOptimizer(big.NewInt(1), big.NewInt(100), 10)
 	result, err := optimizer.Optimize(linearQuoter{gain: big.NewInt(5)})
@@ -83,6 +95,23 @@ func TestOptimizerFindsBestAmount(t *testing.T) {
 	}
 	if result.AmountIn.Cmp(big.NewInt(1)) != 0 && result.AmountIn.Cmp(big.NewInt(100)) != 0 {
 		t.Fatalf("expected boundary amount, got %s", result.AmountIn)
+	}
+}
+
+func TestOptimizerSkipsFailedSampleAmounts(t *testing.T) {
+	optimizer := NewOptimizer(big.NewInt(1), big.NewInt(100), 10)
+	result, err := optimizer.Optimize(thresholdQuoter{
+		minAmount: big.NewInt(50),
+		gain:      big.NewInt(5),
+	})
+	if err != nil {
+		t.Fatalf("optimize: %v", err)
+	}
+	if result.AmountIn.Cmp(big.NewInt(50)) < 0 {
+		t.Fatalf("expected optimizer to skip failing samples, got amount %s", result.AmountIn)
+	}
+	if result.GrossProfit.Cmp(big.NewInt(5)) != 0 {
+		t.Fatalf("expected gross profit 5, got %s", result.GrossProfit)
 	}
 }
 
@@ -223,6 +252,37 @@ func TestFindUnifiedTriangleRoutesMixedPools(t *testing.T) {
 	}
 	if !hasV4Hop {
 		t.Fatal("expected at least one route with a v4 hop")
+	}
+}
+
+func TestFindUnifiedTriangleRoutesKeepsParallelPoolVariants(t *testing.T) {
+	tokenA := testToken(1)
+	tokenB := testToken(2)
+	tokenC := testToken(3)
+	poolAB1 := testToken(10)
+	poolAB2 := testToken(11)
+	poolBC := testToken(12)
+	poolCA := testToken(13)
+
+	graph := quoteunified.NewStaticPoolGraph([]quoteunified.PoolEdge{
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolAB1, Token0: tokenA, Token1: tokenB},
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolAB2, Token0: tokenA, Token1: tokenB},
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolBC, Token0: tokenB, Token1: tokenC},
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolCA, Token0: tokenC, Token1: tokenA},
+	})
+
+	routes := FindUnifiedTriangleRoutes(graph, tokenA)
+	if len(routes) != 4 {
+		t.Fatalf("expected 4 triangle routes with parallel pools, got %d", len(routes))
+	}
+
+	seen := make(map[string]struct{}, len(routes))
+	for _, route := range routes {
+		id := UnifiedTriangleRouteIDWithPools(route)
+		if _, ok := seen[id]; ok {
+			t.Fatalf("duplicate route id %s", id)
+		}
+		seen[id] = struct{}{}
 	}
 }
 

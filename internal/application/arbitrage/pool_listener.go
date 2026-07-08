@@ -6,6 +6,7 @@ import (
 	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/common"
+	"go.uber.org/zap"
 )
 
 // V4PoolListener adapts arbitrage services to the V4 sync ChangedPoolsListener interface.
@@ -53,6 +54,18 @@ func (s *Services) notifyPoolsChanged(
 	balancerPools []marketbalancer.PoolID,
 ) error {
 	routes := s.Scan.FindAffected(univ3Pools, pancakePools, univ4Pools, balancerPools)
+	logger := s.logger
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	logger.Debug("arbitrage pools changed",
+		zap.Uint64("block", blockNumber),
+		zap.Int("univ3_pools", len(univ3Pools)),
+		zap.Int("pancakev3_pools", len(pancakePools)),
+		zap.Int("univ4_pools", len(univ4Pools)),
+		zap.Int("balancer_pools", len(balancerPools)),
+		zap.Int("affected_routes", len(routes)),
+	)
 	opportunities, err := s.Opportunities.Generate(ctx, GenerateRequest{
 		BlockNumber: blockNumber,
 		Routes:      routes,
@@ -60,6 +73,11 @@ func (s *Services) notifyPoolsChanged(
 	if err != nil {
 		return err
 	}
+	logger.Debug("arbitrage opportunities generated",
+		zap.Uint64("block", blockNumber),
+		zap.Int("affected_routes", len(routes)),
+		zap.Int("opportunities", len(opportunities)),
+	)
 	return s.Publish.Publish(ctx, opportunities)
 }
 

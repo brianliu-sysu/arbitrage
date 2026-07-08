@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,13 +17,15 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
+var balancerAPIEndpoint = "https://api-v3.balancer.fi/"
+
 // BalancerSubgraphRegistry loads weighted/stable pools from a Balancer subgraph.
 type BalancerSubgraphRegistry struct {
-	cfg           config.BalancerSubgraphPoolConfig
-	defaultVault  common.Address
+	cfg            config.BalancerSubgraphPoolConfig
+	defaultVault   common.Address
 	defaultVaultV3 common.Address
-	client        *http.Client
-	clock         func() time.Time
+	client         *http.Client
+	clock          func() time.Time
 
 	mu        sync.RWMutex
 	cached    []balancerPoolEntry
@@ -55,8 +58,8 @@ func NewBalancerSubgraphRegistry(cfg config.BalancerSubgraphPoolConfig, defaultV
 		defaultVaultV3: defaultVaultV3,
 		client:         &http.Client{Timeout: defaultGraphQLTimeout},
 		clock:          time.Now,
-		added:        make(map[marketbalancer.PoolID]balancerPoolEntry),
-		removed:      make(map[marketbalancer.PoolID]struct{}),
+		added:          make(map[marketbalancer.PoolID]balancerPoolEntry),
+		removed:        make(map[marketbalancer.PoolID]struct{}),
 	}
 }
 
@@ -159,11 +162,23 @@ func (r *BalancerSubgraphRegistry) currentEntriesLocked() []balancerPoolEntry {
 }
 
 func (r *BalancerSubgraphRegistry) queryPools(ctx context.Context) ([]balancerPoolEntry, error) {
+	if r.cfg.ResolvedSchema() == "v3" && r.hasV3DynamicFilters() {
+		return r.queryV3PoolsWithDynamicFilters(ctx)
+	}
+
 	query, variables, err := r.buildQuery()
 	if err != nil {
 		return nil, err
 	}
 
+	pools, err := r.executeSubgraphPoolsQuery(ctx, query, variables)
+	if err != nil {
+		return nil, err
+	}
+	return r.entriesFromSubgraphPools(pools)
+}
+
+func (r *BalancerSubgraphRegistry) executeSubgraphPoolsQuery(ctx context.Context, query string, variables map[string]any) ([]balancerSubgraphPool, error) {
 	body, err := json.Marshal(graphQLRequest{Query: query, Variables: variables})
 	if err != nil {
 		return nil, fmt.Errorf("marshal graphql request: %w", err)
@@ -198,9 +213,12 @@ func (r *BalancerSubgraphRegistry) queryPools(ctx context.Context) ([]balancerPo
 	if response.Data.Pools == nil {
 		return nil, fmt.Errorf("balancer subgraph response missing pools")
 	}
+	return response.Data.Pools, nil
+}
 
-	entries := make([]balancerPoolEntry, 0, len(response.Data.Pools))
-	for i, pool := range response.Data.Pools {
+func (r *BalancerSubgraphRegistry) entriesFromSubgraphPools(pools []balancerSubgraphPool) ([]balancerPoolEntry, error) {
+	entries := make([]balancerPoolEntry, 0, len(pools))
+	for i, pool := range pools {
 		entry, err := r.poolEntryFromSubgraph(pool, i)
 		if err != nil {
 			return nil, err
@@ -208,6 +226,152 @@ func (r *BalancerSubgraphRegistry) queryPools(ctx context.Context) ([]balancerPo
 		entries = append(entries, entry)
 	}
 	return entries, nil
+}
+
+func (r *BalancerSubgraphRegistry) queryV3PoolsWithDynamicFilters(ctx context.Context) ([]balancerPoolEntry, error) {
+	ids, err := r.fetchBalancerAPIFilteredV3PoolIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return []balancerPoolEntry{}, nil
+	}
+
+	query, variables, err := r.buildV3Query()
+	if err != nil {
+		return nil, err
+	}
+	where := r.buildV3PoolWhereFilter()
+	if where == nil {
+		where = make(map[string]any)
+	}
+	where["id_in"] = ids
+	variables["where"] = where
+
+	pools, err := r.executeSubgraphPoolsQuery(ctx, query, variables)
+	if err != nil {
+		return nil, err
+	}
+	return r.entriesFromSubgraphPools(pools)
+}
+
+func (r *BalancerSubgraphRegistry) hasV3DynamicFilters() bool {
+	return strings.TrimSpace(r.cfg.MinTotalValueLockedUSD) != "" || strings.TrimSpace(r.cfg.MinVolume24hUSD) != ""
+}
+
+func (r *BalancerSubgraphRegistry) fetchBalancerAPIFilteredV3PoolIDs(ctx context.Context) ([]string, error) {
+	minTVL, err := parseOptionalFloat(r.cfg.MinTotalValueLockedUSD, "balancer min_total_value_locked_usd")
+	if err != nil {
+		return nil, err
+	}
+	minVolume, err := parseOptionalFloat(r.cfg.MinVolume24hUSD, "balancer min_volume_24h_usd")
+	if err != nil {
+		return nil, err
+	}
+	first := r.cfg.First
+	if first <= 0 {
+		first = 100
+	}
+
+	where := map[string]any{
+		"chainIn":           []string{"MAINNET"},
+		"protocolVersionIn": []int{3},
+	}
+	if minTVL != nil {
+		where["minTvl"] = *minTVL
+	}
+	orderBy := "totalLiquidity"
+	if minVolume != nil {
+		orderBy = "volume24h"
+	}
+	body, err := json.Marshal(graphQLRequest{
+		Query: `
+query Pools($first: Int, $where: GqlPoolFilter, $orderBy: GqlPoolOrderBy, $orderDirection: GqlPoolOrderDirection) {
+  poolGetPools(first: $first, where: $where, orderBy: $orderBy, orderDirection: $orderDirection) {
+    id
+    address
+    dynamicData {
+      totalLiquidity
+      volume24h
+    }
+  }
+}`,
+		Variables: map[string]any{
+			"first":          first,
+			"where":          where,
+			"orderBy":        orderBy,
+			"orderDirection": strings.ToLower(strings.TrimSpace(r.cfg.OrderDirection)),
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal balancer api request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, balancerAPIEndpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create balancer api request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "arbitrage")
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("query balancer api: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read balancer api response: %w", err)
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, fmt.Errorf("balancer api status %d: %s", resp.StatusCode, string(raw))
+	}
+
+	var response balancerAPIResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return nil, fmt.Errorf("decode balancer api response: %w", err)
+	}
+	if len(response.Errors) > 0 {
+		return nil, fmt.Errorf("balancer api graphql error: %s", response.Errors[0].Message)
+	}
+
+	out := make([]string, 0, len(response.Data.PoolGetPools))
+	for _, pool := range response.Data.PoolGetPools {
+		volume, err := parseOptionalFloatValue(pool.DynamicData.Volume24h)
+		if err != nil {
+			return nil, fmt.Errorf("parse balancer api volume24h for pool %s: %w", pool.ID, err)
+		}
+		if minVolume != nil && volume < *minVolume {
+			continue
+		}
+		if pool.Address != "" {
+			out = append(out, strings.ToLower(pool.Address))
+			continue
+		}
+		if pool.ID != "" {
+			out = append(out, strings.ToLower(pool.ID))
+		}
+	}
+	return out, nil
+}
+
+func parseOptionalFloat(value, name string) (*float64, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return nil, fmt.Errorf("%s must be a number: %w", name, err)
+	}
+	return &parsed, nil
+}
+
+func parseOptionalFloatValue(value string) (float64, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, nil
+	}
+	return strconv.ParseFloat(value, 64)
 }
 
 func (r *BalancerSubgraphRegistry) buildQuery() (string, map[string]any, error) {
@@ -423,12 +587,29 @@ type balancerGraphQLResponse struct {
 }
 
 type balancerSubgraphPool struct {
-	ID       string `json:"id"`
-	Address  string `json:"address"`
-	PoolType string `json:"poolType"`
+	ID       string                   `json:"id"`
+	Address  string                   `json:"address"`
+	PoolType string                   `json:"poolType"`
 	Factory  *balancerSubgraphFactory `json:"factory"`
 }
 
 type balancerSubgraphFactory struct {
 	Type string `json:"type"`
+}
+
+type balancerAPIResponse struct {
+	Data struct {
+		PoolGetPools []balancerAPIPool `json:"poolGetPools"`
+	} `json:"data"`
+	Errors []graphQLError `json:"errors"`
+}
+
+type balancerAPIPool struct {
+	ID          string                 `json:"id"`
+	Address     string                 `json:"address"`
+	DynamicData balancerAPIDynamicData `json:"dynamicData"`
+}
+
+type balancerAPIDynamicData struct {
+	Volume24h string `json:"volume24h"`
 }

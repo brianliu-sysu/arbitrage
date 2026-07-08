@@ -121,6 +121,7 @@ func NewServices(deps ServiceDeps) *Services {
 			minAmount,
 			maxAmount,
 			deps.OptimizerIterations,
+			logger,
 		),
 		Publish: NewPublishService(publishers...),
 		routeDeps: routeRefreshDeps{
