@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,18 +15,22 @@ import (
 	poolsapp "github.com/brianliu-sysu/uniswapv3/internal/application/pools"
 	quotecombined "github.com/brianliu-sysu/uniswapv3/internal/application/quote/combined"
 	quotepancakev3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/pancakev3"
+	quotequickswapv3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/quickswapv3"
 	quoteuniv3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/univ3"
 	quoteuniv4 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/univ4"
 	syncbalancer "github.com/brianliu-sysu/uniswapv3/internal/application/sync/balancer"
 	syncpancakev3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/pancakev3"
+	syncquickswapv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/quickswapv3"
 	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ3"
 	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ4"
 	"github.com/brianliu-sysu/uniswapv3/internal/config"
+	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
 	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	quotebalancerdomain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/balancer"
 	quotepancakev3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/pancakev3"
+	quotequickswapv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/quickswapv3"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	quoteuniv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
 	quoteuniv4domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ4"
@@ -62,11 +67,14 @@ func Module(params Params) fx.Option {
 			newBlockchain,
 			newPoolRegistry,
 			newPancakePoolRegistry,
+			newQuickSwapPoolRegistry,
 			newV4PoolRegistry,
 			newBalancerPoolRegistry,
 			newRuntimeBundle,
+			newRuntimeSet,
 			newQuoteV3AppService,
 			newQuotePancakeV3AppService,
+			newQuoteQuickSwapV3AppService,
 			newQuoteV4AppService,
 			newQuoteCombinedAppService,
 			newPoolsAppService,
@@ -85,11 +93,17 @@ func loadConfig(params Params) (config.Config, error) {
 	if err != nil {
 		return config.Config{}, err
 	}
-	if cfg.RPC.URL == "" {
-		return config.Config{}, fmt.Errorf("rpc.url is required")
+	normalizedChains := cfg.NormalizedChains()
+	if len(normalizedChains) == 0 {
+		return config.Config{}, fmt.Errorf("at least one chain must be enabled")
 	}
-	if cfg.RPC.WSURL == "" {
-		return config.Config{}, fmt.Errorf("rpc.ws_url is required for block head subscription")
+	for _, chain := range normalizedChains {
+		if chain.RPC.URL == "" {
+			return config.Config{}, fmt.Errorf("chains[%d]: rpc.url is required", chain.ChainID)
+		}
+		if chain.RPC.WSURL == "" {
+			return config.Config{}, fmt.Errorf("chains[%d]: rpc.ws_url is required for block head subscription", chain.ChainID)
+		}
 	}
 	return cfg, nil
 }
@@ -111,41 +125,74 @@ func newPersistence(cfg config.Config) (*persistence.Services, error) {
 }
 
 func newBlockchain(cfg config.Config) (*chaininfra.Services, error) {
-	return chaininfra.NewServices(cfg.BlockchainConfig())
+	chainCfg := cfg.PrimaryRuntimeConfig()
+	return chaininfra.NewServices(chainCfg.BlockchainConfig())
 }
 
 func newPoolRegistry(cfg config.Config) *registry.CompositeRegistry {
-	return registry.NewCompositeRegistry(cfg.Sync.Univ3)
+	chainCfg := cfg.PrimaryRuntimeConfig()
+	return registry.NewCompositeRegistry(chainCfg.Sync.Univ3)
 }
 
 func newPancakePoolRegistry(cfg config.Config) *registry.PancakeCompositeRegistry {
-	if !cfg.Sync.PancakeV3.IsActive() {
+	chainCfg := cfg.PrimaryRuntimeConfig()
+	if !chainCfg.Sync.PancakeV3.IsActive() {
 		return nil
 	}
-	return registry.NewPancakeCompositeRegistry(cfg.Sync.PancakeV3)
+	return registry.NewPancakeCompositeRegistry(chainCfg.Sync.PancakeV3)
+}
+
+func newQuickSwapPoolRegistry(cfg config.Config) *registry.QuickSwapCompositeRegistry {
+	chainCfg := cfg.PrimaryRuntimeConfig()
+	if !chainCfg.Sync.QuickSwapV3.IsActive() {
+		return nil
+	}
+	return registry.NewQuickSwapCompositeRegistry(chainCfg.Sync.QuickSwapV3)
 }
 
 func newV4PoolRegistry(cfg config.Config) (*registry.CompositeV4Registry, error) {
-	if !cfg.Sync.Univ4.IsActive() {
+	chainCfg := cfg.PrimaryRuntimeConfig()
+	if !chainCfg.Sync.Univ4.IsActive() {
 		return nil, nil
 	}
-	return registry.NewCompositeV4Registry(cfg.Sync.Univ4)
+	return registry.NewCompositeV4Registry(chainCfg.Sync.Univ4)
 }
 
 func newBalancerPoolRegistry(cfg config.Config) (*registry.CompositeBalancerRegistry, error) {
-	if !cfg.Sync.Balancer.IsActive() {
+	chainCfg := cfg.PrimaryRuntimeConfig()
+	if !chainCfg.Sync.Balancer.IsActive() {
 		return nil, nil
 	}
-	chainCfg := cfg.BlockchainConfig()
-	return registry.NewCompositeBalancerRegistry(cfg.Sync.Balancer, chainCfg.BalancerVaultAddress, chainCfg.BalancerVaultV3Address)
+	blockchainCfg := chainCfg.BlockchainConfig()
+	return registry.NewCompositeBalancerRegistry(chainCfg.Sync.Balancer, blockchainCfg.BalancerVaultAddress, blockchainCfg.BalancerVaultV3Address)
 }
 
 type runtimeBundle struct {
-	Sync         *syncv3.Services
-	SyncPancake  *syncpancakev3.Services
-	SyncV4       *syncv4.Services
-	SyncBalancer *syncbalancer.Services
-	Arbitrage    *arbitrageapp.Services
+	ChainID       uint64
+	ChainName     string
+	Sync          *syncv3.Services
+	SyncPancake   *syncpancakev3.Services
+	SyncQuickSwap *syncquickswapv3.Services
+	SyncV4        *syncv4.Services
+	SyncBalancer  *syncbalancer.Services
+	Arbitrage     *arbitrageapp.Services
+}
+
+type chainRuntime struct {
+	cfg                   config.Config
+	store                 *persistence.Services
+	chain                 *chaininfra.Services
+	poolRegistry          *registry.CompositeRegistry
+	pancakePoolRegistry   *registry.PancakeCompositeRegistry
+	quickSwapPoolRegistry *registry.QuickSwapCompositeRegistry
+	v4PoolRegistry        *registry.CompositeV4Registry
+	balancerPoolRegistry  *registry.CompositeBalancerRegistry
+	bundle                *runtimeBundle
+	ownsInfrastructure    bool
+}
+
+type runtimeSet struct {
+	chains []*chainRuntime
 }
 
 func newRuntimeBundle(
@@ -155,9 +202,11 @@ func newRuntimeBundle(
 	chain *chaininfra.Services,
 	poolRegistry *registry.CompositeRegistry,
 	pancakePoolRegistry *registry.PancakeCompositeRegistry,
+	quickSwapPoolRegistry *registry.QuickSwapCompositeRegistry,
 	v4PoolRegistry *registry.CompositeV4Registry,
 	balancerPoolRegistry *registry.CompositeBalancerRegistry,
 ) (*runtimeBundle, error) {
+	cfg = cfg.PrimaryRuntimeConfig()
 	deps := syncv3.ServiceDeps{
 		Config:      cfg.SyncConfig(),
 		Pools:       store.Pools,
@@ -204,6 +253,31 @@ func newRuntimeBundle(
 			pancakeDeps.Health = append(pancakeDeps.Health, store.Postgres)
 		}
 		syncPancakeServices = syncpancakev3.NewServices(pancakeDeps)
+	}
+
+	var syncQuickSwapServices *syncquickswapv3.Services
+	if cfg.Sync.QuickSwapV3.IsActive() {
+		if quickSwapPoolRegistry == nil {
+			return nil, fmt.Errorf("quickswap pool registry is required when sync.quickswapv3 is enabled")
+		}
+		quickSwapDeps := syncquickswapv3.ServiceDeps{
+			Config:      cfg.SyncConfig(),
+			Pools:       store.QuickSwapPools,
+			Snapshots:   store.QuickSwapSnapshots,
+			Checkpoints: store.QuickSwapCheckpoints,
+			Registry:    quickSwapPoolRegistry,
+			Fetcher:     chain.QuickSwapLogFetcher,
+			Parser:      chain.QuickSwapParser,
+			Blocks:      chain.Client,
+			Bootstrap:   chain.QuickSwapPoolReader,
+			Subscriber:  chain.HeadSub,
+			Health:      []syncquickswapv3.HealthProbe{chain.Client},
+			Listener:    syncquickswapv3.NopChangedPoolsListener{},
+		}
+		if store.Postgres != nil {
+			quickSwapDeps.Health = append(quickSwapDeps.Health, store.Postgres)
+		}
+		syncQuickSwapServices = syncquickswapv3.NewServices(quickSwapDeps)
 	}
 
 	var syncV4Services *syncv4.Services
@@ -289,6 +363,9 @@ func newRuntimeBundle(
 	if syncPancakeServices != nil {
 		readiness.Pancake = syncPancakeServices.Readiness
 	}
+	if syncQuickSwapServices != nil {
+		readiness.QuickSwap = syncQuickSwapServices.Readiness
+	}
 	if syncV4Services != nil {
 		readiness.V4 = syncV4Services.Readiness
 	}
@@ -297,15 +374,17 @@ func newRuntimeBundle(
 	}
 
 	arbitrageServices := arbitrageapp.NewServices(arbitrageapp.ServiceDeps{
-		Logger:           logger,
-		Pools:            store.Pools,
-		PancakePools:     store.PancakePools,
-		V4Pools:          store.V4Pools,
-		BalancerPools:    store.BalancerPools,
-		Registry:         poolRegistry,
-		PancakeRegistry:  pancakePoolRegistry.AsPoolRegistry(),
-		V4Registry:       v4PoolRegistry.AsPoolRegistry(),
-		BalancerRegistry: balancerPoolRegistry.AsPoolRegistry(),
+		Logger:            logger,
+		Pools:             store.Pools,
+		PancakePools:      store.PancakePools,
+		QuickSwapPools:    store.QuickSwapPools,
+		V4Pools:           store.V4Pools,
+		BalancerPools:     store.BalancerPools,
+		Registry:          poolRegistry,
+		PancakeRegistry:   pancakePoolRegistry.AsPoolRegistry(),
+		QuickSwapRegistry: quickSwapPoolRegistry.AsPoolRegistry(),
+		V4Registry:        v4PoolRegistry.AsPoolRegistry(),
+		BalancerRegistry:  balancerPoolRegistry.AsPoolRegistry(),
 		Quotes: quoteunified.NewQuoteService(
 			quoteuniv3domain.NewQuoteService(),
 			quotepancakev3domain.NewQuoteService(),
@@ -320,9 +399,13 @@ func newRuntimeBundle(
 		SpreadStartTokens:     spreadStartTokens,
 		MinNetProfitWei:       minNetProfit,
 		SpreadMinNetProfitWei: spreadMinNetProfit,
-		MinAmount:             optimizerMinAmount,
-		MaxAmount:             optimizerMaxAmount,
-		OptimizerIterations:   optimizerIterations,
+		FlashLoanOptions: []domainarb.FlashLoanOption{
+			{Protocol: domainarb.FlashLoanProtocolBalancer, FeePPM: cfg.Arbitrage.FlashLoan.BalancerFee()},
+			{Protocol: domainarb.FlashLoanProtocolUniv4, FeePPM: cfg.Arbitrage.FlashLoan.Univ4Fee()},
+		},
+		MinAmount:           optimizerMinAmount,
+		MaxAmount:           optimizerMaxAmount,
+		OptimizerIterations: optimizerIterations,
 	})
 
 	if syncServices != nil {
@@ -332,6 +415,10 @@ func newRuntimeBundle(
 	if syncPancakeServices != nil {
 		syncPancakeServices.BlockApply.SetListener(arbitrageapp.PancakePoolListener{Services: arbitrageServices})
 		syncPancakeServices.BlockApply.SetLogger(logger.Named("sync.pancakev3"))
+	}
+	if syncQuickSwapServices != nil {
+		syncQuickSwapServices.BlockApply.SetListener(arbitrageapp.QuickSwapPoolListener{Services: arbitrageServices})
+		syncQuickSwapServices.BlockApply.SetLogger(logger.Named("sync.quickswapv3"))
 	}
 	if syncV4Services != nil {
 		syncV4Services.BlockApply.SetListener(arbitrageapp.V4PoolListener{Services: arbitrageServices})
@@ -350,12 +437,119 @@ func newRuntimeBundle(
 	}
 
 	return &runtimeBundle{
-		Sync:         syncServices,
-		SyncPancake:  syncPancakeServices,
-		SyncV4:       syncV4Services,
-		SyncBalancer: syncBalancerServices,
-		Arbitrage:    arbitrageServices,
+		ChainID:       cfg.ChainID,
+		ChainName:     cfg.PrimaryChainName(),
+		Sync:          syncServices,
+		SyncPancake:   syncPancakeServices,
+		SyncQuickSwap: syncQuickSwapServices,
+		SyncV4:        syncV4Services,
+		SyncBalancer:  syncBalancerServices,
+		Arbitrage:     arbitrageServices,
 	}, nil
+}
+
+func newRuntimeSet(
+	cfg config.Config,
+	logger *zap.Logger,
+	primaryStore *persistence.Services,
+	primaryChain *chaininfra.Services,
+	primaryPoolRegistry *registry.CompositeRegistry,
+	primaryPancakePoolRegistry *registry.PancakeCompositeRegistry,
+	primaryQuickSwapPoolRegistry *registry.QuickSwapCompositeRegistry,
+	primaryV4PoolRegistry *registry.CompositeV4Registry,
+	primaryBalancerPoolRegistry *registry.CompositeBalancerRegistry,
+	primaryBundle *runtimeBundle,
+) (*runtimeSet, error) {
+	normalized := cfg.NormalizedChains()
+	if len(normalized) > 1 && !cfg.MemoryMode() {
+		return nil, fmt.Errorf("multi-chain runtime currently requires persistence.memory=true until postgres repositories are chain_id scoped")
+	}
+
+	set := &runtimeSet{
+		chains: []*chainRuntime{{
+			cfg:                   cfg.PrimaryRuntimeConfig(),
+			store:                 primaryStore,
+			chain:                 primaryChain,
+			poolRegistry:          primaryPoolRegistry,
+			pancakePoolRegistry:   primaryPancakePoolRegistry,
+			quickSwapPoolRegistry: primaryQuickSwapPoolRegistry,
+			v4PoolRegistry:        primaryV4PoolRegistry,
+			balancerPoolRegistry:  primaryBalancerPoolRegistry,
+			bundle:                primaryBundle,
+		}},
+	}
+
+	for _, chain := range normalized[1:] {
+		chainCfg := cfg.RuntimeConfigForChain(chain)
+		store := persistence.MemoryServices()
+		chainServices, err := chaininfra.NewServices(chainCfg.BlockchainConfig())
+		if err != nil {
+			set.Close()
+			return nil, fmt.Errorf("chain %d blockchain services: %w", chain.ChainID, err)
+		}
+		poolRegistry := registry.NewCompositeRegistry(chainCfg.Sync.Univ3)
+		pancakePoolRegistry := newPancakePoolRegistry(chainCfg)
+		quickSwapPoolRegistry := newQuickSwapPoolRegistry(chainCfg)
+		v4PoolRegistry, err := newV4PoolRegistry(chainCfg)
+		if err != nil {
+			chainServices.Close()
+			set.Close()
+			return nil, fmt.Errorf("chain %d v4 registry: %w", chain.ChainID, err)
+		}
+		balancerPoolRegistry, err := newBalancerPoolRegistry(chainCfg)
+		if err != nil {
+			chainServices.Close()
+			set.Close()
+			return nil, fmt.Errorf("chain %d balancer registry: %w", chain.ChainID, err)
+		}
+		bundle, err := newRuntimeBundle(
+			chainCfg,
+			logger.Named(chain.Name),
+			store,
+			chainServices,
+			poolRegistry,
+			pancakePoolRegistry,
+			quickSwapPoolRegistry,
+			v4PoolRegistry,
+			balancerPoolRegistry,
+		)
+		if err != nil {
+			chainServices.Close()
+			set.Close()
+			return nil, fmt.Errorf("chain %d runtime bundle: %w", chain.ChainID, err)
+		}
+		set.chains = append(set.chains, &chainRuntime{
+			cfg:                   chainCfg,
+			store:                 store,
+			chain:                 chainServices,
+			poolRegistry:          poolRegistry,
+			pancakePoolRegistry:   pancakePoolRegistry,
+			quickSwapPoolRegistry: quickSwapPoolRegistry,
+			v4PoolRegistry:        v4PoolRegistry,
+			balancerPoolRegistry:  balancerPoolRegistry,
+			bundle:                bundle,
+			ownsInfrastructure:    true,
+		})
+	}
+	return set, nil
+}
+
+func (s *runtimeSet) Close() {
+	if s == nil {
+		return
+	}
+	for i := len(s.chains) - 1; i >= 0; i-- {
+		chain := s.chains[i]
+		if chain == nil || !chain.ownsInfrastructure {
+			continue
+		}
+		if chain.chain != nil {
+			chain.chain.Close()
+		}
+		if chain.store != nil {
+			chain.store.Close()
+		}
+	}
 }
 
 func newQuoteV3AppService(
@@ -364,6 +558,7 @@ func newQuoteV3AppService(
 	poolRegistry *registry.CompositeRegistry,
 	bundle *runtimeBundle,
 ) *quoteuniv3.AppService {
+	cfg = cfg.PrimaryRuntimeConfig()
 	if !cfg.Sync.Univ3.IsActive() || bundle.Sync == nil {
 		return nil
 	}
@@ -386,6 +581,7 @@ func newQuotePancakeV3AppService(
 	pancakePoolRegistry *registry.PancakeCompositeRegistry,
 	bundle *runtimeBundle,
 ) *quotepancakev3.AppService {
+	cfg = cfg.PrimaryRuntimeConfig()
 	if !cfg.Sync.PancakeV3.IsActive() || bundle.SyncPancake == nil || pancakePoolRegistry == nil {
 		return nil
 	}
@@ -402,12 +598,36 @@ func newQuotePancakeV3AppService(
 	)
 }
 
+func newQuoteQuickSwapV3AppService(
+	cfg config.Config,
+	store *persistence.Services,
+	quickSwapPoolRegistry *registry.QuickSwapCompositeRegistry,
+	bundle *runtimeBundle,
+) *quotequickswapv3.AppService {
+	cfg = cfg.PrimaryRuntimeConfig()
+	if !cfg.Sync.QuickSwapV3.IsActive() || bundle.SyncQuickSwap == nil || quickSwapPoolRegistry == nil {
+		return nil
+	}
+	maxHops := cfg.Quote.MaxHops
+	if maxHops <= 0 {
+		maxHops = 3
+	}
+	return quotequickswapv3.NewAppService(
+		store.QuickSwapPools,
+		quickSwapPoolRegistry,
+		quotequickswapv3domain.NewQuoteService(),
+		bundle.SyncQuickSwap.Readiness,
+		maxHops,
+	)
+}
+
 func newQuoteV4AppService(
 	cfg config.Config,
 	store *persistence.Services,
 	v4PoolRegistry *registry.CompositeV4Registry,
 	bundle *runtimeBundle,
 ) *quoteuniv4.AppService {
+	cfg = cfg.PrimaryRuntimeConfig()
 	if bundle.SyncV4 == nil || v4PoolRegistry == nil {
 		return nil
 	}
@@ -429,10 +649,12 @@ func newQuoteCombinedAppService(
 	store *persistence.Services,
 	poolRegistry *registry.CompositeRegistry,
 	pancakePoolRegistry *registry.PancakeCompositeRegistry,
+	quickSwapPoolRegistry *registry.QuickSwapCompositeRegistry,
 	v4PoolRegistry *registry.CompositeV4Registry,
 	balancerPoolRegistry *registry.CompositeBalancerRegistry,
 	bundle *runtimeBundle,
 ) *quotecombined.AppService {
+	cfg = cfg.PrimaryRuntimeConfig()
 	maxHops := cfg.Quote.MaxHops
 	if maxHops <= 0 {
 		maxHops = 3
@@ -445,6 +667,9 @@ func newQuoteCombinedAppService(
 	if bundle.SyncPancake != nil {
 		readiness.Pancake = bundle.SyncPancake.Readiness
 	}
+	if bundle.SyncQuickSwap != nil {
+		readiness.QuickSwap = bundle.SyncQuickSwap.Readiness
+	}
 	if bundle.SyncV4 != nil {
 		readiness.V4 = bundle.SyncV4.Readiness
 	}
@@ -455,10 +680,12 @@ func newQuoteCombinedAppService(
 	return quotecombined.NewAppService(
 		store.Pools,
 		store.PancakePools,
+		store.QuickSwapPools,
 		store.V4Pools,
 		store.BalancerPools,
 		poolRegistry,
 		pancakePoolRegistry.AsPoolRegistry(),
+		quickSwapPoolRegistry.AsPoolRegistry(),
 		v4PoolRegistry.AsPoolRegistry(),
 		balancerPoolRegistry.AsPoolRegistry(),
 		quoteunified.NewQuoteService(
@@ -473,7 +700,7 @@ func newQuoteCombinedAppService(
 }
 
 func newPoolsAppService(
-	_ config.Config,
+	cfg config.Config,
 	store *persistence.Services,
 	poolRegistry *registry.CompositeRegistry,
 	pancakePoolRegistry *registry.PancakeCompositeRegistry,
@@ -481,6 +708,8 @@ func newPoolsAppService(
 	balancerPoolRegistry *registry.CompositeBalancerRegistry,
 	chain *chaininfra.Services,
 ) *poolsapp.AppService {
+	cfg = cfg.PrimaryRuntimeConfig()
+	_ = cfg
 	var pancakeRegistry marketpancake.PoolRegistry
 	if pancakePoolRegistry != nil {
 		pancakeRegistry = pancakePoolRegistry.AsPoolRegistry()
@@ -516,74 +745,160 @@ func newPoolsAppService(
 	)
 }
 
-func newHTTPRouter(
-	quoteCombined *quotecombined.AppService,
-	quoteV3 *quoteuniv3.AppService,
-	quotePancakeV3 *quotepancakev3.AppService,
-	quoteV4 *quoteuniv4.AppService,
-	store *persistence.Services,
-	pools *poolsapp.AppService,
-) *gin.Engine {
+func newHTTPRouter(runtimes *runtimeSet) *gin.Engine {
+	chains, services := newHTTPChainServices(runtimes)
 	return httpapi.NewRouter(httpapi.Handlers{
-		Health:         httpapi.NewHealthHandler(),
-		QuoteCombined:  httpapi.NewQuoteCombinedHandler(quoteCombined),
-		QuoteV3:        httpapi.NewQuoteV3Handler(quoteV3),
-		QuotePancakeV3: httpapi.NewQuotePancakeV3Handler(quotePancakeV3),
-		QuoteV4:        httpapi.NewQuoteV4Handler(quoteV4),
-		Opportunities:  httpapi.NewOpportunityHandler(store.Opportunities),
-		Pools:          httpapi.NewPoolsHandler(pools),
+		Health:           httpapi.NewHealthHandler(),
+		QuoteCombined:    httpapi.NewQuoteCombinedChainHandler(chains, services.quoteCombined),
+		QuoteV3:          httpapi.NewQuoteV3ChainHandler(chains, services.quoteV3),
+		QuotePancakeV3:   httpapi.NewQuotePancakeV3ChainHandler(chains, services.quotePancakeV3),
+		QuoteQuickSwapV3: httpapi.NewQuoteQuickSwapV3ChainHandler(chains, services.quoteQuickSwapV3),
+		QuoteV4:          httpapi.NewQuoteV4ChainHandler(chains, services.quoteV4),
+		Opportunities:    httpapi.NewOpportunityChainHandler(chains, services.opportunities),
+		Pools:            httpapi.NewPoolsChainHandler(chains, services.pools),
 	})
 }
 
+type httpChainServices struct {
+	quoteCombined    map[string]*quotecombined.AppService
+	quoteV3          map[string]*quoteuniv3.AppService
+	quotePancakeV3   map[string]*quotepancakev3.AppService
+	quoteQuickSwapV3 map[string]*quotequickswapv3.AppService
+	quoteV4          map[string]*quoteuniv4.AppService
+	opportunities    map[string]domainarb.OpportunityRepository
+	pools            map[string]*poolsapp.AppService
+}
+
+func newHTTPChainServices(runtimes *runtimeSet) ([]httpapi.ChainInfo, httpChainServices) {
+	services := httpChainServices{
+		quoteCombined:    make(map[string]*quotecombined.AppService),
+		quoteV3:          make(map[string]*quoteuniv3.AppService),
+		quotePancakeV3:   make(map[string]*quotepancakev3.AppService),
+		quoteQuickSwapV3: make(map[string]*quotequickswapv3.AppService),
+		quoteV4:          make(map[string]*quoteuniv4.AppService),
+		opportunities:    make(map[string]domainarb.OpportunityRepository),
+		pools:            make(map[string]*poolsapp.AppService),
+	}
+	if runtimes == nil {
+		return nil, services
+	}
+
+	chains := make([]httpapi.ChainInfo, 0, len(runtimes.chains))
+	for i, runtime := range runtimes.chains {
+		if runtime == nil || runtime.bundle == nil {
+			continue
+		}
+		key := httpChainKey(runtime.bundle.ChainName)
+		if key == "" {
+			key = httpChainKey(fmt.Sprintf("chain-%d", runtime.bundle.ChainID))
+		}
+		chains = append(chains, httpapi.ChainInfo{
+			Name:    runtime.bundle.ChainName,
+			ChainID: runtime.bundle.ChainID,
+			Primary: i == 0,
+		})
+		services.quoteCombined[key] = newQuoteCombinedAppService(
+			runtime.cfg,
+			runtime.store,
+			runtime.poolRegistry,
+			runtime.pancakePoolRegistry,
+			runtime.quickSwapPoolRegistry,
+			runtime.v4PoolRegistry,
+			runtime.balancerPoolRegistry,
+			runtime.bundle,
+		)
+		services.quoteV3[key] = newQuoteV3AppService(runtime.cfg, runtime.store, runtime.poolRegistry, runtime.bundle)
+		services.quotePancakeV3[key] = newQuotePancakeV3AppService(runtime.cfg, runtime.store, runtime.pancakePoolRegistry, runtime.bundle)
+		services.quoteQuickSwapV3[key] = newQuoteQuickSwapV3AppService(runtime.cfg, runtime.store, runtime.quickSwapPoolRegistry, runtime.bundle)
+		services.quoteV4[key] = newQuoteV4AppService(runtime.cfg, runtime.store, runtime.v4PoolRegistry, runtime.bundle)
+		services.opportunities[key] = runtime.store.Opportunities
+		services.pools[key] = newPoolsAppService(
+			runtime.cfg,
+			runtime.store,
+			runtime.poolRegistry,
+			runtime.pancakePoolRegistry,
+			runtime.v4PoolRegistry,
+			runtime.balancerPoolRegistry,
+			runtime.chain,
+		)
+	}
+	return chains, services
+}
+
+func httpChainKey(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
 type syncLifecycle struct {
-	runCtx               context.Context
-	cancel               context.CancelFunc
-	wg                   sync.WaitGroup
-	orchestrator         *syncv3.SyncOrchestrator
-	orchestratorPancake  *syncpancakev3.SyncOrchestrator
-	orchestratorV4       *syncv4.SyncOrchestrator
-	orchestratorBalancer *syncbalancer.SyncOrchestrator
-	bundle               *runtimeBundle
-	chain                *chaininfra.Services
-	store                *persistence.Services
-	cfg                  config.Config
-	logger               *zap.Logger
+	runCtx                context.Context
+	cancel                context.CancelFunc
+	wg                    sync.WaitGroup
+	orchestrator          *syncv3.SyncOrchestrator
+	orchestratorPancake   *syncpancakev3.SyncOrchestrator
+	orchestratorQuickSwap *syncquickswapv3.SyncOrchestrator
+	orchestratorV4        *syncv4.SyncOrchestrator
+	orchestratorBalancer  *syncbalancer.SyncOrchestrator
+	bundle                *runtimeBundle
+	chain                 *chaininfra.Services
+	store                 *persistence.Services
+	cfg                   config.Config
+	logger                *zap.Logger
 }
 
 func registerSyncLifecycle(
 	lifecycle fx.Lifecycle,
-	cfg config.Config,
 	logger *zap.Logger,
-	bundle *runtimeBundle,
-	chain *chaininfra.Services,
-	store *persistence.Services,
+	runtimes *runtimeSet,
 ) {
-	runner := &syncLifecycle{
-		orchestrator:        nil,
-		orchestratorPancake: nil,
-		orchestratorV4:      nil,
-		bundle:              bundle,
-		chain:               chain,
-		store:               store,
-		cfg:                 cfg,
-		logger:              logger,
-	}
-	if bundle.Sync != nil {
-		runner.orchestrator = bundle.Sync.NewOrchestrator(chain.Client)
-	}
-	if bundle.SyncPancake != nil {
-		runner.orchestratorPancake = bundle.SyncPancake.NewOrchestrator(chain.Client)
-	}
-	if bundle.SyncV4 != nil {
-		runner.orchestratorV4 = bundle.SyncV4.NewOrchestrator(chain.Client)
-	}
-	if bundle.SyncBalancer != nil {
-		runner.orchestratorBalancer = bundle.SyncBalancer.NewOrchestrator(chain.Client)
+	runners := make([]*syncLifecycle, 0, len(runtimes.chains))
+	for _, runtime := range runtimes.chains {
+		runner := newSyncLifecycle(runtime, logger.Named(runtime.bundle.ChainName))
+		runners = append(runners, runner)
 	}
 	lifecycle.Append(fx.Hook{
-		OnStart: runner.start,
-		OnStop:  runner.stop,
+		OnStart: func(ctx context.Context) error {
+			for _, runner := range runners {
+				if err := runner.start(ctx); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			for i := len(runners) - 1; i >= 0; i-- {
+				if err := runners[i].stop(ctx); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
 	})
+}
+
+func newSyncLifecycle(runtime *chainRuntime, logger *zap.Logger) *syncLifecycle {
+	runner := &syncLifecycle{
+		bundle: runtime.bundle,
+		chain:  runtime.chain,
+		store:  runtime.store,
+		cfg:    runtime.cfg,
+		logger: logger,
+	}
+	if runtime.bundle.Sync != nil {
+		runner.orchestrator = runtime.bundle.Sync.NewOrchestrator(runtime.chain.Client)
+	}
+	if runtime.bundle.SyncPancake != nil {
+		runner.orchestratorPancake = runtime.bundle.SyncPancake.NewOrchestrator(runtime.chain.Client)
+	}
+	if runtime.bundle.SyncQuickSwap != nil {
+		runner.orchestratorQuickSwap = runtime.bundle.SyncQuickSwap.NewOrchestrator(runtime.chain.Client)
+	}
+	if runtime.bundle.SyncV4 != nil {
+		runner.orchestratorV4 = runtime.bundle.SyncV4.NewOrchestrator(runtime.chain.Client)
+	}
+	if runtime.bundle.SyncBalancer != nil {
+		runner.orchestratorBalancer = runtime.bundle.SyncBalancer.NewOrchestrator(runtime.chain.Client)
+	}
+	return runner
 }
 
 func (r *syncLifecycle) start(_ context.Context) error {
@@ -592,6 +907,8 @@ func (r *syncLifecycle) start(_ context.Context) error {
 	r.cancel = cancel
 
 	r.logger.Info("starting pool sync",
+		zap.Uint64("chain_id", r.cfg.ChainID),
+		zap.String("chain", r.bundle.ChainName),
 		zap.String("persistence", r.store.BackendName()),
 		zap.Bool("memory_mode", r.cfg.MemoryMode()),
 		zap.Bool("univ3", r.cfg.Sync.Univ3.IsActive()),
@@ -600,6 +917,9 @@ func (r *syncLifecycle) start(_ context.Context) error {
 		zap.Bool("pancakev3", r.cfg.Sync.PancakeV3.IsActive()),
 		zap.Bool("pancakev3_subgraph", r.cfg.Sync.PancakeV3.Subgraph.IsEnabled()),
 		zap.Int("pancakev3_pools", len(r.cfg.Sync.PancakeV3.Pools)),
+		zap.Bool("quickswapv3", r.cfg.Sync.QuickSwapV3.IsActive()),
+		zap.Bool("quickswapv3_subgraph", r.cfg.Sync.QuickSwapV3.Subgraph.IsEnabled()),
+		zap.Int("quickswapv3_pools", len(r.cfg.Sync.QuickSwapV3.Pools)),
 		zap.Bool("univ4", r.cfg.Sync.Univ4.IsActive()),
 		zap.Int("univ4_poolmanager_pools", len(r.cfg.Sync.Univ4.PoolManager.Pools)),
 		zap.Bool("univ4_subgraph", r.cfg.Sync.Univ4.Subgraph.IsEnabled()),
@@ -617,6 +937,12 @@ func (r *syncLifecycle) start(_ context.Context) error {
 	if r.orchestratorPancake != nil {
 		r.runSync("pancakev3", func(ctx context.Context) error {
 			return r.orchestratorPancake.Start(ctx)
+		})
+	}
+
+	if r.orchestratorQuickSwap != nil {
+		r.runSync("quickswapv3", func(ctx context.Context) error {
+			return r.orchestratorQuickSwap.Start(ctx)
 		})
 	}
 
@@ -645,6 +971,7 @@ func (r *syncLifecycle) runSync(name string, run func(context.Context) error) {
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				r.logger.Error("pool sync panicked",
+					zap.Uint64("chain_id", r.cfg.ChainID),
 					zap.String("sync", name),
 					zap.Any("panic", recovered),
 					zap.Stack("stack"),
@@ -653,7 +980,7 @@ func (r *syncLifecycle) runSync(name string, run func(context.Context) error) {
 		}()
 
 		if err := run(r.runCtx); err != nil && !errors.Is(err, context.Canceled) {
-			r.logger.Error("pool sync stopped", zap.String("sync", name), zap.Error(err))
+			r.logger.Error("pool sync stopped", zap.Uint64("chain_id", r.cfg.ChainID), zap.String("sync", name), zap.Error(err))
 		}
 	}()
 }
@@ -705,6 +1032,7 @@ func (r *syncLifecycle) tryRefreshArbitrageRoutes(protocolReady map[string]bool)
 	}
 
 	r.logger.Info("arbitrage routes refreshed",
+		zap.Uint64("chain_id", r.cfg.ChainID),
 		zap.Int("routes", routes),
 		zap.Int("start_tokens", len(r.bundle.Arbitrage.StartTokens())),
 	)
@@ -730,6 +1058,14 @@ func (r *syncLifecycle) arbitrageProtocols() []arbitrageProtocolState {
 			name: "pancakev3",
 			ready: func() bool {
 				return r.bundle.SyncPancake.Readiness.IsSystemReady()
+			},
+		})
+	}
+	if r.bundle.SyncQuickSwap != nil && r.bundle.SyncQuickSwap.Readiness != nil {
+		protocols = append(protocols, arbitrageProtocolState{
+			name: "quickswapv3",
+			ready: func() bool {
+				return r.bundle.SyncQuickSwap.Readiness.IsSystemReady()
 			},
 		})
 	}
@@ -771,7 +1107,7 @@ func (r *syncLifecycle) stop(ctx context.Context) error {
 
 	r.chain.Close()
 	r.store.Close()
-	r.logger.Info("pool sync shutdown complete")
+	r.logger.Info("pool sync shutdown complete", zap.Uint64("chain_id", r.cfg.ChainID))
 	return nil
 }
 
@@ -808,6 +1144,7 @@ func (h *httpLifecycle) start(_ context.Context) error {
 			zap.String("quote_cross_pool", "POST /api/v1/quote"),
 			zap.String("quote_v3", "POST /api/v1/univ3/quote"),
 			zap.String("quote_pancakev3", "POST /api/v1/pancakev3/quote"),
+			zap.String("quote_quickswapv3", "POST /api/v1/quickswapv3/quote"),
 			zap.String("quote_v4", "POST /api/v1/univ4/quote"),
 		)
 		if err := h.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

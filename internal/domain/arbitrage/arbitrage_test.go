@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/asset"
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	"github.com/ethereum/go-ethereum/common"
@@ -61,6 +62,77 @@ func TestEvaluatorRejectsBelowMinimumProfit(t *testing.T) {
 	}
 	if result.Accepted {
 		t.Fatal("expected rejected result below minimum net profit")
+	}
+}
+
+func TestEvaluatorSubtractsFlashLoanFee(t *testing.T) {
+	strategy := NewCycleStrategy("cycle-usdc", testToken(1), 3, big.NewInt(1))
+	evaluator := NewEvaluator()
+
+	result := evaluator.Evaluate(EvaluationInput{
+		Strategy:  strategy,
+		AmountIn:  big.NewInt(1_000_000),
+		AmountOut: big.NewInt(1_000_100),
+		GasCost:   big.NewInt(20),
+		FlashLoan: FlashLoanQuote{
+			Protocol: FlashLoanProtocolUniv3,
+			Fee:      big.NewInt(30),
+			FeePPM:   big.NewInt(30),
+		},
+	})
+
+	if result.NetProfit.Cmp(big.NewInt(50)) != 0 {
+		t.Fatalf("expected net profit after flash fee 50, got %s", result.NetProfit)
+	}
+	if result.FlashLoan.Protocol != FlashLoanProtocolUniv3 {
+		t.Fatalf("expected univ3 flash loan, got %s", result.FlashLoan.Protocol)
+	}
+}
+
+func TestSelectBestFlashLoanChoosesLowestFee(t *testing.T) {
+	quote, err := SelectBestFlashLoan(big.NewInt(1_000_001), []FlashLoanOption{
+		{Protocol: FlashLoanProtocolUniv3, FeePPM: big.NewInt(500)},
+		{Protocol: FlashLoanProtocolBalancer, FeePPM: big.NewInt(10)},
+	})
+	if err != nil {
+		t.Fatalf("select flash loan: %v", err)
+	}
+	if quote.Protocol != FlashLoanProtocolBalancer {
+		t.Fatalf("expected balancer flash loan, got %s", quote.Protocol)
+	}
+	if quote.Fee.Cmp(big.NewInt(11)) != 0 {
+		t.Fatalf("expected rounded-up fee 11, got %s", quote.Fee)
+	}
+}
+
+func TestFlashLoanOptionsForRouteUsesV3PoolFee(t *testing.T) {
+	tokenA := testToken(1)
+	tokenB := testToken(2)
+	poolAddress := testToken(9)
+	pool := marketv3.NewPool(poolAddress, tokenA, tokenB, 3000, 60)
+	route := quoteunified.NewDirectV3Route(poolAddress, tokenA, tokenB)
+
+	options := FlashLoanOptionsForRoute(route, quoteunified.RoutePools{
+		V3: map[common.Address]*marketv3.Pool{poolAddress: pool},
+	}, []FlashLoanOption{
+		{Protocol: FlashLoanProtocolBalancer, FeePPM: big.NewInt(10)},
+	})
+
+	var v3Option FlashLoanOption
+	for _, option := range options {
+		if option.Protocol == FlashLoanProtocolUniv3 {
+			v3Option = option
+			break
+		}
+	}
+	if v3Option.Protocol == "" {
+		t.Fatal("expected univ3 flash loan option")
+	}
+	if v3Option.FeePPM.Cmp(big.NewInt(3000)) != 0 {
+		t.Fatalf("expected v3 pool fee 3000, got %s", v3Option.FeePPM)
+	}
+	if v3Option.PoolRef.Key() != PoolRefFromV3(poolAddress).Key() {
+		t.Fatalf("expected v3 pool ref, got %s", v3Option.PoolRef.Key())
 	}
 }
 
@@ -140,7 +212,7 @@ func TestDependencyGraphAffectedRoutes(t *testing.T) {
 	graph.Register(routeA)
 	graph.Register(routeB)
 
-	affected := graph.AffectedRoutes([]common.Address{testToken(10)}, nil, nil)
+	affected := graph.AffectedRoutes([]common.Address{testToken(10)}, nil, nil, nil)
 	if len(affected) != 1 || affected[0].ID != "route-a" {
 		t.Fatalf("expected route-a only, got %+v", affected)
 	}
@@ -303,13 +375,41 @@ func TestDependencyGraphAffectedRoutesPancakeV3(t *testing.T) {
 	}
 	graph.Register(route)
 
-	affected := graph.AffectedRoutes(nil, []common.Address{poolBC}, nil)
+	affected := graph.AffectedRoutes(nil, []common.Address{poolBC}, nil, nil)
 	if len(affected) != 1 || affected[0].ID != "mixed-pancake" {
 		t.Fatalf("expected mixed-pancake route, got %+v", affected)
 	}
 
 	// Same address on univ3 must not match pancake route.
-	affectedV3 := graph.AffectedRoutes([]common.Address{poolBC}, nil, nil)
+	affectedV3 := graph.AffectedRoutes([]common.Address{poolBC}, nil, nil, nil)
+	if len(affectedV3) != 0 {
+		t.Fatalf("expected no routes for univ3 key collision, got %+v", affectedV3)
+	}
+}
+
+func TestDependencyGraphAffectedRoutesQuickSwapV3(t *testing.T) {
+	poolBC := testToken(11)
+	graph := NewDependencyGraph()
+	route := RouteRef{
+		ID: "mixed-quickswap",
+		Route: quoteunified.Route{
+			TokenIn:  testToken(1),
+			TokenOut: testToken(1),
+			Hops: []quoteunified.RouteHop{
+				{Version: quoteunified.PoolVersionV3, PoolV3: testToken(10), TokenIn: testToken(1), TokenOut: testToken(2)},
+				{Version: quoteunified.PoolVersionQuickSwapV3, PoolQuickSwapV3: poolBC, TokenIn: testToken(2), TokenOut: testToken(3)},
+				{Version: quoteunified.PoolVersionV3, PoolV3: testToken(12), TokenIn: testToken(3), TokenOut: testToken(1)},
+			},
+		},
+	}
+	graph.Register(route)
+
+	affected := graph.AffectedRoutes(nil, nil, []common.Address{poolBC}, nil)
+	if len(affected) != 1 || affected[0].ID != "mixed-quickswap" {
+		t.Fatalf("expected mixed-quickswap route, got %+v", affected)
+	}
+
+	affectedV3 := graph.AffectedRoutes([]common.Address{poolBC}, nil, nil, nil)
 	if len(affectedV3) != 0 {
 		t.Fatalf("expected no routes for univ3 key collision, got %+v", affectedV3)
 	}
@@ -363,7 +463,7 @@ func TestDependencyGraphAffectedRoutesV4(t *testing.T) {
 	}
 	graph.Register(route)
 
-	affected := graph.AffectedRoutes(nil, nil, []marketv4.PoolID{poolBCID})
+	affected := graph.AffectedRoutes(nil, nil, nil, []marketv4.PoolID{poolBCID})
 	if len(affected) != 1 || affected[0].ID != "mixed-tri" {
 		t.Fatalf("expected mixed-tri route, got %+v", affected)
 	}

@@ -8,13 +8,14 @@ import (
 
 // RouteHop is a single hop that may use a V3-style or V4 pool.
 type RouteHop struct {
-	Version       PoolVersion
-	PoolV3        common.Address
-	PoolPancakeV3 common.Address
-	PoolV4        marketv4.PoolID
-	PoolBalancer  marketbalancer.PoolID
-	TokenIn       common.Address
-	TokenOut      common.Address
+	Version         PoolVersion
+	PoolV3          common.Address
+	PoolPancakeV3   common.Address
+	PoolQuickSwapV3 common.Address
+	PoolV4          marketv4.PoolID
+	PoolBalancer    marketbalancer.PoolID
+	TokenIn         common.Address
+	TokenOut        common.Address
 }
 
 // Route represents a token swap path through V3 and/or V4 pools.
@@ -48,6 +49,20 @@ func NewDirectPancakeV3Route(pool common.Address, tokenIn, tokenOut common.Addre
 			PoolPancakeV3: pool,
 			TokenIn:       tokenIn,
 			TokenOut:      tokenOut,
+		}},
+	}
+}
+
+// NewDirectQuickSwapV3Route builds a single-hop QuickSwap V3 route.
+func NewDirectQuickSwapV3Route(pool common.Address, tokenIn, tokenOut common.Address) Route {
+	return Route{
+		TokenIn:  tokenIn,
+		TokenOut: tokenOut,
+		Hops: []RouteHop{{
+			Version:         PoolVersionQuickSwapV3,
+			PoolQuickSwapV3: pool,
+			TokenIn:         tokenIn,
+			TokenOut:        tokenOut,
 		}},
 	}
 }

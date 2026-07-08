@@ -143,10 +143,11 @@ func (r *memoryOpportunityRepo) Delete(_ context.Context, id string) error {
 
 type alwaysReady struct{}
 
-func (alwaysReady) IsSystemReady() bool                        { return true }
-func (alwaysReady) IsV3PoolReady(_ common.Address) bool        { return true }
-func (alwaysReady) IsPancakeV3PoolReady(_ common.Address) bool { return true }
-func (alwaysReady) IsV4PoolReady(_ marketuniv4.PoolID) bool    { return true }
+func (alwaysReady) IsSystemReady() bool                          { return true }
+func (alwaysReady) IsV3PoolReady(_ common.Address) bool          { return true }
+func (alwaysReady) IsPancakeV3PoolReady(_ common.Address) bool   { return true }
+func (alwaysReady) IsQuickSwapV3PoolReady(_ common.Address) bool { return true }
+func (alwaysReady) IsV4PoolReady(_ marketuniv4.PoolID) bool      { return true }
 func (alwaysReady) IsBalancerPoolReady(_ marketbalancer.PoolID) bool {
 	return true
 }
@@ -215,7 +216,7 @@ func TestScanServiceFindsAffectedRoutes(t *testing.T) {
 		},
 	})
 
-	affected := scan.FindAffected([]common.Address{poolAB}, nil, nil)
+	affected := scan.FindAffected([]common.Address{poolAB}, nil, nil, nil)
 	if len(affected) != 1 || affected[0].ID != "cycle-ab" {
 		t.Fatalf("expected cycle-ab route, got %+v", affected)
 	}
@@ -241,7 +242,7 @@ func TestScanServiceRegistersTriangleRoutes(t *testing.T) {
 		t.Fatalf("expected 2 triangle routes, got %d", count)
 	}
 
-	affected := scan.FindAffected([]common.Address{poolBC}, nil, nil)
+	affected := scan.FindAffected([]common.Address{poolBC}, nil, nil, nil)
 	if len(affected) != 2 {
 		t.Fatalf("expected 2 affected triangle routes, got %+v", affected)
 	}
@@ -268,7 +269,7 @@ func TestScanServiceRegistersMixedTriangleRoutes(t *testing.T) {
 		t.Fatalf("expected 2 mixed triangle routes, got %d", count)
 	}
 
-	affected := scan.FindAffected(nil, nil, []marketuniv4.PoolID{poolBCID})
+	affected := scan.FindAffected(nil, nil, nil, []marketuniv4.PoolID{poolBCID})
 	if len(affected) != 2 {
 		t.Fatalf("expected 2 affected mixed triangle routes, got %+v", affected)
 	}
@@ -293,14 +294,43 @@ func TestScanServiceFindsAffectedPancakeRoutes(t *testing.T) {
 		},
 	})
 
-	affected := scan.FindAffected(nil, []common.Address{poolAB}, nil)
+	affected := scan.FindAffected(nil, []common.Address{poolAB}, nil, nil)
 	if len(affected) != 1 || affected[0].ID != "cycle-pancake" {
 		t.Fatalf("expected cycle-pancake route, got %+v", affected)
 	}
 
-	notAffected := scan.FindAffected([]common.Address{poolAB}, nil, nil)
+	notAffected := scan.FindAffected([]common.Address{poolAB}, nil, nil, nil)
 	if len(notAffected) != 0 {
 		t.Fatalf("expected no univ3 matches for pancake pool, got %+v", notAffected)
+	}
+}
+
+func TestScanServiceFindsAffectedQuickSwapRoutes(t *testing.T) {
+	tokenA := testToken(2)
+	tokenB := testToken(3)
+	poolAB := testToken(10)
+
+	scan := arbitrageapp.NewScanService(domainarb.NewDependencyGraph())
+	scan.RegisterRoute(domainarb.RouteRef{
+		ID: "cycle-quickswap",
+		Route: quoteunified.Route{
+			TokenIn:  tokenA,
+			TokenOut: tokenA,
+			Hops: []quoteunified.RouteHop{
+				{Version: quoteunified.PoolVersionQuickSwapV3, PoolQuickSwapV3: poolAB, TokenIn: tokenA, TokenOut: tokenB},
+				{Version: quoteunified.PoolVersionQuickSwapV3, PoolQuickSwapV3: poolAB, TokenIn: tokenB, TokenOut: tokenA},
+			},
+		},
+	})
+
+	affected := scan.FindAffected(nil, nil, []common.Address{poolAB}, nil)
+	if len(affected) != 1 || affected[0].ID != "cycle-quickswap" {
+		t.Fatalf("expected cycle-quickswap route, got %+v", affected)
+	}
+
+	notAffected := scan.FindAffected([]common.Address{poolAB}, nil, nil, nil)
+	if len(notAffected) != 0 {
+		t.Fatalf("expected no univ3 matches for quickswap pool, got %+v", notAffected)
 	}
 }
 
@@ -495,7 +525,7 @@ func TestScanServiceRegistersSpreadRoutes(t *testing.T) {
 		t.Fatalf("expected 2 spread routes, got %d", count)
 	}
 
-	affected := scan.FindAffected([]common.Address{poolAB1}, nil, nil)
+	affected := scan.FindAffected([]common.Address{poolAB1}, nil, nil, nil)
 	if len(affected) != 2 {
 		t.Fatalf("expected 2 affected spread routes, got %+v", affected)
 	}

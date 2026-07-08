@@ -6,6 +6,7 @@ type PoolVersion int
 const (
 	PoolVersionV3 PoolVersion = iota + 1
 	PoolVersionPancakeV3
+	PoolVersionQuickSwapV3
 	PoolVersionV4
 	PoolVersionBalancer
 	PoolVersionUnwrapWETH
@@ -18,6 +19,8 @@ func (v PoolVersion) String() string {
 		return "univ3"
 	case PoolVersionPancakeV3:
 		return "pancakev3"
+	case PoolVersionQuickSwapV3:
+		return "quickswapv3"
 	case PoolVersionV4:
 		return "univ4"
 	case PoolVersionBalancer:

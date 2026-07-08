@@ -9,6 +9,7 @@ import (
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
 	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
+	marketquick "github.com/brianliu-sysu/uniswapv3/internal/domain/market/quickswapv3"
 	marketuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
@@ -21,24 +22,27 @@ type ReadinessChecker interface {
 	IsSystemReady() bool
 	IsV3PoolReady(poolAddress common.Address) bool
 	IsPancakeV3PoolReady(poolAddress common.Address) bool
+	IsQuickSwapV3PoolReady(poolAddress common.Address) bool
 	IsV4PoolReady(poolID marketuniv4.PoolID) bool
 	IsBalancerPoolReady(poolID marketbalancer.PoolID) bool
 }
 
 // OpportunityService generates opportunities from affected routes.
 type OpportunityService struct {
-	univ3Pools    marketuniv3.PoolRepository
-	pancakePools  marketpancake.PoolRepository
-	univ4Pools    marketuniv4.PoolRepository
-	balancerPools marketbalancer.PoolRepository
-	quotes        *quoteunified.QuoteService
-	evaluator     *domainarb.Evaluator
-	optimizer     *domainarb.Optimizer
-	gas           domainarb.GasEstimator
-	strategies    []domainarb.Strategy
-	readiness     ReadinessChecker
-	logger        *zap.Logger
-	now           func() time.Time
+	univ3Pools     marketuniv3.PoolRepository
+	pancakePools   marketpancake.PoolRepository
+	quickSwapPools marketquick.PoolRepository
+	univ4Pools     marketuniv4.PoolRepository
+	balancerPools  marketbalancer.PoolRepository
+	quotes         *quoteunified.QuoteService
+	evaluator      *domainarb.Evaluator
+	optimizer      *domainarb.Optimizer
+	gas            domainarb.GasEstimator
+	flashLoans     []domainarb.FlashLoanOption
+	strategies     []domainarb.Strategy
+	readiness      ReadinessChecker
+	logger         *zap.Logger
+	now            func() time.Time
 }
 
 // GenerateRequest is the input for opportunity generation.
@@ -50,6 +54,7 @@ type GenerateRequest struct {
 func NewOpportunityService(
 	univ3Pools marketuniv3.PoolRepository,
 	pancakePools marketpancake.PoolRepository,
+	quickSwapPools marketquick.PoolRepository,
 	univ4Pools marketuniv4.PoolRepository,
 	balancerPools marketbalancer.PoolRepository,
 	quotes *quoteunified.QuoteService,
@@ -58,24 +63,30 @@ func NewOpportunityService(
 	readiness ReadinessChecker,
 	minAmount, maxAmount *big.Int,
 	optimizerIterations int,
+	flashLoans []domainarb.FlashLoanOption,
 	logger *zap.Logger,
 ) *OpportunityService {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
+	if len(flashLoans) == 0 {
+		flashLoans = domainarb.DefaultFlashLoanOptions()
+	}
 	return &OpportunityService{
-		univ3Pools:    univ3Pools,
-		pancakePools:  pancakePools,
-		univ4Pools:    univ4Pools,
-		balancerPools: balancerPools,
-		quotes:        quotes,
-		evaluator:     domainarb.NewEvaluator(),
-		optimizer:     domainarb.NewOptimizer(minAmount, maxAmount, optimizerIterations),
-		gas:           gas,
-		strategies:    append([]domainarb.Strategy(nil), strategies...),
-		readiness:     readiness,
-		logger:        logger,
-		now:           time.Now,
+		univ3Pools:     univ3Pools,
+		pancakePools:   pancakePools,
+		quickSwapPools: quickSwapPools,
+		univ4Pools:     univ4Pools,
+		balancerPools:  balancerPools,
+		quotes:         quotes,
+		evaluator:      domainarb.NewEvaluator(),
+		optimizer:      domainarb.NewOptimizer(minAmount, maxAmount, optimizerIterations),
+		gas:            gas,
+		flashLoans:     append([]domainarb.FlashLoanOption(nil), flashLoans...),
+		strategies:     append([]domainarb.Strategy(nil), strategies...),
+		readiness:      readiness,
+		logger:         logger,
+		now:            time.Now,
 	}
 }
 
@@ -199,6 +210,12 @@ func (s *OpportunityService) generateForRoute(
 		return nil, nil
 	}
 
+	flashLoanOptions := domainarb.FlashLoanOptionsForRoute(routeRef.Route, pools, s.flashLoans)
+	flashLoan, err := domainarb.SelectBestFlashLoan(optimized.AmountIn, flashLoanOptions)
+	if err != nil {
+		return nil, err
+	}
+
 	gas, err := s.gas.Estimate(ctx, routeRef.Route.Len())
 	if err != nil {
 		return nil, err
@@ -211,6 +228,7 @@ func (s *OpportunityService) generateForRoute(
 		AmountIn:    optimized.AmountIn,
 		AmountOut:   optimized.AmountOut,
 		GasCost:     gas.CostWei,
+		FlashLoan:   flashLoan,
 	})
 	if !evaluation.Accepted {
 		s.logger.Debug("arbitrage route rejected",
@@ -222,6 +240,9 @@ func (s *OpportunityService) generateForRoute(
 			zap.String("amount_out", evaluation.AmountOut.String()),
 			zap.String("gross_profit", evaluation.GrossProfit.String()),
 			zap.String("gas_cost", gas.CostWei.String()),
+			zap.String("flash_loan_protocol", string(flashLoan.Protocol)),
+			zap.String("flash_loan_pool", flashLoan.PoolRef.Key()),
+			zap.String("flash_loan_fee", flashLoan.Fee.String()),
 			zap.String("net_profit", evaluation.NetProfit.String()),
 			zap.Bool("profitable", evaluation.Profitable),
 			zap.String("min_net_profit", bigIntString(strategy.MinNetProfitWei)),
@@ -232,6 +253,15 @@ func (s *OpportunityService) generateForRoute(
 	id := fmt.Sprintf("%s-%d-%d", routeRef.ID, blockNumber, s.now().UnixNano())
 	opp := domainarb.NewOpportunity(id, strategy, blockNumber, routeRef.Route, evaluation, gas, s.now().UTC())
 	opp.Status = domainarb.OpportunityStatusAccepted
+	s.logger.Debug("arbitrage route accepted",
+		zap.Uint64("block", blockNumber),
+		zap.String("route", routeRef.ID),
+		zap.String("strategy", strategy.ID),
+		zap.String("flash_loan_protocol", string(flashLoan.Protocol)),
+		zap.String("flash_loan_pool", flashLoan.PoolRef.Key()),
+		zap.String("flash_loan_fee", flashLoan.Fee.String()),
+		zap.String("net_profit", evaluation.NetProfit.String()),
+	)
 	return opp, nil
 }
 
@@ -260,6 +290,10 @@ func (s *OpportunityService) ensureRouteReady(routeRef domainarb.RouteRef) error
 			if !s.readiness.IsPancakeV3PoolReady(hop.PoolPancakeV3) {
 				return fmt.Errorf("pancakev3 pool %s is not ready", hop.PoolPancakeV3.Hex())
 			}
+		case quoteunified.PoolVersionQuickSwapV3:
+			if !s.readiness.IsQuickSwapV3PoolReady(hop.PoolQuickSwapV3) {
+				return fmt.Errorf("quickswapv3 pool %s is not ready", hop.PoolQuickSwapV3.Hex())
+			}
 		case quoteunified.PoolVersionV4:
 			if !s.readiness.IsV4PoolReady(hop.PoolV4) {
 				return fmt.Errorf("v4 pool %s is not ready", hop.PoolV4.String())
@@ -279,10 +313,11 @@ func (s *OpportunityService) ensureRouteReady(routeRef domainarb.RouteRef) error
 
 func (s *OpportunityService) loadRoutePools(ctx context.Context, route quoteunified.Route) (quoteunified.RoutePools, error) {
 	pools := quoteunified.RoutePools{
-		V3:        make(map[common.Address]*marketuniv3.Pool),
-		PancakeV3: make(map[common.Address]*marketpancake.Pool),
-		V4:        make(map[marketuniv4.PoolID]*marketuniv4.Pool),
-		Balancer:  make(map[marketbalancer.PoolID]*marketbalancer.Pool),
+		V3:          make(map[common.Address]*marketuniv3.Pool),
+		PancakeV3:   make(map[common.Address]*marketpancake.Pool),
+		QuickSwapV3: make(map[common.Address]*marketquick.Pool),
+		V4:          make(map[marketuniv4.PoolID]*marketuniv4.Pool),
+		Balancer:    make(map[marketbalancer.PoolID]*marketbalancer.Pool),
 	}
 
 	for _, hop := range route.Hops {
@@ -317,6 +352,21 @@ func (s *OpportunityService) loadRoutePools(ctx context.Context, route quoteunif
 				return quoteunified.RoutePools{}, fmt.Errorf("pancakev3 pool %s not found", hop.PoolPancakeV3.Hex())
 			}
 			pools.PancakeV3[hop.PoolPancakeV3] = pool
+		case quoteunified.PoolVersionQuickSwapV3:
+			if _, ok := pools.QuickSwapV3[hop.PoolQuickSwapV3]; ok {
+				continue
+			}
+			if s.quickSwapPools == nil {
+				return quoteunified.RoutePools{}, fmt.Errorf("quickswapv3 pool repository is nil")
+			}
+			pool, err := s.quickSwapPools.Get(ctx, hop.PoolQuickSwapV3)
+			if err != nil {
+				return quoteunified.RoutePools{}, fmt.Errorf("load quickswapv3 pool %s: %w", hop.PoolQuickSwapV3.Hex(), err)
+			}
+			if pool == nil {
+				return quoteunified.RoutePools{}, fmt.Errorf("quickswapv3 pool %s not found", hop.PoolQuickSwapV3.Hex())
+			}
+			pools.QuickSwapV3[hop.PoolQuickSwapV3] = pool
 		case quoteunified.PoolVersionV4:
 			if _, ok := pools.V4[hop.PoolV4]; ok {
 				continue

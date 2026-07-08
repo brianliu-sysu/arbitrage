@@ -32,9 +32,15 @@ func TestOpportunityEnsurePayloadIncludesWrapHop(t *testing.T) {
 			AmountIn:    big.NewInt(1_000),
 			AmountOut:   big.NewInt(1_100),
 			GrossProfit: big.NewInt(100),
-			NetProfit:   big.NewInt(80),
-			Profitable:  true,
-			Accepted:    true,
+			FlashLoan: FlashLoanQuote{
+				Protocol: FlashLoanProtocolBalancer,
+				Amount:   big.NewInt(1_000),
+				Fee:      big.NewInt(0),
+				FeePPM:   big.NewInt(0),
+			},
+			NetProfit:  big.NewInt(80),
+			Profitable: true,
+			Accepted:   true,
 		},
 		GasEstimate{CostWei: big.NewInt(20)},
 		time.Unix(0, 0).UTC(),
@@ -53,6 +59,9 @@ func TestOpportunityEnsurePayloadIncludesWrapHop(t *testing.T) {
 	if payload.Route.Hops[0].Version != quoteunified.PoolVersionUnwrapWETH.String() {
 		t.Fatalf("expected unwrap hop, got %s", payload.Route.Hops[0].Version)
 	}
+	if payload.FlashLoan == nil || payload.FlashLoan.Protocol != string(FlashLoanProtocolBalancer) {
+		t.Fatalf("expected balancer flash loan payload, got %+v", payload.FlashLoan)
+	}
 }
 
 func TestOpportunityApplyPayloadRestoresFields(t *testing.T) {
@@ -65,9 +74,16 @@ func TestOpportunityApplyPayloadRestoresFields(t *testing.T) {
 			AmountIn:    big.NewInt(1_000),
 			AmountOut:   big.NewInt(1_100),
 			GrossProfit: big.NewInt(100),
-			NetProfit:   big.NewInt(80),
-			Profitable:  true,
-			Accepted:    true,
+			FlashLoan: FlashLoanQuote{
+				Protocol: FlashLoanProtocolUniv3,
+				PoolRef:  PoolRefFromV3(testToken(9)),
+				Amount:   big.NewInt(1_000),
+				Fee:      big.NewInt(1),
+				FeePPM:   big.NewInt(500),
+			},
+			NetProfit:  big.NewInt(80),
+			Profitable: true,
+			Accepted:   true,
 		},
 		GasEstimate{CostWei: big.NewInt(20)},
 		time.Unix(0, 0).UTC(),
@@ -88,5 +104,11 @@ func TestOpportunityApplyPayloadRestoresFields(t *testing.T) {
 	}
 	if loaded.Route.Len() != original.Route.Len() {
 		t.Fatalf("expected %d hops, got %d", original.Route.Len(), loaded.Route.Len())
+	}
+	if loaded.FlashLoan.Protocol != FlashLoanProtocolUniv3 || loaded.FlashLoan.Fee.Cmp(big.NewInt(1)) != 0 {
+		t.Fatalf("expected restored univ3 flash loan, got %+v", loaded.FlashLoan)
+	}
+	if loaded.FlashLoan.PoolRef.Key() != PoolRefFromV3(testToken(9)).Key() {
+		t.Fatalf("expected restored v3 flash loan pool, got %s", loaded.FlashLoan.PoolRef.Key())
 	}
 }

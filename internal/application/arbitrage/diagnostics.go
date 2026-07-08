@@ -82,6 +82,8 @@ func (s *Services) countGraphEdges(ctx context.Context) (int, error) {
 		s.routeDeps.Pools,
 		s.routeDeps.PancakeRegistry,
 		s.routeDeps.PancakePools,
+		s.routeDeps.QuickSwapRegistry,
+		s.routeDeps.QuickSwapPools,
 		s.routeDeps.V4Registry,
 		s.routeDeps.V4Pools,
 		s.routeDeps.BalancerRegistry,

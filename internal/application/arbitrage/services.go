@@ -8,6 +8,7 @@ import (
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
 	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
+	marketquick "github.com/brianliu-sysu/uniswapv3/internal/domain/market/quickswapv3"
 	marketuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
@@ -20,10 +21,12 @@ type ServiceDeps struct {
 	Logger                *zap.Logger
 	Pools                 marketuniv3.PoolRepository
 	PancakePools          marketpancake.PoolRepository
+	QuickSwapPools        marketquick.PoolRepository
 	V4Pools               marketuniv4.PoolRepository
 	BalancerPools         marketbalancer.PoolRepository
 	Registry              marketuniv3.PoolRegistry
 	PancakeRegistry       marketpancake.PoolRegistry
+	QuickSwapRegistry     marketquick.PoolRegistry
 	V4Registry            marketuniv4.PoolRegistry
 	BalancerRegistry      marketbalancer.PoolRegistry
 	Quotes                *quoteunified.QuoteService
@@ -37,6 +40,7 @@ type ServiceDeps struct {
 	SpreadMinNetProfitWei *big.Int
 	Readiness             ReadinessChecker
 	Repository            domainarb.OpportunityRepository
+	FlashLoanOptions      []domainarb.FlashLoanOption
 	MinAmount             *big.Int
 	MaxAmount             *big.Int
 	OptimizerIterations   int
@@ -45,14 +49,16 @@ type ServiceDeps struct {
 }
 
 type routeRefreshDeps struct {
-	Registry         marketuniv3.PoolRegistry
-	Pools            marketuniv3.PoolRepository
-	PancakeRegistry  marketpancake.PoolRegistry
-	PancakePools     marketpancake.PoolRepository
-	V4Registry       marketuniv4.PoolRegistry
-	V4Pools          marketuniv4.PoolRepository
-	BalancerRegistry marketbalancer.PoolRegistry
-	BalancerPools    marketbalancer.PoolRepository
+	Registry          marketuniv3.PoolRegistry
+	Pools             marketuniv3.PoolRepository
+	PancakeRegistry   marketpancake.PoolRegistry
+	PancakePools      marketpancake.PoolRepository
+	QuickSwapRegistry marketquick.PoolRegistry
+	QuickSwapPools    marketquick.PoolRepository
+	V4Registry        marketuniv4.PoolRegistry
+	V4Pools           marketuniv4.PoolRepository
+	BalancerRegistry  marketbalancer.PoolRegistry
+	BalancerPools     marketbalancer.PoolRepository
 }
 
 // Services bundles arbitrage application services.
@@ -122,6 +128,7 @@ func NewServices(deps ServiceDeps) *Services {
 		Opportunities: NewOpportunityService(
 			deps.Pools,
 			deps.PancakePools,
+			deps.QuickSwapPools,
 			deps.V4Pools,
 			deps.BalancerPools,
 			deps.Quotes,
@@ -131,18 +138,21 @@ func NewServices(deps ServiceDeps) *Services {
 			minAmount,
 			maxAmount,
 			deps.OptimizerIterations,
+			deps.FlashLoanOptions,
 			logger,
 		),
 		Publish: NewPublishService(publishers...),
 		routeDeps: routeRefreshDeps{
-			Registry:         deps.Registry,
-			Pools:            deps.Pools,
-			PancakeRegistry:  deps.PancakeRegistry,
-			PancakePools:     deps.PancakePools,
-			V4Registry:       deps.V4Registry,
-			V4Pools:          deps.V4Pools,
-			BalancerRegistry: deps.BalancerRegistry,
-			BalancerPools:    deps.BalancerPools,
+			Registry:          deps.Registry,
+			Pools:             deps.Pools,
+			PancakeRegistry:   deps.PancakeRegistry,
+			PancakePools:      deps.PancakePools,
+			QuickSwapRegistry: deps.QuickSwapRegistry,
+			QuickSwapPools:    deps.QuickSwapPools,
+			V4Registry:        deps.V4Registry,
+			V4Pools:           deps.V4Pools,
+			BalancerRegistry:  deps.BalancerRegistry,
+			BalancerPools:     deps.BalancerPools,
 		},
 		configuredStartTokens: configuredStartTokens,
 		spreadStartTokens:     spreadStartTokens,
@@ -222,14 +232,16 @@ func (s *Services) updateArbitrageStrategies(triangleTokens, spreadTokens []comm
 
 func routeRefreshDepsToServiceDeps(deps routeRefreshDeps) ServiceDeps {
 	return ServiceDeps{
-		Registry:         deps.Registry,
-		Pools:            deps.Pools,
-		PancakeRegistry:  deps.PancakeRegistry,
-		PancakePools:     deps.PancakePools,
-		V4Registry:       deps.V4Registry,
-		V4Pools:          deps.V4Pools,
-		BalancerRegistry: deps.BalancerRegistry,
-		BalancerPools:    deps.BalancerPools,
+		Registry:          deps.Registry,
+		Pools:             deps.Pools,
+		PancakeRegistry:   deps.PancakeRegistry,
+		PancakePools:      deps.PancakePools,
+		QuickSwapRegistry: deps.QuickSwapRegistry,
+		QuickSwapPools:    deps.QuickSwapPools,
+		V4Registry:        deps.V4Registry,
+		V4Pools:           deps.V4Pools,
+		BalancerRegistry:  deps.BalancerRegistry,
+		BalancerPools:     deps.BalancerPools,
 	}
 }
 
@@ -306,6 +318,8 @@ func loadPoolGraph(ctx context.Context, deps ServiceDeps) (quoteunified.PoolGrap
 		deps.Pools,
 		deps.PancakeRegistry,
 		deps.PancakePools,
+		deps.QuickSwapRegistry,
+		deps.QuickSwapPools,
 		deps.V4Registry,
 		deps.V4Pools,
 		deps.BalancerRegistry,

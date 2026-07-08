@@ -8,6 +8,7 @@ import (
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/asset"
 	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
+	marketquick "github.com/brianliu-sysu/uniswapv3/internal/domain/market/quickswapv3"
 	marketuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
@@ -20,32 +21,37 @@ type ReadinessChecker interface {
 	IsSystemReady() bool
 	IsV3PoolReady(poolAddress common.Address) bool
 	IsPancakeV3PoolReady(poolAddress common.Address) bool
+	IsQuickSwapV3PoolReady(poolAddress common.Address) bool
 	IsV4PoolReady(poolID marketuniv4.PoolID) bool
 	IsBalancerPoolReady(poolID marketbalancer.PoolID) bool
 }
 
 // AppService orchestrates unified V3/PancakeV3/V4 route discovery and quoting.
 type AppService struct {
-	univ3Pools       marketuniv3.PoolRepository
-	pancakePools     marketpancake.PoolRepository
-	univ4Pools       marketuniv4.PoolRepository
-	balancerPools    marketbalancer.PoolRepository
-	v3Registry       marketuniv3.PoolRegistry
-	pancakeRegistry  marketpancake.PoolRegistry
-	v4Registry       marketuniv4.PoolRegistry
-	balancerRegistry marketbalancer.PoolRegistry
-	quotes           *quoteunified.QuoteService
-	readiness        ReadinessChecker
-	maxHops          int
+	univ3Pools        marketuniv3.PoolRepository
+	pancakePools      marketpancake.PoolRepository
+	quickSwapPools    marketquick.PoolRepository
+	univ4Pools        marketuniv4.PoolRepository
+	balancerPools     marketbalancer.PoolRepository
+	v3Registry        marketuniv3.PoolRegistry
+	pancakeRegistry   marketpancake.PoolRegistry
+	quickSwapRegistry marketquick.PoolRegistry
+	v4Registry        marketuniv4.PoolRegistry
+	balancerRegistry  marketbalancer.PoolRegistry
+	quotes            *quoteunified.QuoteService
+	readiness         ReadinessChecker
+	maxHops           int
 }
 
 func NewAppService(
 	univ3Pools marketuniv3.PoolRepository,
 	pancakePools marketpancake.PoolRepository,
+	quickSwapPools marketquick.PoolRepository,
 	univ4Pools marketuniv4.PoolRepository,
 	balancerPools marketbalancer.PoolRepository,
 	v3Registry marketuniv3.PoolRegistry,
 	pancakeRegistry marketpancake.PoolRegistry,
+	quickSwapRegistry marketquick.PoolRegistry,
 	v4Registry marketuniv4.PoolRegistry,
 	balancerRegistry marketbalancer.PoolRegistry,
 	quotes *quoteunified.QuoteService,
@@ -56,17 +62,19 @@ func NewAppService(
 		maxHops = 3
 	}
 	return &AppService{
-		univ3Pools:       univ3Pools,
-		pancakePools:     pancakePools,
-		univ4Pools:       univ4Pools,
-		balancerPools:    balancerPools,
-		v3Registry:       v3Registry,
-		pancakeRegistry:  pancakeRegistry,
-		v4Registry:       v4Registry,
-		balancerRegistry: balancerRegistry,
-		quotes:           quotes,
-		readiness:        readiness,
-		maxHops:          maxHops,
+		univ3Pools:        univ3Pools,
+		pancakePools:      pancakePools,
+		quickSwapPools:    quickSwapPools,
+		univ4Pools:        univ4Pools,
+		balancerPools:     balancerPools,
+		v3Registry:        v3Registry,
+		pancakeRegistry:   pancakeRegistry,
+		quickSwapRegistry: quickSwapRegistry,
+		v4Registry:        v4Registry,
+		balancerRegistry:  balancerRegistry,
+		quotes:            quotes,
+		readiness:         readiness,
+		maxHops:           maxHops,
 	}
 }
 
@@ -155,6 +163,16 @@ func (s *AppService) quoteSinglePoolByAddress(ctx context.Context, req Request, 
 		}
 	}
 
+	if s.quickSwapPools != nil {
+		pool, err := s.quickSwapPools.Get(ctx, poolAddress)
+		if err != nil {
+			return Response{}, fmt.Errorf("load pool %s: %w", poolAddress.Hex(), err)
+		}
+		if pool != nil {
+			return s.quoteSingleQuickSwapV3Pool(ctx, req, poolAddress, pool)
+		}
+	}
+
 	if s.balancerPools != nil && s.balancerRegistry != nil {
 		poolID, ok, err := s.findBalancerPoolIDByAddress(ctx, poolAddress)
 		if err != nil {
@@ -223,6 +241,27 @@ func (s *AppService) quoteSinglePancakeV3Pool(ctx context.Context, req Request, 
 	}
 
 	route := quoteunified.NewDirectPancakeV3Route(poolAddress, req.TokenIn, req.TokenOut)
+	return newSinglePoolResponse(req, route, result), nil
+}
+
+func (s *AppService) quoteSingleQuickSwapV3Pool(ctx context.Context, req Request, poolAddress common.Address, pool *marketquick.Pool) (Response, error) {
+	_ = ctx
+	if s.readiness != nil && !s.readiness.IsQuickSwapV3PoolReady(poolAddress) {
+		return Response{}, fmt.Errorf("pool %s is not ready", poolAddress.Hex())
+	}
+
+	var result quoteshared.QuoteResult
+	var err error
+	if req.IsExactInput() {
+		result, err = s.quotes.QuoteExactInputQuickSwapV3(pool, req.TokenIn, req.TokenOut, req.AmountIn)
+	} else {
+		result, err = s.quotes.QuoteExactOutputQuickSwapV3(pool, req.TokenIn, req.TokenOut, req.AmountOut)
+	}
+	if err != nil {
+		return Response{}, fmt.Errorf("quote pool %s: %w", poolAddress.Hex(), err)
+	}
+
+	route := quoteunified.NewDirectQuickSwapV3Route(poolAddress, req.TokenIn, req.TokenOut)
 	return newSinglePoolResponse(req, route, result), nil
 }
 
@@ -421,6 +460,28 @@ func (s *AppService) buildPoolGraph(ctx context.Context) (quoteunified.PoolGraph
 		}
 	}
 
+	if s.quickSwapRegistry != nil && s.quickSwapPools != nil {
+		addresses, err := s.quickSwapRegistry.List(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list quickswapv3 pools: %w", err)
+		}
+		for _, address := range addresses {
+			pool, err := s.quickSwapPools.Get(ctx, address)
+			if err != nil {
+				return nil, fmt.Errorf("load quickswapv3 pool %s: %w", address.Hex(), err)
+			}
+			if pool == nil {
+				continue
+			}
+			edges = append(edges, quoteunified.PoolEdge{
+				Version:         quoteunified.PoolVersionQuickSwapV3,
+				PoolQuickSwapV3: pool.Address,
+				Token0:          pool.Token0,
+				Token1:          pool.Token1,
+			})
+		}
+	}
+
 	if s.v4Registry != nil && s.univ4Pools != nil {
 		poolIDs, err := s.v4Registry.List(ctx)
 		if err != nil {
@@ -478,10 +539,11 @@ func (s *AppService) buildPoolGraph(ctx context.Context) (quoteunified.PoolGraph
 
 func (s *AppService) loadRoutePools(ctx context.Context, route quoteunified.Route) (quoteunified.RoutePools, error) {
 	pools := quoteunified.RoutePools{
-		V3:        make(map[common.Address]*marketuniv3.Pool),
-		PancakeV3: make(map[common.Address]*marketpancake.Pool),
-		V4:        make(map[marketuniv4.PoolID]*marketuniv4.Pool),
-		Balancer:  make(map[marketbalancer.PoolID]*marketbalancer.Pool),
+		V3:          make(map[common.Address]*marketuniv3.Pool),
+		PancakeV3:   make(map[common.Address]*marketpancake.Pool),
+		QuickSwapV3: make(map[common.Address]*marketquick.Pool),
+		V4:          make(map[marketuniv4.PoolID]*marketuniv4.Pool),
+		Balancer:    make(map[marketbalancer.PoolID]*marketbalancer.Pool),
 	}
 
 	for _, hop := range route.Hops {
@@ -510,6 +572,18 @@ func (s *AppService) loadRoutePools(ctx context.Context, route quoteunified.Rout
 				return quoteunified.RoutePools{}, fmt.Errorf("pancakev3 pool %s not found", hop.PoolPancakeV3.Hex())
 			}
 			pools.PancakeV3[hop.PoolPancakeV3] = pool
+		case quoteunified.PoolVersionQuickSwapV3:
+			if _, ok := pools.QuickSwapV3[hop.PoolQuickSwapV3]; ok {
+				continue
+			}
+			pool, err := s.quickSwapPools.Get(ctx, hop.PoolQuickSwapV3)
+			if err != nil {
+				return quoteunified.RoutePools{}, fmt.Errorf("load quickswapv3 pool %s: %w", hop.PoolQuickSwapV3.Hex(), err)
+			}
+			if pool == nil {
+				return quoteunified.RoutePools{}, fmt.Errorf("quickswapv3 pool %s not found", hop.PoolQuickSwapV3.Hex())
+			}
+			pools.QuickSwapV3[hop.PoolQuickSwapV3] = pool
 		case quoteunified.PoolVersionV4:
 			if _, ok := pools.V4[hop.PoolV4]; ok {
 				continue
@@ -557,6 +631,10 @@ func (s *AppService) ensureRouteReady(route quoteunified.Route) error {
 		case quoteunified.PoolVersionPancakeV3:
 			if !s.readiness.IsPancakeV3PoolReady(hop.PoolPancakeV3) {
 				return fmt.Errorf("pancakev3 pool %s is not ready", hop.PoolPancakeV3.Hex())
+			}
+		case quoteunified.PoolVersionQuickSwapV3:
+			if !s.readiness.IsQuickSwapV3PoolReady(hop.PoolQuickSwapV3) {
+				return fmt.Errorf("quickswapv3 pool %s is not ready", hop.PoolQuickSwapV3.Hex())
 			}
 		case quoteunified.PoolVersionV4:
 			if !s.readiness.IsV4PoolReady(hop.PoolV4) {

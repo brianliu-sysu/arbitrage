@@ -9,6 +9,7 @@ import (
 	quoteapp "github.com/brianliu-sysu/uniswapv3/internal/application/quote"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/gin-gonic/gin"
 )
 
 var (
@@ -17,6 +18,7 @@ var (
 )
 
 type quoteHTTPRequest struct {
+	Chain       string `json:"chain,omitempty"`
 	TokenIn     string `json:"tokenIn" binding:"required"`
 	TokenOut    string `json:"tokenOut" binding:"required"`
 	AmountIn    string `json:"amountIn,omitempty"`
@@ -61,6 +63,13 @@ type errorHTTPResponse struct {
 
 func parseQuoteBase(payload quoteHTTPRequest) (common.Address, common.Address, quoteapp.QuoteMode, *big.Int, *big.Int, error) {
 	return parseQuoteBaseAllowNative(payload, false)
+}
+
+func quoteChainParam(c *gin.Context, payload quoteHTTPRequest) string {
+	if chain := strings.TrimSpace(payload.Chain); chain != "" {
+		return chain
+	}
+	return c.Query("chain")
 }
 
 func parseQuoteBaseAllowNative(payload quoteHTTPRequest, allowNativeETH bool) (common.Address, common.Address, quoteapp.QuoteMode, *big.Int, *big.Int, error) {

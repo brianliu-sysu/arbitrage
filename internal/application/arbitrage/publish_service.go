@@ -91,6 +91,9 @@ func (p *LogPublisher) Publish(_ context.Context, opportunity *domainarb.Opportu
 		zap.Uint64("block", opportunity.BlockNumber),
 		zap.String("AmountIn", opportunity.AmountIn.String()),
 		zap.String("AmountOut", opportunity.AmountOut.String()),
+		zap.String("flash_loan_protocol", string(opportunity.FlashLoan.Protocol)),
+		zap.String("flash_loan_pool", opportunity.FlashLoan.PoolRef.Key()),
+		zap.String("flash_loan_fee", opportunity.FlashLoan.Fee.String()),
 		zap.String("net_profit", opportunity.NetProfit.String()),
 		zap.Int("route_hops", opportunity.Route.Len()),
 	)

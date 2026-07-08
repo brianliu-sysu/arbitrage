@@ -27,6 +27,10 @@ func PoolRefFromPancakeV3(address common.Address) PoolRef {
 	return PoolRef{Protocol: ProtocolPancakeV3, Address: address}
 }
 
+func PoolRefFromQuickSwapV3(address common.Address) PoolRef {
+	return PoolRef{Protocol: ProtocolQuickSwapV3, Address: address}
+}
+
 func PoolRefFromV4(poolID common.Hash) PoolRef {
 	return PoolRef{Protocol: ProtocolV4, PoolID: poolID}
 }
@@ -43,7 +47,7 @@ func (r PoolRef) IsZero() bool {
 
 func isAddressProtocol(protocol Protocol) bool {
 	switch protocol {
-	case ProtocolUniswapV3, ProtocolPancakeV3:
+	case ProtocolUniswapV3, ProtocolPancakeV3, ProtocolQuickSwapV3:
 		return true
 	default:
 		return false
@@ -65,6 +69,8 @@ func (r PoolRef) String() string {
 		return fmt.Sprintf("univ3:%s", r.Address.Hex())
 	case ProtocolPancakeV3:
 		return fmt.Sprintf("pancakev3:%s", r.Address.Hex())
+	case ProtocolQuickSwapV3:
+		return fmt.Sprintf("quickswapv3:%s", r.Address.Hex())
 	case ProtocolV4:
 		return fmt.Sprintf("univ4:%s", r.PoolID.Hex())
 	case ProtocolBalancer:

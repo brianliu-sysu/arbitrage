@@ -203,10 +203,11 @@ func (r staticV4Registry) Remove(_ context.Context, id marketuniv4.PoolID) error
 
 type alwaysReady struct{}
 
-func (alwaysReady) IsSystemReady() bool                        { return true }
-func (alwaysReady) IsV3PoolReady(_ common.Address) bool        { return true }
-func (alwaysReady) IsPancakeV3PoolReady(_ common.Address) bool { return true }
-func (alwaysReady) IsV4PoolReady(_ marketuniv4.PoolID) bool    { return true }
+func (alwaysReady) IsSystemReady() bool                          { return true }
+func (alwaysReady) IsV3PoolReady(_ common.Address) bool          { return true }
+func (alwaysReady) IsPancakeV3PoolReady(_ common.Address) bool   { return true }
+func (alwaysReady) IsQuickSwapV3PoolReady(_ common.Address) bool { return true }
+func (alwaysReady) IsV4PoolReady(_ marketuniv4.PoolID) bool      { return true }
 func (alwaysReady) IsBalancerPoolReady(_ marketbalancer.PoolID) bool {
 	return true
 }
@@ -262,10 +263,12 @@ func newCombinedService(v3Repo *memoryV3PoolRepo, pancakeRepo *memoryPancakePool
 	return quotecombined.NewAppService(
 		v3Repo,
 		pancakeRepo,
+		nil,
 		v4Repo,
 		nil,
 		v3Reg,
 		pancakeReg,
+		nil,
 		v4Reg,
 		nil,
 		quoteunified.NewQuoteService(

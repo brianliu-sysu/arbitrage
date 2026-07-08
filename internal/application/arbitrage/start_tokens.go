@@ -169,6 +169,8 @@ func edgeKey(edge quoteunified.PoolEdge) string {
 		return "v3:" + edge.PoolV3.Hex()
 	case quoteunified.PoolVersionPancakeV3:
 		return "pancakev3:" + edge.PoolPancakeV3.Hex()
+	case quoteunified.PoolVersionQuickSwapV3:
+		return "quickswapv3:" + edge.PoolQuickSwapV3.Hex()
 	case quoteunified.PoolVersionV4:
 		return "v4:" + edge.PoolV4.String()
 	case quoteunified.PoolVersionBalancer:

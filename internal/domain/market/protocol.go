@@ -9,6 +9,7 @@ const (
 	ProtocolV4
 	ProtocolPancakeV3
 	ProtocolBalancer
+	ProtocolQuickSwapV3
 )
 
 // ProtocolV3 is kept for backward compatibility with Uniswap V3 pools.
@@ -24,6 +25,8 @@ func (p Protocol) String() string {
 		return "pancakev3"
 	case ProtocolBalancer:
 		return "balancer"
+	case ProtocolQuickSwapV3:
+		return "quickswapv3"
 	default:
 		return "unknown"
 	}

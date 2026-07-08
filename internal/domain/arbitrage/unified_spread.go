@@ -143,6 +143,9 @@ func spreadHop(pool spreadPoolRef, tokenIn, tokenOut common.Address) quoteunifie
 	case quoteunified.PoolVersionPancakeV3:
 		hop.Version = quoteunified.PoolVersionPancakeV3
 		hop.PoolPancakeV3 = pool.ref.PancakeV3
+	case quoteunified.PoolVersionQuickSwapV3:
+		hop.Version = quoteunified.PoolVersionQuickSwapV3
+		hop.PoolQuickSwapV3 = pool.ref.QuickSwapV3
 	case quoteunified.PoolVersionV4:
 		hop.Version = quoteunified.PoolVersionV4
 		hop.PoolV4 = pool.ref.V4

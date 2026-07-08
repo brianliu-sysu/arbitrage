@@ -69,14 +69,14 @@ func (s *ScanService) ClearMonitoredRoutes() {
 }
 
 // FindAffected returns routes that depend on any changed synced pool.
-func (s *ScanService) FindAffected(univ3Pools, pancakePools []common.Address, univ4Pools []marketuniv4.PoolID, balancerPoolsArg ...[]marketbalancer.PoolID) []domainarb.RouteRef {
+func (s *ScanService) FindAffected(univ3Pools, pancakePools, quickSwapPools []common.Address, univ4Pools []marketuniv4.PoolID, balancerPoolsArg ...[]marketbalancer.PoolID) []domainarb.RouteRef {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var balancerPools []marketbalancer.PoolID
 	if len(balancerPoolsArg) > 0 {
 		balancerPools = balancerPoolsArg[0]
 	}
-	return s.graph.AffectedRoutes(univ3Pools, pancakePools, univ4Pools, balancerPools)
+	return s.graph.AffectedRoutes(univ3Pools, pancakePools, quickSwapPools, univ4Pools, balancerPools)
 }
 
 // Routes returns all registered routes.

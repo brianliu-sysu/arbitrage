@@ -17,6 +17,7 @@ import (
 // Config is the root application configuration loaded from YAML.
 type Config struct {
 	App         AppConfig         `yaml:"app"`
+	ChainID     uint64            `yaml:"chain_id"`
 	RPC         RPCConfig         `yaml:"rpc"`
 	Persistence PersistenceConfig `yaml:"persistence"`
 	Blockchain  BlockchainConfig  `yaml:"blockchain"`
@@ -24,11 +25,34 @@ type Config struct {
 	HTTP        HTTPConfig        `yaml:"http"`
 	Quote       QuoteConfig       `yaml:"quote"`
 	Arbitrage   ArbitrageConfig   `yaml:"arbitrage"`
+	Chains      []ChainConfig     `yaml:"chains"`
 	Log         LogConfig         `yaml:"log"`
 }
 
 type AppConfig struct {
 	Name string `yaml:"name"`
+}
+
+// ChainConfig contains per-chain runtime settings. Each configured chain runs
+// independent sync, quote, and arbitrage services.
+type ChainConfig struct {
+	Name       string           `yaml:"name"`
+	Enabled    *bool            `yaml:"enabled"`
+	ChainID    uint64           `yaml:"chain_id"`
+	RPC        RPCConfig        `yaml:"rpc"`
+	Blockchain BlockchainConfig `yaml:"blockchain"`
+	Sync       SyncConfig       `yaml:"sync"`
+	Quote      QuoteConfig      `yaml:"quote"`
+	Arbitrage  ArbitrageConfig  `yaml:"arbitrage"`
+}
+
+// IsEnabled reports whether this chain runtime should be started.
+// Default is enabled when the flag is omitted.
+func (c ChainConfig) IsEnabled() bool {
+	if c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
 }
 
 type HTTPConfig struct {
@@ -41,8 +65,14 @@ type QuoteConfig struct {
 }
 
 type ArbitrageConfig struct {
-	Triangle TriangleArbitrageConfig `yaml:"triangle"`
-	Spread   SpreadArbitrageConfig   `yaml:"spread"`
+	Triangle  TriangleArbitrageConfig `yaml:"triangle"`
+	Spread    SpreadArbitrageConfig   `yaml:"spread"`
+	FlashLoan FlashLoanConfig         `yaml:"flash_loan"`
+}
+
+type FlashLoanConfig struct {
+	BalancerFeePPM string `yaml:"balancer_fee_ppm"`
+	Univ4FeePPM    string `yaml:"univ4_fee_ppm"`
 }
 
 type SpreadArbitrageConfig struct {
@@ -88,27 +118,28 @@ func (c PersistenceConfig) MemoryMode() bool {
 }
 
 type BlockchainConfig struct {
-	FactoryAddress          string `yaml:"factory_address"`
-	MulticallAddress        string `yaml:"multicall_address"`
-	PoolManagerAddress      string `yaml:"pool_manager_address"`
-	StateViewAddress        string `yaml:"state_view_address"`
-	BalancerVaultAddress    string `yaml:"balancer_vault_address"`
-	BalancerVaultV3Address  string `yaml:"balancer_vault_v3_address"`
+	FactoryAddress         string `yaml:"factory_address"`
+	MulticallAddress       string `yaml:"multicall_address"`
+	PoolManagerAddress     string `yaml:"pool_manager_address"`
+	StateViewAddress       string `yaml:"state_view_address"`
+	BalancerVaultAddress   string `yaml:"balancer_vault_address"`
+	BalancerVaultV3Address string `yaml:"balancer_vault_v3_address"`
 }
 
 type SyncConfig struct {
-	CatchupBatchSize             uint64              `yaml:"catchup_batch_size"`
-	CatchupPoolGroupSize         uint64              `yaml:"catchup_pool_group_size"`
-	CatchupBlockSpan             uint64              `yaml:"catchup_block_span"`
-	CatchupHeaderConcurrency     int                 `yaml:"catchup_header_concurrency"`
-	BootstrapStaleBlockThreshold uint64              `yaml:"bootstrap_stale_block_threshold"`
-	SnapshotInterval             uint64              `yaml:"snapshot_interval"`
-	SnapshotFallback             time.Duration       `yaml:"snapshot_fallback"`
-	ReorgMaxDepth                uint64              `yaml:"reorg_max_depth"`
-	Univ3                        Univ3SyncConfig     `yaml:"univ3"`
-	PancakeV3                    PancakeV3SyncConfig `yaml:"pancakev3"`
-	Univ4                        Univ4SyncConfig     `yaml:"univ4"`
-	Balancer                     BalancerSyncConfig  `yaml:"balancer"`
+	CatchupBatchSize             uint64                `yaml:"catchup_batch_size"`
+	CatchupPoolGroupSize         uint64                `yaml:"catchup_pool_group_size"`
+	CatchupBlockSpan             uint64                `yaml:"catchup_block_span"`
+	CatchupHeaderConcurrency     int                   `yaml:"catchup_header_concurrency"`
+	BootstrapStaleBlockThreshold uint64                `yaml:"bootstrap_stale_block_threshold"`
+	SnapshotInterval             uint64                `yaml:"snapshot_interval"`
+	SnapshotFallback             time.Duration         `yaml:"snapshot_fallback"`
+	ReorgMaxDepth                uint64                `yaml:"reorg_max_depth"`
+	Univ3                        Univ3SyncConfig       `yaml:"univ3"`
+	PancakeV3                    PancakeV3SyncConfig   `yaml:"pancakev3"`
+	QuickSwapV3                  QuickSwapV3SyncConfig `yaml:"quickswapv3"`
+	Univ4                        Univ4SyncConfig       `yaml:"univ4"`
+	Balancer                     BalancerSyncConfig    `yaml:"balancer"`
 }
 
 // Univ3SyncConfig configures Uniswap V3 pool sync sources.
@@ -120,6 +151,13 @@ type Univ3SyncConfig struct {
 
 // PancakeV3SyncConfig configures PancakeSwap V3 pool sync sources.
 type PancakeV3SyncConfig struct {
+	Enabled  bool               `yaml:"enabled"`
+	Pools    []StaticPoolConfig `yaml:"pools"`
+	Subgraph SubgraphPoolConfig `yaml:"subgraph"`
+}
+
+// QuickSwapV3SyncConfig configures QuickSwap V3 pool sync sources.
+type QuickSwapV3SyncConfig struct {
 	Enabled  bool               `yaml:"enabled"`
 	Pools    []StaticPoolConfig `yaml:"pools"`
 	Subgraph SubgraphPoolConfig `yaml:"subgraph"`
@@ -278,12 +316,13 @@ func (c LogConfig) ResolvedErrorOutputPaths() []string {
 
 func Default() Config {
 	return Config{
-		App: AppConfig{Name: "univ3-arbitrage"},
+		App:     AppConfig{Name: "univ3-arbitrage"},
+		ChainID: 1,
 		Blockchain: BlockchainConfig{
-			FactoryAddress:       "0x1F98431c8aD98523631AE4a59f267346ea31F984",
-			MulticallAddress:     "0xcA11bde05977b3631167028862bE2a173976CA11",
-			PoolManagerAddress:   "0x000000000004444c5dc75cB358380D2e3dE08A90",
-			StateViewAddress:     "0x7ffe42c4a5deea5b0fec41c94c136cf115597227",
+			FactoryAddress:         "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+			MulticallAddress:       "0xcA11bde05977b3631167028862bE2a173976CA11",
+			PoolManagerAddress:     "0x000000000004444c5dc75cB358380D2e3dE08A90",
+			StateViewAddress:       "0x7ffe42c4a5deea5b0fec41c94c136cf115597227",
 			BalancerVaultAddress:   "0xBA12222222228d8Ba445958a75a0704d566BF2C8",
 			BalancerVaultV3Address: "0xbA1333333333a1BA1108E8412f11850A5C319bA9",
 		},
@@ -304,6 +343,17 @@ func Default() Config {
 				},
 			},
 			PancakeV3: PancakeV3SyncConfig{
+				Enabled: false,
+				Subgraph: SubgraphPoolConfig{
+					First:                  100,
+					OrderBy:                "volume24h",
+					OrderDirection:         "desc",
+					MinTotalValueLockedUSD: "1000000",
+					MinVolume24hUSD:        "200000",
+					RefreshInterval:        10 * time.Minute,
+				},
+			},
+			QuickSwapV3: QuickSwapV3SyncConfig{
 				Enabled: false,
 				Subgraph: SubgraphPoolConfig{
 					First:                  100,
@@ -363,6 +413,10 @@ func Default() Config {
 				MaxAmount:           "100000000000000",
 				OptimizerIterations: 16,
 			},
+			FlashLoan: FlashLoanConfig{
+				BalancerFeePPM: "0",
+				Univ4FeePPM:    "0",
+			},
 		},
 		Log: LogConfig{
 			Level:  "info",
@@ -398,65 +452,102 @@ func (c Config) Validate() error {
 	if !c.Persistence.Memory && c.Persistence.Database.URL == "" {
 		return fmt.Errorf("persistence.database.url is required unless persistence.memory is enabled")
 	}
+	normalizedChains := c.NormalizedChains()
+	if len(normalizedChains) == 0 {
+		return fmt.Errorf("at least one enabled chain is required")
+	}
+	seenChains := make(map[uint64]struct{})
+	for _, chain := range normalizedChains {
+		if chain.ChainID == 0 {
+			return fmt.Errorf("chain_id is required")
+		}
+		if _, ok := seenChains[chain.ChainID]; ok {
+			return fmt.Errorf("duplicate chain_id %d", chain.ChainID)
+		}
+		seenChains[chain.ChainID] = struct{}{}
+		if err := validateChainConfig(chain); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateChainConfig(c ChainConfig) error {
+	prefix := chainErrorPrefix(c)
 	if c.Sync.Univ3.Subgraph.Enabled && c.Sync.Univ3.Subgraph.Endpoint == "" {
-		return fmt.Errorf("sync.univ3.subgraph.endpoint is required when subgraph is enabled")
+		return fmt.Errorf("%ssync.univ3.subgraph.endpoint is required when subgraph is enabled", prefix)
 	}
 	if c.Sync.PancakeV3.Subgraph.Enabled && c.Sync.PancakeV3.Subgraph.Endpoint == "" {
-		return fmt.Errorf("sync.pancakev3.subgraph.endpoint is required when subgraph is enabled")
+		return fmt.Errorf("%ssync.pancakev3.subgraph.endpoint is required when subgraph is enabled", prefix)
+	}
+	if c.Sync.QuickSwapV3.Subgraph.Enabled && c.Sync.QuickSwapV3.Subgraph.Endpoint == "" {
+		return fmt.Errorf("%ssync.quickswapv3.subgraph.endpoint is required when subgraph is enabled", prefix)
 	}
 	if c.Sync.Univ4.Subgraph.Enabled && c.Sync.Univ4.Subgraph.Endpoint == "" {
-		return fmt.Errorf("sync.univ4.subgraph.endpoint is required when subgraph is enabled")
+		return fmt.Errorf("%ssync.univ4.subgraph.endpoint is required when subgraph is enabled", prefix)
 	}
 	if c.Sync.Balancer.Subgraph.Enabled && c.Sync.Balancer.Subgraph.Endpoint == "" {
-		return fmt.Errorf("sync.balancer.subgraph.endpoint is required when subgraph is enabled")
+		return fmt.Errorf("%ssync.balancer.subgraph.endpoint is required when subgraph is enabled", prefix)
 	}
 	for i, pool := range c.Sync.Univ3.Pools {
 		if pool.Address == "" {
-			return fmt.Errorf("sync.univ3.pools[%d].address is required", i)
+			return fmt.Errorf("%ssync.univ3.pools[%d].address is required", prefix, i)
 		}
 	}
 	for i, pool := range c.Sync.PancakeV3.Pools {
 		if pool.Address == "" {
-			return fmt.Errorf("sync.pancakev3.pools[%d].address is required", i)
+			return fmt.Errorf("%ssync.pancakev3.pools[%d].address is required", prefix, i)
+		}
+	}
+	for i, pool := range c.Sync.QuickSwapV3.Pools {
+		if pool.Address == "" {
+			return fmt.Errorf("%ssync.quickswapv3.pools[%d].address is required", prefix, i)
 		}
 	}
 	for i, pool := range c.Sync.Univ4.PoolManager.Pools {
 		if pool.Currency0 == "" || pool.Currency1 == "" {
-			return fmt.Errorf("sync.univ4.poolmanager.pools[%d] requires currency0 and currency1", i)
+			return fmt.Errorf("%ssync.univ4.poolmanager.pools[%d] requires currency0 and currency1", prefix, i)
 		}
 	}
 	for i, pool := range c.Sync.Balancer.Pools {
 		if pool.ID == "" || pool.Address == "" {
-			return fmt.Errorf("sync.balancer.pools[%d] requires id and address", i)
+			return fmt.Errorf("%ssync.balancer.pools[%d] requires id and address", prefix, i)
 		}
 		poolType := strings.ToLower(strings.TrimSpace(pool.Type))
 		if poolType != "weighted" && poolType != "stable" {
-			return fmt.Errorf("sync.balancer.pools[%d].type must be weighted or stable", i)
+			return fmt.Errorf("%ssync.balancer.pools[%d].type must be weighted or stable", prefix, i)
 		}
 	}
 	if c.Sync.Univ4.IsActive() {
 		if c.Blockchain.PoolManagerAddress == "" {
-			return fmt.Errorf("blockchain.pool_manager_address is required when sync.univ4 is enabled")
+			return fmt.Errorf("%sblockchain.pool_manager_address is required when sync.univ4 is enabled", prefix)
 		}
 		if !isStrictHexAddress(c.Blockchain.PoolManagerAddress) {
-			return fmt.Errorf("blockchain.pool_manager_address must be a 20-byte hex address")
+			return fmt.Errorf("%sblockchain.pool_manager_address must be a 20-byte hex address", prefix)
 		}
 		if c.Blockchain.StateViewAddress == "" {
-			return fmt.Errorf("blockchain.state_view_address is required when sync.univ4 is enabled")
+			return fmt.Errorf("%sblockchain.state_view_address is required when sync.univ4 is enabled", prefix)
 		}
 		if !isStrictHexAddress(c.Blockchain.StateViewAddress) {
-			return fmt.Errorf("blockchain.state_view_address must be a 20-byte hex address")
+			return fmt.Errorf("%sblockchain.state_view_address must be a 20-byte hex address", prefix)
 		}
 	}
 	if c.Sync.Balancer.IsActive() {
 		if c.Blockchain.BalancerVaultAddress == "" {
-			return fmt.Errorf("blockchain.balancer_vault_address is required when sync.balancer is enabled")
+			return fmt.Errorf("%sblockchain.balancer_vault_address is required when sync.balancer is enabled", prefix)
 		}
 		if !isStrictHexAddress(c.Blockchain.BalancerVaultAddress) {
-			return fmt.Errorf("blockchain.balancer_vault_address must be a 20-byte hex address")
+			return fmt.Errorf("%sblockchain.balancer_vault_address must be a 20-byte hex address", prefix)
 		}
 	}
 	return nil
+}
+
+func chainErrorPrefix(c ChainConfig) string {
+	if c.ChainID == 0 {
+		return ""
+	}
+	return fmt.Sprintf("chains[%d]: ", c.ChainID)
 }
 
 func isStrictHexAddress(address string) bool {
@@ -475,6 +566,156 @@ func (c Config) PersistenceConfig() persistence.Config {
 		DatabaseURL: c.Persistence.Database.URL,
 		UseMemory:   useMemory,
 	}
+}
+
+// NormalizedChains returns per-chain runtime configs. Legacy single-chain YAML
+// is represented as one chain using top-level fields.
+func (c Config) NormalizedChains() []ChainConfig {
+	if len(c.Chains) == 0 {
+		return []ChainConfig{{
+			Name:       normalizedChainName("", c.ChainID),
+			ChainID:    c.ChainID,
+			RPC:        c.RPC,
+			Blockchain: c.Blockchain,
+			Sync:       c.Sync,
+			Quote:      c.Quote,
+			Arbitrage:  c.Arbitrage,
+		}}
+	}
+	chains := make([]ChainConfig, 0, len(c.Chains))
+	for _, chain := range c.Chains {
+		if !chain.IsEnabled() {
+			continue
+		}
+		if chain.ChainID == 0 {
+			chain.ChainID = c.ChainID
+		}
+		chain.Name = normalizedChainName(chain.Name, chain.ChainID)
+		if chain.RPC.URL == "" {
+			chain.RPC.URL = c.RPC.URL
+		}
+		if chain.RPC.WSURL == "" {
+			chain.RPC.WSURL = c.RPC.WSURL
+		}
+		chain.Blockchain = mergeBlockchainConfig(c.Blockchain, chain.Blockchain)
+		chain.Sync = mergeSyncConfig(c.Sync, chain.Sync)
+		chain.Quote = mergeQuoteConfig(c.Quote, chain.Quote)
+		chain.Arbitrage = mergeArbitrageConfig(c.Arbitrage, chain.Arbitrage)
+		chains = append(chains, chain)
+	}
+	return chains
+}
+
+// RuntimeConfigForChain returns a Config view for one normalized chain.
+func (c Config) RuntimeConfigForChain(chain ChainConfig) Config {
+	runtime := c
+	runtime.ChainID = chain.ChainID
+	runtime.RPC = chain.RPC
+	runtime.Blockchain = chain.Blockchain
+	runtime.Sync = chain.Sync
+	runtime.Quote = chain.Quote
+	runtime.Arbitrage = chain.Arbitrage
+	runtime.Chains = nil
+	return runtime
+}
+
+func (c Config) PrimaryRuntimeConfig() Config {
+	chains := c.NormalizedChains()
+	if len(chains) == 0 {
+		return c
+	}
+	return c.RuntimeConfigForChain(chains[0])
+}
+
+func (c Config) PrimaryChainName() string {
+	chains := c.NormalizedChains()
+	if len(chains) == 0 {
+		return ""
+	}
+	return chains[0].Name
+}
+
+func normalizedChainName(name string, chainID uint64) string {
+	name = strings.TrimSpace(name)
+	if name != "" {
+		return name
+	}
+	if chainID == 0 {
+		return ""
+	}
+	return fmt.Sprintf("chain-%d", chainID)
+}
+
+func mergeBlockchainConfig(base, override BlockchainConfig) BlockchainConfig {
+	if override.FactoryAddress == "" {
+		override.FactoryAddress = base.FactoryAddress
+	}
+	if override.MulticallAddress == "" {
+		override.MulticallAddress = base.MulticallAddress
+	}
+	if override.PoolManagerAddress == "" {
+		override.PoolManagerAddress = base.PoolManagerAddress
+	}
+	if override.StateViewAddress == "" {
+		override.StateViewAddress = base.StateViewAddress
+	}
+	if override.BalancerVaultAddress == "" {
+		override.BalancerVaultAddress = base.BalancerVaultAddress
+	}
+	if override.BalancerVaultV3Address == "" {
+		override.BalancerVaultV3Address = base.BalancerVaultV3Address
+	}
+	return override
+}
+
+func mergeSyncConfig(base, override SyncConfig) SyncConfig {
+	if override.CatchupBatchSize == 0 {
+		override.CatchupBatchSize = base.CatchupBatchSize
+	}
+	if override.CatchupPoolGroupSize == 0 {
+		override.CatchupPoolGroupSize = base.CatchupPoolGroupSize
+	}
+	if override.CatchupBlockSpan == 0 {
+		override.CatchupBlockSpan = base.CatchupBlockSpan
+	}
+	if override.CatchupHeaderConcurrency == 0 {
+		override.CatchupHeaderConcurrency = base.CatchupHeaderConcurrency
+	}
+	if override.BootstrapStaleBlockThreshold == 0 {
+		override.BootstrapStaleBlockThreshold = base.BootstrapStaleBlockThreshold
+	}
+	if override.SnapshotInterval == 0 {
+		override.SnapshotInterval = base.SnapshotInterval
+	}
+	if override.SnapshotFallback == 0 {
+		override.SnapshotFallback = base.SnapshotFallback
+	}
+	if override.ReorgMaxDepth == 0 {
+		override.ReorgMaxDepth = base.ReorgMaxDepth
+	}
+	return override
+}
+
+func mergeQuoteConfig(base, override QuoteConfig) QuoteConfig {
+	if override.MaxHops == 0 {
+		override.MaxHops = base.MaxHops
+	}
+	return override
+}
+
+func mergeArbitrageConfig(base, override ArbitrageConfig) ArbitrageConfig {
+	override.FlashLoan = mergeFlashLoanConfig(base.FlashLoan, override.FlashLoan)
+	return override
+}
+
+func mergeFlashLoanConfig(base, override FlashLoanConfig) FlashLoanConfig {
+	if override.BalancerFeePPM == "" {
+		override.BalancerFeePPM = base.BalancerFeePPM
+	}
+	if override.Univ4FeePPM == "" {
+		override.Univ4FeePPM = base.Univ4FeePPM
+	}
+	return override
 }
 
 func (c Config) MemoryMode() bool {
@@ -589,6 +830,13 @@ func (c PancakeV3SyncConfig) IsActive() bool {
 	return len(c.Pools) > 0 || c.Subgraph.IsEnabled()
 }
 
+func (c QuickSwapV3SyncConfig) IsActive() bool {
+	if !c.Enabled {
+		return false
+	}
+	return len(c.Pools) > 0 || c.Subgraph.IsEnabled()
+}
+
 func (c Univ4SyncConfig) IsActive() bool {
 	if !c.Enabled {
 		return false
@@ -613,6 +861,14 @@ func (c Config) SpreadArbitrageEnabled() bool {
 
 func (c Config) ArbitrageEnabled() bool {
 	return c.TriangleArbitrageEnabled() || c.SpreadArbitrageEnabled()
+}
+
+func (c FlashLoanConfig) BalancerFee() *big.Int {
+	return parseConfigBigInt(c.BalancerFeePPM, big.NewInt(0))
+}
+
+func (c FlashLoanConfig) Univ4Fee() *big.Int {
+	return parseConfigBigInt(c.Univ4FeePPM, big.NewInt(0))
 }
 
 func (c SpreadArbitrageConfig) StartTokenAddresses() []common.Address {

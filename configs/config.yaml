@@ -1,10 +1,6 @@
 app:
   name: arbitrage
 
-rpc:
-  url: "https://eth-mainnet.g.alchemy.com/v2/your-api-key"
-  ws_url: wss://your-provider.example/v2/your-api-key  # Only used for subscribing to new blocks
-
 persistence:
   # When true, store pools, snapshots, checkpoints, and opportunities in memory only.
   memory: false
@@ -13,148 +9,297 @@ persistence:
   redis:
     url: "redis://localhost:6379/0"
 
-blockchain:
-  factory_address: "0x1F98431c8aD98523631AE4a59f267346ea31F984"
-  multicall_address: "0xcA11bde05977b3631167028862bE2a173976CA11"
-  pool_manager_address: "0x000000000004444c5dc75cB358380D2e3dE08A90"
-  state_view_address: "0x7ffe42c4a5deea5b0fec41c94c136cf115597227"
-  balancer_vault_address: "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
-  balancer_vault_v3_address: "0xbA1333333333a1BA1108E8412f11850A5C319bA9"
-
-sync:
-  catchup_batch_size: 2000
-  snapshot_interval: 5000
-  snapshot_fallback: 10m
-  reorg_max_depth: 128
-  catchup_pool_group_size: 100   # Maximum number of pools per group
-  catchup_block_span: 100        # Maximum block span within a group
-  catchup_header_concurrency: 16 # Maximum number of empty block headers to fetch concurrently
-  bootstrap_stale_block_threshold: 1000
-
-  univ3:
-    enabled: true
-    pools:
-      - address: "0x88e6A0c2dDD26FEEb64F039a2c41296Fb728693B"
-        fee: 500
-    subgraph:
-      enabled: true
-      endpoint: "https://gateway.thegraph.com/api/<YOUR_API_KEY_HERE>/subgraphs/id/5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV"
-      refresh_interval: 10m
-      first: 100
-      skip: 0
-      order_by: volume24h
-      order_direction: desc
-      min_total_value_locked_usd: "1000000"
-      min_volume_24h_usd: "200000"
-      token0: ""
-      token1: ""
-      fee_tiers: [500, 3000, 10000]
-
-  pancakev3:
-    enabled: false
-    pools: []
-    subgraph:
-      enabled: false
-      endpoint: "https://gateway.thegraph.com/api/<YOUR_API_KEY_HERE>/subgraphs/id/JAGXF8B14mpB8QGKnwhKTs5JxsQZBJQvbDGFcWwL7gbm"
-      refresh_interval: 10m
-      first: 100
-      skip: 0
-      order_by: volume24h
-      order_direction: desc
-      min_total_value_locked_usd: "1000000"
-      min_volume_24h_usd: "200000"
-      token0: ""
-      token1: ""
-      fee_tiers: [500, 2500, 10000]
-
-  univ4:
-    enabled: false
-    poolmanager:
-      pools: []
-      # Example:
-      # - currency0: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
-      #   currency1: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
-      #   fee: 500
-      #   tick_spacing: 10
-      #   hooks: "0x0000000000000000000000000000000000000000"
-    subgraph:
-      enabled: false
-      endpoint: "https://gateway.thegraph.com/api/<YOUR_API_KEY_HERE>/subgraphs/id/DiYPVdygkfjDWhbxGSqAQxwBKmfKnkWQojqeM2rkLb3G"
-      refresh_interval: 10m
-      first: 100
-      skip: 0
-      order_by: volume24h
-      order_direction: desc
-      min_total_value_locked_usd: "1000000"
-      min_volume_24h_usd: "200000"
-      token0: ""
-      token1: ""
-      fee_tiers: [500, 3000, 10000]
-      hooks:
-        - "0x0000000000000000000000000000000000000000"
-
-  balancer:
-    enabled: false
-    pools: []
-      # Example:
-      # - id: "0x5c6ee304399dbdb9c8ef030ab642b10820db8f56000200000000000000000014"
-      #   address: "0x5c6Ee304399dbdb9c8ef030ab642b10820Db8F560"
-      #   type: weighted
-      # - id: "0x..."
-      #   address: "0x..."
-      #   vault: "0xBA12222222228d8Ba445958a75a0704d566BF2C8"  # optional, defaults to balancer_vault_address
-      #   type: stable
-    subgraph:
-      enabled: false
-      schema: v3   # v2 for balancer-v2 subgraph; v3 for v3-pools endpoints (auto-detected from URL when omitted)
-      endpoint: "https://api.subgraph.ormilabs.com/api/public/717cf785-de57-4761-94dd-9ac51b019902/subgraphs/v3-pools-mainnet-smol/latest/gn"
-      refresh_interval: 10m
-      first: 100
-      skip: 0
-      order_by: id
-      order_direction: desc
-      min_total_value_locked_usd: "300000"
-      min_volume_24h_usd: "200000"
-      token0: ""
-      token1: ""
-      pool_types: ["Weighted", "Stable"]
-
 http:
   enabled: true
   addr: ":8080"
-
-quote:
-  max_hops: 3
-
-# Arbitrage discovery runs after each synced block via ChangedPoolsListener.
-arbitrage:
-  triangle:
-    # Enable A->B->C->A triangular arbitrage scanning.
-    enabled: false
-    # Base tokens to search triangular routes from. Requires synced pools forming closed loops.
-    start_tokens:
-      - "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"  # USDC
-      - "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH
-    # Minimum net profit in wei after gas to accept an opportunity.
-    min_net_profit_wei: "1000000"
-    # Optimizer input amount search bounds (wei).
-    min_amount: "1000000"
-    max_amount: "100000000000000"
-    optimizer_iterations: 16
-  spread:
-    # Enable A->B->A cross-pool spread arbitrage for the same token pair on different pools.
-    enabled: false
-    # Optional base tokens. When empty, tokens from parallel pool pairs are auto-discovered.
-    start_tokens:
-      - "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"  # USDC
-      - "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH
-    min_net_profit_wei: "1000000"
-    min_amount: "1000000"
-    max_amount: "100000000000000"
-    optimizer_iterations: 16
 
 log:
   level: info
   format: console   # console | json
   file: logs/arbitrage.log
   error_file: logs/arbitrage.error.log
+
+# Chain-local runtime configuration. Each chain owns its RPC, protocol addresses,
+# sync sources, quote settings, and arbitrage settings.
+chains:
+  - name: ethereum
+    enabled: true
+    chain_id: 1
+    rpc:
+      url: "https://eth-mainnet.g.alchemy.com/v2/your-api-key"
+      ws_url: wss://your-provider.example/v2/your-api-key  # Only used for subscribing to new blocks
+
+    blockchain:
+      factory_address: "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+      multicall_address: "0xcA11bde05977b3631167028862bE2a173976CA11"
+      pool_manager_address: "0x000000000004444c5dc75cB358380D2e3dE08A90"
+      state_view_address: "0x7ffe42c4a5deea5b0fec41c94c136cf115597227"
+      balancer_vault_address: "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
+      balancer_vault_v3_address: "0xbA1333333333a1BA1108E8412f11850A5C319bA9"
+
+    sync:
+      catchup_batch_size: 2000
+      snapshot_interval: 5000
+      snapshot_fallback: 10m
+      reorg_max_depth: 128
+      catchup_pool_group_size: 100   # Maximum number of pools per group
+      catchup_block_span: 100        # Maximum block span within a group
+      catchup_header_concurrency: 16 # Maximum number of empty block headers to fetch concurrently
+      bootstrap_stale_block_threshold: 1000
+
+      univ3:
+        enabled: true
+        pools:
+          - address: "0x88e6A0c2dDD26FEEb64F039a2c41296Fb728693B"
+            fee: 500
+        subgraph:
+          enabled: true
+          endpoint: "https://gateway.thegraph.com/api/<YOUR_API_KEY_HERE>/subgraphs/id/5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV"
+          refresh_interval: 10m
+          first: 100
+          skip: 0
+          order_by: volume24h
+          order_direction: desc
+          min_total_value_locked_usd: "1000000"
+          min_volume_24h_usd: "200000"
+          token0: ""
+          token1: ""
+          fee_tiers: [500, 3000, 10000]
+
+      pancakev3:
+        enabled: false
+        pools: []
+        subgraph:
+          enabled: false
+          endpoint: "https://gateway.thegraph.com/api/<YOUR_API_KEY_HERE>/subgraphs/id/JAGXF8B14mpB8QGKnwhKTs5JxsQZBJQvbDGFcWwL7gbm"
+          refresh_interval: 10m
+          first: 100
+          skip: 0
+          order_by: volume24h
+          order_direction: desc
+          min_total_value_locked_usd: "1000000"
+          min_volume_24h_usd: "200000"
+          token0: ""
+          token1: ""
+          fee_tiers: [500, 2500, 10000]
+
+      univ4:
+        enabled: false
+        poolmanager:
+          pools: []
+          # Example:
+          # - currency0: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+          #   currency1: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+          #   fee: 500
+          #   tick_spacing: 10
+          #   hooks: "0x0000000000000000000000000000000000000000"
+        subgraph:
+          enabled: false
+          endpoint: "https://gateway.thegraph.com/api/<YOUR_API_KEY_HERE>/subgraphs/id/DiYPVdygkfjDWhbxGSqAQxwBKmfKnkWQojqeM2rkLb3G"
+          refresh_interval: 10m
+          first: 100
+          skip: 0
+          order_by: volume24h
+          order_direction: desc
+          min_total_value_locked_usd: "1000000"
+          min_volume_24h_usd: "200000"
+          token0: ""
+          token1: ""
+          fee_tiers: [500, 3000, 10000]
+          hooks:
+            - "0x0000000000000000000000000000000000000000"
+
+      balancer:
+        enabled: false
+        pools: []
+          # Example:
+          # - id: "0x5c6ee304399dbdb9c8ef030ab642b10820db8f56000200000000000000000014"
+          #   address: "0x5c6Ee304399dbdb9c8ef030ab642b10820Db8F560"
+          #   type: weighted
+          # - id: "0x..."
+          #   address: "0x..."
+          #   vault: "0xBA12222222228d8Ba445958a75a0704d566BF2C8"  # optional, defaults to balancer_vault_address
+          #   type: stable
+        subgraph:
+          enabled: false
+          schema: v3   # v2 for balancer-v2 subgraph; v3 for v3-pools endpoints (auto-detected from URL when omitted)
+          endpoint: "https://api.subgraph.ormilabs.com/api/public/717cf785-de57-4761-94dd-9ac51b019902/subgraphs/v3-pools-mainnet-smol/latest/gn"
+          refresh_interval: 10m
+          first: 100
+          skip: 0
+          order_by: id
+          order_direction: desc
+          min_total_value_locked_usd: "300000"
+          min_volume_24h_usd: "200000"
+          token0: ""
+          token1: ""
+          pool_types: ["Weighted", "Stable"]
+
+    quote:
+      max_hops: 3
+
+    # Arbitrage discovery runs after each synced block via ChangedPoolsListener.
+    arbitrage:
+      triangle:
+        # Enable A->B->C->A triangular arbitrage scanning.
+        enabled: false
+        # Base tokens to search triangular routes from. Requires synced pools forming closed loops.
+        start_tokens:
+          - "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"  # USDC
+          - "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH
+        # Minimum net profit in wei after gas to accept an opportunity.
+        min_net_profit_wei: "1000000"
+        # Optimizer input amount search bounds (wei).
+        min_amount: "1000000"
+        max_amount: "100000000000000"
+        optimizer_iterations: 16
+      spread:
+        # Enable A->B->A cross-pool spread arbitrage for the same token pair on different pools.
+        enabled: false
+        # Optional base tokens. When empty, tokens from parallel pool pairs are auto-discovered.
+        start_tokens:
+          - "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"  # USDC
+          - "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH
+        min_net_profit_wei: "1000000"
+        min_amount: "1000000"
+        max_amount: "100000000000000"
+        optimizer_iterations: 16
+      flash_loan:
+        # Flash-loan fee rates in ppm; Uniswap V3 uses the selected pool's fee tier.
+        balancer_fee_ppm: "0"
+        univ4_fee_ppm: "0"
+
+  - name: polygon
+    enabled: true
+    chain_id: 137
+    rpc:
+      url: "https://polygon-mainnet.g.alchemy.com/v2/your-api-key"
+      ws_url: "wss://polygon-mainnet.g.alchemy.com/v2/your-api-key"
+
+    blockchain:
+      # Uniswap v3/v4 Polygon deployments. QuickSwap V3 pool sync uses per-pool reads and does not use this factory.
+      factory_address: "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+      multicall_address: "0x1F98415757620B543A52E61c46B32eB19261F984"
+      pool_manager_address: "0x67366782805870060151383f4bbff9dab53e5cd6"
+      state_view_address: "0x5ea1bd7974c8a611cbab0bdcafcb1d9cc9b3ba5a"
+      balancer_vault_address: "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
+      balancer_vault_v3_address: "0x0000000000000000000000000000000000000000"
+
+    sync:
+      catchup_batch_size: 2000
+      snapshot_interval: 5000
+      snapshot_fallback: 10m
+      reorg_max_depth: 256
+      catchup_pool_group_size: 100
+      catchup_block_span: 100
+      catchup_header_concurrency: 16
+      bootstrap_stale_block_threshold: 1000
+
+      univ3:
+        enabled: true
+        pools:
+          # Polygon Uniswap v3 WETH/USDC.e 0.05%
+          - address: "0x45dDa9cb7c25131DF268515131f647d726f50608"
+            fee: 500
+          # Polygon Uniswap v3 WMATIC/USDC.e 0.05%
+          - address: "0xA374094527e1673A86dE625aa59517c5dE346d32"
+            fee: 500
+        subgraph:
+          enabled: false
+          endpoint: "" # Optional: fill a Polygon Uniswap v3 subgraph endpoint to auto-discover pools.
+          refresh_interval: 10m
+          first: 100
+          skip: 0
+          order_by: volume24h
+          order_direction: desc
+          min_total_value_locked_usd: "300000"
+          min_volume_24h_usd: "100000"
+          token0: ""
+          token1: ""
+          fee_tiers: [500, 3000, 10000]
+
+      pancakev3:
+        enabled: false
+        pools: []
+        subgraph:
+          enabled: false
+          endpoint: ""
+
+      quickswapv3:
+        enabled: false
+        pools: []
+          # Example:
+          # - address: "0x..."
+          #   fee: 500
+        subgraph:
+          enabled: false
+          endpoint: "" # Fill with a QuickSwap/Algebra subgraph endpoint if pool discovery is desired.
+          refresh_interval: 10m
+          first: 100
+          skip: 0
+          order_by: volume24h
+          order_direction: desc
+          min_total_value_locked_usd: "300000"
+          min_volume_24h_usd: "100000"
+          token0: ""
+          token1: ""
+          fee_tiers: [100, 500, 3000, 10000]
+
+      univ4:
+        enabled: true
+        poolmanager:
+          pools: []
+          # Add Polygon Uniswap v4 PoolKey entries to sync static pools:
+          # - currency0: "0x0000000000000000000000000000000000000000"
+          #   currency1: "0x..."
+          #   fee: 3000
+          #   tick_spacing: 60
+          #   hooks: "0x0000000000000000000000000000000000000000"
+        subgraph:
+          enabled: false
+          endpoint: "" # Optional: fill a Polygon Uniswap v4 subgraph endpoint to auto-discover pools.
+          refresh_interval: 10m
+          first: 100
+          skip: 0
+          order_by: volume24h
+          order_direction: desc
+          min_total_value_locked_usd: "300000"
+          min_volume_24h_usd: "100000"
+          token0: ""
+          token1: ""
+          fee_tiers: [500, 3000, 10000]
+          hooks:
+            - "0x0000000000000000000000000000000000000000"
+
+      balancer:
+        enabled: false
+        pools: []
+        subgraph:
+          enabled: false
+          endpoint: ""
+
+    quote:
+      max_hops: 3
+
+    arbitrage:
+      triangle:
+        enabled: false
+        start_tokens:
+          - "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"  # USDC.e
+          - "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619"  # WETH
+        min_net_profit_wei: "1000000"
+        min_amount: "1000000"
+        max_amount: "100000000000000"
+        optimizer_iterations: 16
+      spread:
+        enabled: false
+        start_tokens:
+          - "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"  # USDC.e
+          - "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619"  # WETH
+        min_net_profit_wei: "1000000"
+        min_amount: "1000000"
+        max_amount: "100000000000000"
+        optimizer_iterations: 16
+      flash_loan:
+        balancer_fee_ppm: "0"
+        univ4_fee_ppm: "0"

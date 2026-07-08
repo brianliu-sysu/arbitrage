@@ -3,6 +3,7 @@ package combined
 import (
 	syncbalancer "github.com/brianliu-sysu/uniswapv3/internal/application/sync/balancer"
 	syncpancakev3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/pancakev3"
+	syncquickswapv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/quickswapv3"
 	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ3"
 	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ4"
 	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
@@ -23,16 +24,18 @@ type ReadinessDiagnostics struct {
 	ArbitrageReady bool                         `json:"arbitrageReady"`
 	V3             ProtocolReadinessDiagnostics `json:"univ3"`
 	Pancake        ProtocolReadinessDiagnostics `json:"pancakev3"`
+	QuickSwap      ProtocolReadinessDiagnostics `json:"quickswapv3"`
 	V4             ProtocolReadinessDiagnostics `json:"univ4"`
 	Balancer       ProtocolReadinessDiagnostics `json:"balancer"`
 }
 
 // SyncReadiness adapts sync readiness services for unified quoting.
 type SyncReadiness struct {
-	V3       *syncv3.ReadinessService
-	Pancake  *syncpancakev3.ReadinessService
-	V4       *syncv4.ReadinessService
-	Balancer *syncbalancer.ReadinessService
+	V3        *syncv3.ReadinessService
+	Pancake   *syncpancakev3.ReadinessService
+	QuickSwap *syncquickswapv3.ReadinessService
+	V4        *syncv4.ReadinessService
+	Balancer  *syncbalancer.ReadinessService
 }
 
 func (r *SyncReadiness) IsSystemReady() bool {
@@ -43,6 +46,9 @@ func (r *SyncReadiness) IsSystemReady() bool {
 		return false
 	}
 	if r.Pancake != nil && !r.Pancake.IsSystemReady() {
+		return false
+	}
+	if r.QuickSwap != nil && !r.QuickSwap.IsSystemReady() {
 		return false
 	}
 	if r.V4 != nil && !r.V4.IsSystemReady() {
@@ -71,6 +77,15 @@ func (r *SyncReadiness) Diagnostics() ReadinessDiagnostics {
 	if r.Pancake != nil {
 		snap := r.Pancake.Snapshot()
 		d.Pancake = ProtocolReadinessDiagnostics{
+			Enabled:     true,
+			SystemReady: snap.SystemReady,
+			ReadyPools:  snap.ReadyPools,
+			TotalPools:  snap.TotalPools,
+		}
+	}
+	if r.QuickSwap != nil {
+		snap := r.QuickSwap.Snapshot()
+		d.QuickSwap = ProtocolReadinessDiagnostics{
 			Enabled:     true,
 			SystemReady: snap.SystemReady,
 			ReadyPools:  snap.ReadyPools,
@@ -110,6 +125,13 @@ func (r *SyncReadiness) IsPancakeV3PoolReady(poolAddress common.Address) bool {
 		return false
 	}
 	return r.Pancake.IsPoolReady(poolAddress)
+}
+
+func (r *SyncReadiness) IsQuickSwapV3PoolReady(poolAddress common.Address) bool {
+	if r == nil || r.QuickSwap == nil {
+		return false
+	}
+	return r.QuickSwap.IsPoolReady(poolAddress)
 }
 
 func (r *SyncReadiness) IsV4PoolReady(poolID marketuniv4.PoolID) bool {

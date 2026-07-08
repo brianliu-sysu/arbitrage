@@ -11,23 +11,34 @@ import (
 
 // QuoteV3Handler exposes Uniswap V3 quote requests over HTTP.
 type QuoteV3Handler struct {
-	quotes *quoteuniv3.AppService
+	quotes        *quoteuniv3.AppService
+	quotesByChain map[string]*quoteuniv3.AppService
+	chains        chainSelector
 }
 
 func NewQuoteV3Handler(quotes *quoteuniv3.AppService) *QuoteV3Handler {
 	return &QuoteV3Handler{quotes: quotes}
 }
 
+func NewQuoteV3ChainHandler(chains []ChainInfo, quotes map[string]*quoteuniv3.AppService) *QuoteV3Handler {
+	return &QuoteV3Handler{quotesByChain: quotes, chains: newChainSelector(chains)}
+}
+
 // HandleQuote serves POST /api/v1/univ3/quote requests.
 func (h *QuoteV3Handler) HandleQuote(c *gin.Context) {
-	if h.quotes == nil {
-		c.JSON(http.StatusInternalServerError, errorHTTPResponse{Error: "v3 quote service is not configured"})
-		return
-	}
-
 	var payload quoteHTTPRequest
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		c.JSON(http.StatusBadRequest, errorHTTPResponse{Error: "invalid json body"})
+		return
+	}
+
+	quotes, ok := h.selectQuotes(quoteChainParam(c, payload))
+	if !ok {
+		c.JSON(http.StatusBadRequest, errorHTTPResponse{Error: chainNotFoundMessage(quoteChainParam(c, payload))})
+		return
+	}
+	if quotes == nil {
+		c.JSON(http.StatusInternalServerError, errorHTTPResponse{Error: "v3 quote service is not configured"})
 		return
 	}
 
@@ -37,13 +48,24 @@ func (h *QuoteV3Handler) HandleQuote(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.quotes.Quote(c.Request.Context(), req)
+	resp, err := quotes.Quote(c.Request.Context(), req)
 	if err != nil {
 		c.JSON(quoteStatusCode(err), errorHTTPResponse{Error: err.Error()})
 		return
 	}
 
 	c.JSON(http.StatusOK, toQuoteV3HTTPResponse(resp))
+}
+
+func (h *QuoteV3Handler) selectQuotes(chain string) (*quoteuniv3.AppService, bool) {
+	if h.quotesByChain == nil {
+		return h.quotes, true
+	}
+	key, ok := h.chains.selectKey(chain)
+	if !ok {
+		return nil, false
+	}
+	return h.quotesByChain[key], true
 }
 
 func toQuoteV3Request(payload quoteHTTPRequest) (quoteuniv3.Request, error) {

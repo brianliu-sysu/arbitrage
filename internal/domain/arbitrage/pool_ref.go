@@ -12,11 +12,12 @@ import (
 
 // PoolRef identifies a pool in Uniswap V3, PancakeSwap V3, or V4.
 type PoolRef struct {
-	Version   quoteunified.PoolVersion
-	V3        common.Address
-	PancakeV3 common.Address
-	V4        marketv4.PoolID
-	Balancer  marketbalancer.PoolID
+	Version     quoteunified.PoolVersion
+	V3          common.Address
+	PancakeV3   common.Address
+	QuickSwapV3 common.Address
+	V4          marketv4.PoolID
+	Balancer    marketbalancer.PoolID
 }
 
 func PoolRefFromV3(address common.Address) PoolRef {
@@ -25,6 +26,10 @@ func PoolRefFromV3(address common.Address) PoolRef {
 
 func PoolRefFromPancakeV3(address common.Address) PoolRef {
 	return PoolRef{Version: quoteunified.PoolVersionPancakeV3, PancakeV3: address}
+}
+
+func PoolRefFromQuickSwapV3(address common.Address) PoolRef {
+	return PoolRef{Version: quoteunified.PoolVersionQuickSwapV3, QuickSwapV3: address}
 }
 
 func PoolRefFromV4(id marketv4.PoolID) PoolRef {
@@ -41,6 +46,8 @@ func PoolRefFromHop(hop quoteunified.RouteHop) PoolRef {
 		return PoolRefFromV3(hop.PoolV3)
 	case quoteunified.PoolVersionPancakeV3:
 		return PoolRefFromPancakeV3(hop.PoolPancakeV3)
+	case quoteunified.PoolVersionQuickSwapV3:
+		return PoolRefFromQuickSwapV3(hop.PoolQuickSwapV3)
 	case quoteunified.PoolVersionV4:
 		return PoolRefFromV4(hop.PoolV4)
 	case quoteunified.PoolVersionBalancer:
@@ -61,6 +68,8 @@ func (p PoolRef) Key() string {
 		return "v3:" + p.V3.Hex()
 	case quoteunified.PoolVersionPancakeV3:
 		return "pancakev3:" + p.PancakeV3.Hex()
+	case quoteunified.PoolVersionQuickSwapV3:
+		return "quickswapv3:" + p.QuickSwapV3.Hex()
 	case quoteunified.PoolVersionV4:
 		return "v4:" + p.V4.String()
 	case quoteunified.PoolVersionBalancer:
@@ -88,6 +97,8 @@ func (p PoolRef) PrimaryAddress() common.Address {
 		return p.V3
 	case quoteunified.PoolVersionPancakeV3:
 		return p.PancakeV3
+	case quoteunified.PoolVersionQuickSwapV3:
+		return p.QuickSwapV3
 	default:
 		return common.Address{}
 	}
@@ -95,6 +106,12 @@ func (p PoolRef) PrimaryAddress() common.Address {
 
 func poolRefFromKey(key string) (PoolRef, error) {
 	switch {
+	case strings.HasPrefix(key, "quickswapv3:"):
+		addr := common.HexToAddress(key[len("quickswapv3:"):])
+		if addr == (common.Address{}) {
+			return PoolRef{}, fmt.Errorf("invalid quickswapv3 pool ref key %q", key)
+		}
+		return PoolRefFromQuickSwapV3(addr), nil
 	case strings.HasPrefix(key, "pancakev3:"):
 		addr := common.HexToAddress(key[len("pancakev3:"):])
 		if addr == (common.Address{}) {

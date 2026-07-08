@@ -35,6 +35,29 @@ func abiUintToBigInt(value interface{}) (*big.Int, error) {
 	}
 }
 
+func abiUintToUint32(value interface{}) (uint32, error) {
+	switch v := value.(type) {
+	case *big.Int:
+		if !v.IsUint64() || v.Uint64() > uint64(^uint32(0)) {
+			return 0, fmt.Errorf("uint value %s overflows uint32", v.String())
+		}
+		return uint32(v.Uint64()), nil
+	case uint64:
+		if v > uint64(^uint32(0)) {
+			return 0, fmt.Errorf("uint value %d overflows uint32", v)
+		}
+		return uint32(v), nil
+	case uint32:
+		return v, nil
+	case uint16:
+		return uint32(v), nil
+	case uint8:
+		return uint32(v), nil
+	default:
+		return 0, fmt.Errorf("unsupported uint type %T", value)
+	}
+}
+
 func abiInt24ToInt32(value interface{}) (int32, error) {
 	switch v := value.(type) {
 	case int32:

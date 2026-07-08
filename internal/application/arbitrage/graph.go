@@ -7,6 +7,7 @@ import (
 
 	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
+	marketquick "github.com/brianliu-sysu/uniswapv3/internal/domain/market/quickswapv3"
 	marketuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
@@ -19,6 +20,8 @@ func BuildUnifiedPoolGraph(
 	univ3Pools marketuniv3.PoolRepository,
 	pancakeRegistry marketpancake.PoolRegistry,
 	pancakePools marketpancake.PoolRepository,
+	quickSwapRegistry marketquick.PoolRegistry,
+	quickSwapPools marketquick.PoolRepository,
 	v4Registry marketuniv4.PoolRegistry,
 	univ4Pools marketuniv4.PoolRepository,
 	balancerRegistry marketbalancer.PoolRegistry,
@@ -66,6 +69,28 @@ func BuildUnifiedPoolGraph(
 				PoolPancakeV3: pool.Address,
 				Token0:        pool.Token0,
 				Token1:        pool.Token1,
+			})
+		}
+	}
+
+	if interfacePresent(quickSwapRegistry) && quickSwapPools != nil {
+		addresses, err := quickSwapRegistry.List(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list quickswapv3 pools: %w", err)
+		}
+		for _, address := range addresses {
+			pool, err := quickSwapPools.Get(ctx, address)
+			if err != nil {
+				return nil, fmt.Errorf("load quickswapv3 pool %s: %w", address.Hex(), err)
+			}
+			if pool == nil {
+				continue
+			}
+			edges = append(edges, quoteunified.PoolEdge{
+				Version:         quoteunified.PoolVersionQuickSwapV3,
+				PoolQuickSwapV3: pool.Address,
+				Token0:          pool.Token0,
+				Token1:          pool.Token1,
 			})
 		}
 	}
@@ -127,7 +152,7 @@ func BuildUnifiedPoolGraph(
 
 // BuildPoolGraph builds a Uniswap V3-only routing graph from tracked pools.
 func BuildPoolGraph(ctx context.Context, registry marketuniv3.PoolRegistry, pools marketuniv3.PoolRepository) (quoteunified.PoolGraph, error) {
-	return BuildUnifiedPoolGraph(ctx, registry, pools, nil, nil, nil, nil, nil, nil)
+	return BuildUnifiedPoolGraph(ctx, registry, pools, nil, nil, nil, nil, nil, nil, nil, nil)
 }
 
 func interfacePresent(value any) bool {

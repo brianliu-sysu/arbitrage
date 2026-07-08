@@ -21,6 +21,9 @@ type ABIParser = CLV3PoolParser
 // PancakeABIParser decodes PancakeSwap V3 pool logs into domain events.
 type PancakeABIParser = CLV3PoolParser
 
+// QuickSwapABIParser decodes QuickSwap V3 Algebra pool logs into domain events.
+type QuickSwapABIParser = CLV3PoolParser
+
 func NewABIParser() (*ABIParser, error) {
 	parser, err := newCLV3PoolParser(poolABIJSON, topicSwap)
 	if err != nil {
@@ -37,10 +40,22 @@ func NewPancakeABIParser() (*PancakeABIParser, error) {
 	return parser, nil
 }
 
+func NewQuickSwapABIParser() (*QuickSwapABIParser, error) {
+	parser, err := newCLV3PoolParser(algebraPoolABIJSON, topicSwap)
+	if err != nil {
+		return nil, fmt.Errorf("parse quickswap pool abi: %w", err)
+	}
+	return parser, nil
+}
+
 func PoolLogTopics() []common.Hash {
 	return []common.Hash{topicInitialize, topicSwap, topicMint, topicBurn}
 }
 
 func PancakePoolLogTopics() []common.Hash {
 	return []common.Hash{topicInitialize, topicPancakeSwap, topicMint, topicBurn}
+}
+
+func QuickSwapPoolLogTopics() []common.Hash {
+	return []common.Hash{topicInitialize, topicSwap, topicMint, topicBurn}
 }

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	quoteuniv3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/univ3"
 	httpapi "github.com/brianliu-sysu/uniswapv3/internal/interfaces/http"
 )
 
@@ -82,5 +83,24 @@ func TestRouterCombinedQuoteCORSPreflight(t *testing.T) {
 
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("expected 204, got %d", rec.Code)
+	}
+}
+
+func TestQuoteHandlerRejectsUnknownChain(t *testing.T) {
+	router := httpapi.NewRouter(httpapi.Handlers{
+		QuoteV3: httpapi.NewQuoteV3ChainHandler(
+			[]httpapi.ChainInfo{{Name: "ethereum", ChainID: 1, Primary: true}},
+			map[string]*quoteuniv3.AppService{},
+		),
+	})
+
+	body := bytes.NewReader([]byte(`{"chain":"polygon","tokenIn":"0x0000000000000000000000000000000000000002","tokenOut":"0x0000000000000000000000000000000000000003","amountIn":"1"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/univ3/quote", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
 	}
 }

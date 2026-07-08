@@ -14,6 +14,7 @@ type EvaluationInput struct {
 	AmountIn    *big.Int
 	AmountOut   *big.Int
 	GasCost     *big.Int
+	FlashLoan   FlashLoanQuote
 }
 
 // EvaluationResult is the profit outcome of a route evaluation.
@@ -22,6 +23,7 @@ type EvaluationResult struct {
 	AmountOut   *big.Int
 	GrossProfit *big.Int
 	NetProfit   *big.Int
+	FlashLoan   FlashLoanQuote
 	Profitable  bool
 	Accepted    bool
 }
@@ -38,9 +40,11 @@ func (e *Evaluator) Evaluate(input EvaluationInput) EvaluationResult {
 	amountIn := cloneBigInt(input.AmountIn)
 	amountOut := cloneBigInt(input.AmountOut)
 	gasCost := cloneBigInt(input.GasCost)
+	flashLoanFee := cloneBigInt(input.FlashLoan.Fee)
 
 	grossProfit := new(big.Int).Sub(amountOut, amountIn)
 	netProfit := new(big.Int).Sub(grossProfit, gasCost)
+	netProfit.Sub(netProfit, flashLoanFee)
 
 	profitable := grossProfit.Sign() > 0 && netProfit.Sign() > 0
 	accepted := profitable && input.Strategy.MeetsMinimumProfit(netProfit)
@@ -50,6 +54,7 @@ func (e *Evaluator) Evaluate(input EvaluationInput) EvaluationResult {
 		AmountOut:   amountOut,
 		GrossProfit: grossProfit,
 		NetProfit:   netProfit,
+		FlashLoan:   input.FlashLoan,
 		Profitable:  profitable,
 		Accepted:    accepted,
 	}

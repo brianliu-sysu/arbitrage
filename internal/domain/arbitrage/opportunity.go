@@ -30,6 +30,7 @@ type Opportunity struct {
 	AmountOut   *big.Int
 	GrossProfit *big.Int
 	GasCost     *big.Int
+	FlashLoan   FlashLoanQuote
 	NetProfit   *big.Int
 	Payload     []byte
 	CreatedAt   time.Time
@@ -64,6 +65,7 @@ func NewOpportunity(
 		AmountOut:   cloneBigInt(evaluation.AmountOut),
 		GrossProfit: cloneBigInt(evaluation.GrossProfit),
 		GasCost:     cloneBigInt(gas.CostWei),
+		FlashLoan:   cloneFlashLoanQuote(evaluation.FlashLoan),
 		NetProfit:   cloneBigInt(evaluation.NetProfit),
 		CreatedAt:   createdAt,
 	}
@@ -81,4 +83,14 @@ func cloneBigInt(v *big.Int) *big.Int {
 		return big.NewInt(0)
 	}
 	return new(big.Int).Set(v)
+}
+
+func cloneFlashLoanQuote(v FlashLoanQuote) FlashLoanQuote {
+	return FlashLoanQuote{
+		Protocol: v.Protocol,
+		PoolRef:  v.PoolRef,
+		Amount:   cloneBigInt(v.Amount),
+		Fee:      cloneBigInt(v.Fee),
+		FeePPM:   cloneBigInt(v.FeePPM),
+	}
 }

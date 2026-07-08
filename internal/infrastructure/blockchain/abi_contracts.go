@@ -118,6 +118,65 @@ const pancakePoolABIJSON = `[
   ],"name":"Burn","type":"event"}
 ]`
 
+
+const algebraPoolABIJSON = `[
+  {"inputs":[],"name":"globalState","outputs":[
+    {"internalType":"uint160","name":"price","type":"uint160"},
+    {"internalType":"int24","name":"tick","type":"int24"},
+    {"internalType":"uint16","name":"fee","type":"uint16"},
+    {"internalType":"uint16","name":"timepointIndex","type":"uint16"},
+    {"internalType":"uint8","name":"communityFeeToken0","type":"uint8"},
+    {"internalType":"uint8","name":"communityFeeToken1","type":"uint8"},
+    {"internalType":"bool","name":"unlocked","type":"bool"}
+  ],"stateMutability":"view","type":"function"},
+  {"inputs":[],"name":"liquidity","outputs":[{"internalType":"uint128","name":"","type":"uint128"}],"stateMutability":"view","type":"function"},
+  {"inputs":[],"name":"token0","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
+  {"inputs":[],"name":"token1","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
+  {"inputs":[],"name":"tickSpacing","outputs":[{"internalType":"int24","name":"","type":"int24"}],"stateMutability":"view","type":"function"},
+  {"inputs":[{"internalType":"int24","name":"","type":"int24"}],"name":"ticks","outputs":[
+    {"internalType":"uint128","name":"liquidityTotal","type":"uint128"},
+    {"internalType":"int128","name":"liquidityDelta","type":"int128"},
+    {"internalType":"uint256","name":"outerFeeGrowth0Token","type":"uint256"},
+    {"internalType":"uint256","name":"outerFeeGrowth1Token","type":"uint256"},
+    {"internalType":"int56","name":"outerTickCumulative","type":"int56"},
+    {"internalType":"uint160","name":"outerSecondsPerLiquidity","type":"uint160"},
+    {"internalType":"uint32","name":"outerSecondsSpent","type":"uint32"},
+    {"internalType":"bool","name":"initialized","type":"bool"}
+  ],"stateMutability":"view","type":"function"},
+  {"inputs":[{"internalType":"int16","name":"","type":"int16"}],"name":"tickTable","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
+  {"anonymous":false,"inputs":[
+    {"indexed":false,"internalType":"uint160","name":"price","type":"uint160"},
+    {"indexed":false,"internalType":"int24","name":"tick","type":"int24"}
+  ],"name":"Initialize","type":"event"},
+  {"anonymous":false,"inputs":[
+    {"indexed":true,"internalType":"address","name":"sender","type":"address"},
+    {"indexed":true,"internalType":"address","name":"recipient","type":"address"},
+    {"indexed":false,"internalType":"int256","name":"amount0","type":"int256"},
+    {"indexed":false,"internalType":"int256","name":"amount1","type":"int256"},
+    {"indexed":false,"internalType":"uint160","name":"price","type":"uint160"},
+    {"indexed":false,"internalType":"uint128","name":"liquidity","type":"uint128"},
+    {"indexed":false,"internalType":"int24","name":"tick","type":"int24"}
+  ],"name":"Swap","type":"event"},
+  {"anonymous":false,"inputs":[
+    {"indexed":false,"internalType":"address","name":"sender","type":"address"},
+    {"indexed":true,"internalType":"address","name":"owner","type":"address"},
+    {"indexed":true,"internalType":"int24","name":"bottomTick","type":"int24"},
+    {"indexed":true,"internalType":"int24","name":"topTick","type":"int24"},
+    {"indexed":false,"internalType":"uint128","name":"liquidityAmount","type":"uint128"},
+    {"indexed":false,"internalType":"uint256","name":"amount0","type":"uint256"},
+    {"indexed":false,"internalType":"uint256","name":"amount1","type":"uint256"}
+  ],"name":"Mint","type":"event"},
+  {"anonymous":false,"inputs":[
+    {"indexed":true,"internalType":"address","name":"owner","type":"address"},
+    {"indexed":true,"internalType":"int24","name":"bottomTick","type":"int24"},
+    {"indexed":true,"internalType":"int24","name":"topTick","type":"int24"},
+    {"indexed":false,"internalType":"uint128","name":"liquidityAmount","type":"uint128"},
+    {"indexed":false,"internalType":"uint256","name":"amount0","type":"uint256"},
+    {"indexed":false,"internalType":"uint256","name":"amount1","type":"uint256"}
+  ],"name":"Burn","type":"event"}
+]`
+
+
 const factoryABIJSON = `[
   {"inputs":[
     {"internalType":"address","name":"tokenA","type":"address"},

@@ -12,11 +12,17 @@ import (
 
 // QuoteCombinedHandler exposes cross-protocol V3/V4 quote requests over HTTP.
 type QuoteCombinedHandler struct {
-	quotes *quotecombined.AppService
+	quotes        *quotecombined.AppService
+	quotesByChain map[string]*quotecombined.AppService
+	chains        chainSelector
 }
 
 func NewQuoteCombinedHandler(quotes *quotecombined.AppService) *QuoteCombinedHandler {
 	return &QuoteCombinedHandler{quotes: quotes}
+}
+
+func NewQuoteCombinedChainHandler(chains []ChainInfo, quotes map[string]*quotecombined.AppService) *QuoteCombinedHandler {
+	return &QuoteCombinedHandler{quotesByChain: quotes, chains: newChainSelector(chains)}
 }
 
 type routeHopCombinedHTTPResponse struct {
@@ -52,14 +58,19 @@ type quoteCombinedHTTPResponse struct {
 
 // HandleQuote serves POST /api/v1/quote cross-pool quote requests.
 func (h *QuoteCombinedHandler) HandleQuote(c *gin.Context) {
-	if h.quotes == nil {
-		c.JSON(http.StatusInternalServerError, errorHTTPResponse{Error: "cross-pool quote service is not configured"})
-		return
-	}
-
 	var payload quoteHTTPRequest
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		c.JSON(http.StatusBadRequest, errorHTTPResponse{Error: "invalid json body"})
+		return
+	}
+
+	quotes, ok := h.selectQuotes(quoteChainParam(c, payload))
+	if !ok {
+		c.JSON(http.StatusBadRequest, errorHTTPResponse{Error: chainNotFoundMessage(quoteChainParam(c, payload))})
+		return
+	}
+	if quotes == nil {
+		c.JSON(http.StatusInternalServerError, errorHTTPResponse{Error: "cross-pool quote service is not configured"})
 		return
 	}
 
@@ -69,13 +80,24 @@ func (h *QuoteCombinedHandler) HandleQuote(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.quotes.Quote(c.Request.Context(), req)
+	resp, err := quotes.Quote(c.Request.Context(), req)
 	if err != nil {
 		c.JSON(quoteStatusCode(err), errorHTTPResponse{Error: err.Error()})
 		return
 	}
 
 	c.JSON(http.StatusOK, toQuoteCombinedHTTPResponse(resp))
+}
+
+func (h *QuoteCombinedHandler) selectQuotes(chain string) (*quotecombined.AppService, bool) {
+	if h.quotesByChain == nil {
+		return h.quotes, true
+	}
+	key, ok := h.chains.selectKey(chain)
+	if !ok {
+		return nil, false
+	}
+	return h.quotesByChain[key], true
 }
 
 func toQuoteCombinedRequest(payload quoteHTTPRequest) (quotecombined.Request, error) {
@@ -149,6 +171,8 @@ func toRouteCombinedHTTPResponse(route quoteunified.Route) routeCombinedHTTPResp
 			item.PoolAddress = hop.PoolV3.Hex()
 		case quoteunified.PoolVersionPancakeV3:
 			item.PoolAddress = hop.PoolPancakeV3.Hex()
+		case quoteunified.PoolVersionQuickSwapV3:
+			item.PoolAddress = hop.PoolQuickSwapV3.Hex()
 		case quoteunified.PoolVersionV4:
 			item.PoolID = hop.PoolV4.String()
 		case quoteunified.PoolVersionBalancer:

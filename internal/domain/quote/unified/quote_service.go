@@ -6,10 +6,12 @@ import (
 
 	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
+	marketquick "github.com/brianliu-sysu/uniswapv3/internal/domain/market/quickswapv3"
 	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	quotebalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/balancer"
 	quotepancakev3 "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/pancakev3"
+	quotequickswapv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/quickswapv3"
 	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
 	quoteuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
 	quoteuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ4"
@@ -18,18 +20,20 @@ import (
 
 // RoutePools holds loaded pool state keyed by protocol-specific identifiers.
 type RoutePools struct {
-	V3        map[common.Address]*marketv3.Pool
-	PancakeV3 map[common.Address]*marketpancake.Pool
-	V4        map[marketv4.PoolID]*marketv4.Pool
-	Balancer  map[marketbalancer.PoolID]*marketbalancer.Pool
+	V3          map[common.Address]*marketv3.Pool
+	PancakeV3   map[common.Address]*marketpancake.Pool
+	QuickSwapV3 map[common.Address]*marketquick.Pool
+	V4          map[marketv4.PoolID]*marketv4.Pool
+	Balancer    map[marketbalancer.PoolID]*marketbalancer.Pool
 }
 
 // QuoteService quotes swaps along unified routes by dispatching to V3-style or V4 math.
 type QuoteService struct {
-	v3       *quoteuniv3.QuoteService
-	pancake  *quotepancakev3.QuoteService
-	v4       *quoteuniv4.QuoteService
-	balancer *quotebalancer.QuoteService
+	v3        *quoteuniv3.QuoteService
+	pancake   *quotepancakev3.QuoteService
+	quickSwap *quotequickswapv3.QuoteService
+	v4        *quoteuniv4.QuoteService
+	balancer  *quotebalancer.QuoteService
 }
 
 func NewQuoteService(v3 *quoteuniv3.QuoteService, pancake *quotepancakev3.QuoteService, v4 *quoteuniv4.QuoteService, balancer ...*quotebalancer.QuoteService) *QuoteService {
@@ -46,7 +50,7 @@ func NewQuoteService(v3 *quoteuniv3.QuoteService, pancake *quotepancakev3.QuoteS
 	if len(balancer) > 0 && balancer[0] != nil {
 		balancerSvc = balancer[0]
 	}
-	return &QuoteService{v3: v3, pancake: pancake, v4: v4, balancer: balancerSvc}
+	return &QuoteService{v3: v3, pancake: pancake, quickSwap: quotequickswapv3.NewQuoteService(), v4: v4, balancer: balancerSvc}
 }
 
 // QuoteExactInput quotes an exact-input swap on a single Uniswap V3 pool.
@@ -67,6 +71,16 @@ func (s *QuoteService) QuoteExactInputPancakeV3(pool *marketpancake.Pool, tokenI
 // QuoteExactOutputPancakeV3 quotes an exact-output swap on a single PancakeSwap V3 pool.
 func (s *QuoteService) QuoteExactOutputPancakeV3(pool *marketpancake.Pool, tokenIn, tokenOut common.Address, amountOut *big.Int) (quoteshared.QuoteResult, error) {
 	return s.pancake.QuoteExactOutput(pool, tokenIn, tokenOut, amountOut)
+}
+
+// QuoteExactInputQuickSwapV3 quotes an exact-input swap on a single QuickSwap V3 pool.
+func (s *QuoteService) QuoteExactInputQuickSwapV3(pool *marketquick.Pool, tokenIn, tokenOut common.Address, amountIn *big.Int) (quoteshared.QuoteResult, error) {
+	return s.quickSwap.QuoteExactInput(pool, tokenIn, tokenOut, amountIn)
+}
+
+// QuoteExactOutputQuickSwapV3 quotes an exact-output swap on a single QuickSwap V3 pool.
+func (s *QuoteService) QuoteExactOutputQuickSwapV3(pool *marketquick.Pool, tokenIn, tokenOut common.Address, amountOut *big.Int) (quoteshared.QuoteResult, error) {
+	return s.quickSwap.QuoteExactOutput(pool, tokenIn, tokenOut, amountOut)
 }
 
 // QuoteExactInputV4 quotes an exact-input swap on a single V4 pool.
@@ -130,6 +144,12 @@ func (s *QuoteService) quoteHop(pools RoutePools, hop RouteHop, amountIn *big.In
 			return quoteshared.QuoteResult{}, fmt.Errorf("pancakev3 pool %s not found", hop.PoolPancakeV3.Hex())
 		}
 		return s.pancake.QuoteExactInput(pool, hop.TokenIn, hop.TokenOut, amountIn)
+	case PoolVersionQuickSwapV3:
+		pool := pools.QuickSwapV3[hop.PoolQuickSwapV3]
+		if pool == nil {
+			return quoteshared.QuoteResult{}, fmt.Errorf("quickswapv3 pool %s not found", hop.PoolQuickSwapV3.Hex())
+		}
+		return s.quickSwap.QuoteExactInput(pool, hop.TokenIn, hop.TokenOut, amountIn)
 	case PoolVersionV4:
 		pool := pools.V4[hop.PoolV4]
 		if pool == nil {

@@ -25,6 +25,10 @@ func NewPancakeLogFetcher(client *EthClient) *LogFetcher {
 	return &LogFetcher{client: client, topics: PancakePoolLogTopics()}
 }
 
+func NewQuickSwapLogFetcher(client *EthClient) *LogFetcher {
+	return &LogFetcher{client: client, topics: QuickSwapPoolLogTopics()}
+}
+
 func (f *LogFetcher) FetchLogs(ctx context.Context, filter domainchain.CLV3LogFilter) ([]domainchain.RawLog, error) {
 	if filter.ToBlock < filter.FromBlock {
 		return nil, fmt.Errorf("invalid block range: from %d to %d", filter.FromBlock, filter.ToBlock)

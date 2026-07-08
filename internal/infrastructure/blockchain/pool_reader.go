@@ -14,9 +14,12 @@ import (
 
 // PoolReader loads on-chain Uniswap V3 pool state for bootstrap.
 type PoolReader struct {
-	client    *EthClient
-	multicall *Multicall
-	poolABI   abi.ABI
+	client           *EthClient
+	multicall        *Multicall
+	poolABI          abi.ABI
+	stateMethod      string
+	tickBitmapMethod string
+	feeFromState     bool
 }
 
 func NewPoolReader(client *EthClient, multicall *Multicall) (*PoolReader, error) {
@@ -28,15 +31,43 @@ func NewPancakePoolReader(client *EthClient, multicall *Multicall) (*PoolReader,
 	return newPoolReader(client, multicall, pancakePoolABIJSON)
 }
 
+// NewQuickSwapPoolReader loads QuickSwap V3 pool state using the Algebra pool ABI.
+func NewQuickSwapPoolReader(client *EthClient, multicall *Multicall) (*PoolReader, error) {
+	return newPoolReaderWithOptions(client, multicall, algebraPoolABIJSON, poolReaderOptions{
+		stateMethod:      "globalState",
+		tickBitmapMethod: "tickTable",
+		feeFromState:     true,
+	})
+}
+
+type poolReaderOptions struct {
+	stateMethod      string
+	tickBitmapMethod string
+	feeFromState     bool
+}
+
 func newPoolReader(client *EthClient, multicall *Multicall, abiJSON string) (*PoolReader, error) {
+	return newPoolReaderWithOptions(client, multicall, abiJSON, poolReaderOptions{})
+}
+
+func newPoolReaderWithOptions(client *EthClient, multicall *Multicall, abiJSON string, options poolReaderOptions) (*PoolReader, error) {
 	parsed, err := abi.JSON(strings.NewReader(abiJSON))
 	if err != nil {
 		return nil, fmt.Errorf("parse pool abi: %w", err)
 	}
+	if options.stateMethod == "" {
+		options.stateMethod = "slot0"
+	}
+	if options.tickBitmapMethod == "" {
+		options.tickBitmapMethod = "tickBitmap"
+	}
 	return &PoolReader{
-		client:    client,
-		multicall: multicall,
-		poolABI:   parsed,
+		client:           client,
+		multicall:        multicall,
+		poolABI:          parsed,
+		stateMethod:      options.stateMethod,
+		tickBitmapMethod: options.tickBitmapMethod,
+		feeFromState:     options.feeFromState,
 	}, nil
 }
 
@@ -79,7 +110,10 @@ type basePoolState struct {
 }
 
 func (r *PoolReader) readBaseState(ctx context.Context, poolAddress common.Address, blockNumber uint64) (*basePoolState, error) {
-	methods := []string{"token0", "token1", "fee", "tickSpacing", "slot0", "liquidity"}
+	methods := []string{"token0", "token1", "tickSpacing", r.stateMethod, "liquidity"}
+	if !r.feeFromState {
+		methods = []string{"token0", "token1", "fee", "tickSpacing", r.stateMethod, "liquidity"}
+	}
 	results, err := r.callPoolMethods(ctx, poolAddress, blockNumber, methods)
 	if err != nil {
 		return nil, err
@@ -93,19 +127,27 @@ func (r *PoolReader) readBaseState(ctx context.Context, poolAddress common.Addre
 	if err != nil {
 		return nil, fmt.Errorf("token1: %w", err)
 	}
-	fee, err := unpackUint32(r.poolABI, "fee", results[2])
-	if err != nil {
-		return nil, fmt.Errorf("fee: %w", err)
+	resultOffset := 0
+	var fee uint32
+	if !r.feeFromState {
+		fee, err = unpackUint32(r.poolABI, "fee", results[2])
+		if err != nil {
+			return nil, fmt.Errorf("fee: %w", err)
+		}
+		resultOffset = 1
 	}
-	tickSpacing, err := unpackInt24(r.poolABI, "tickSpacing", results[3])
+	tickSpacing, err := unpackInt24(r.poolABI, "tickSpacing", results[2+resultOffset])
 	if err != nil {
 		return nil, fmt.Errorf("tickSpacing: %w", err)
 	}
-	slot0, err := unpackSlot0(r.poolABI, results[4])
+	slot0, err := unpackPoolState(r.poolABI, r.stateMethod, results[3+resultOffset])
 	if err != nil {
-		return nil, fmt.Errorf("slot0: %w", err)
+		return nil, fmt.Errorf("%s: %w", r.stateMethod, err)
 	}
-	liquidity, err := unpackBigInt(r.poolABI, "liquidity", results[5])
+	if r.feeFromState {
+		fee = slot0.fee
+	}
+	liquidity, err := unpackBigInt(r.poolABI, "liquidity", results[4+resultOffset])
 	if err != nil {
 		return nil, fmt.Errorf("liquidity: %w", err)
 	}
@@ -151,9 +193,9 @@ func (r *PoolReader) ReadManyBaseStates(
 		return nil, err
 	}
 
-	slot0Data, err := r.poolABI.Pack("slot0")
+	slot0Data, err := r.poolABI.Pack(r.stateMethod)
 	if err != nil {
-		return nil, fmt.Errorf("pack slot0: %w", err)
+		return nil, fmt.Errorf("pack %s: %w", r.stateMethod, err)
 	}
 	liquidityData, err := r.poolABI.Pack("liquidity")
 	if err != nil {
@@ -184,7 +226,7 @@ func (r *PoolReader) ReadManyBaseStates(
 			continue
 		}
 
-		slot0, err := unpackSlot0(r.poolABI, slot0Result)
+		slot0, err := unpackPoolState(r.poolABI, r.stateMethod, slot0Result)
 		if err != nil {
 			continue
 		}
@@ -231,23 +273,36 @@ func needsDirectPoolFallback(results []MulticallResult) bool {
 type slot0Values struct {
 	sqrtPriceX96 *big.Int
 	tick         int32
+	fee          uint32
 }
 
 func unpackSlot0(poolABI abi.ABI, result MulticallResult) (slot0Values, error) {
-	values, err := unpackCallResult(poolABI, "slot0", result)
+	return unpackPoolState(poolABI, "slot0", result)
+}
+
+func unpackPoolState(poolABI abi.ABI, method string, result MulticallResult) (slot0Values, error) {
+	values, err := unpackCallResult(poolABI, method, result)
 	if err != nil {
 		return slot0Values{}, err
 	}
 	if len(values) < 2 {
-		return slot0Values{}, fmt.Errorf("slot0 returned %d values", len(values))
+		return slot0Values{}, fmt.Errorf("%s returned %d values", method, len(values))
 	}
 	tick, err := abiInt24ToInt32(values[1])
 	if err != nil {
 		return slot0Values{}, err
 	}
+	var fee uint32
+	if method == "globalState" && len(values) >= 3 {
+		fee, err = abiUintToUint32(values[2])
+		if err != nil {
+			return slot0Values{}, err
+		}
+	}
 	return slot0Values{
 		sqrtPriceX96: values[0].(*big.Int),
 		tick:         tick,
+		fee:          fee,
 	}, nil
 }
 
@@ -351,9 +406,9 @@ func (r *PoolReader) readTickBitmapWords(
 	requests := make([]MulticallRequest, 0, int(maxWord-minWord)+1)
 	wordPositions := make([]int16, 0, int(maxWord-minWord)+1)
 	for wordPos := minWord; wordPos <= maxWord; wordPos++ {
-		data, err := r.poolABI.Pack("tickBitmap", wordPos)
+		data, err := r.poolABI.Pack(r.tickBitmapMethod, wordPos)
 		if err != nil {
-			return nil, fmt.Errorf("pack tickBitmap word %d: %w", wordPos, err)
+			return nil, fmt.Errorf("pack %s word %d: %w", r.tickBitmapMethod, wordPos, err)
 		}
 		requests = append(requests, MulticallRequest{Target: poolAddress, Data: data})
 		wordPositions = append(wordPositions, wordPos)
@@ -373,9 +428,9 @@ func (r *PoolReader) readTickBitmapWords(
 		if err != nil {
 			return nil, fmt.Errorf("read tickBitmap word %d: %w", wordPos, err)
 		}
-		values, err := r.poolABI.Unpack("tickBitmap", returnData)
+		values, err := r.poolABI.Unpack(r.tickBitmapMethod, returnData)
 		if err != nil {
-			return nil, fmt.Errorf("unpack tickBitmap word %d: %w", wordPos, err)
+			return nil, fmt.Errorf("unpack %s word %d: %w", r.tickBitmapMethod, wordPos, err)
 		}
 		word := values[0].(*big.Int)
 		if word.Sign() == 0 {
@@ -393,9 +448,9 @@ func (r *PoolReader) tickBitmapReturnData(
 	blockNumber uint64,
 	result MulticallResult,
 ) ([]byte, error) {
-	data, err := r.poolABI.Pack("tickBitmap", wordPos)
+	data, err := r.poolABI.Pack(r.tickBitmapMethod, wordPos)
 	if err != nil {
-		return nil, fmt.Errorf("pack tickBitmap: %w", err)
+		return nil, fmt.Errorf("pack %s: %w", r.tickBitmapMethod, err)
 	}
 	return multicallReturnDataOrDirect(ctx, r.client, poolAddress, data, blockNumber, result)
 }

@@ -11,23 +11,34 @@ import (
 
 // QuoteV4Handler exposes Uniswap V4 quote requests over HTTP.
 type QuoteV4Handler struct {
-	quotes *quoteuniv4.AppService
+	quotes        *quoteuniv4.AppService
+	quotesByChain map[string]*quoteuniv4.AppService
+	chains        chainSelector
 }
 
 func NewQuoteV4Handler(quotes *quoteuniv4.AppService) *QuoteV4Handler {
 	return &QuoteV4Handler{quotes: quotes}
 }
 
+func NewQuoteV4ChainHandler(chains []ChainInfo, quotes map[string]*quoteuniv4.AppService) *QuoteV4Handler {
+	return &QuoteV4Handler{quotesByChain: quotes, chains: newChainSelector(chains)}
+}
+
 // HandleQuote serves POST /api/v1/univ4/quote requests.
 func (h *QuoteV4Handler) HandleQuote(c *gin.Context) {
-	if h.quotes == nil {
-		c.JSON(http.StatusServiceUnavailable, errorHTTPResponse{Error: "v4 quote service is not configured"})
-		return
-	}
-
 	var payload quoteHTTPRequest
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		c.JSON(http.StatusBadRequest, errorHTTPResponse{Error: "invalid json body"})
+		return
+	}
+
+	quotes, ok := h.selectQuotes(quoteChainParam(c, payload))
+	if !ok {
+		c.JSON(http.StatusBadRequest, errorHTTPResponse{Error: chainNotFoundMessage(quoteChainParam(c, payload))})
+		return
+	}
+	if quotes == nil {
+		c.JSON(http.StatusServiceUnavailable, errorHTTPResponse{Error: "v4 quote service is not configured"})
 		return
 	}
 
@@ -37,13 +48,24 @@ func (h *QuoteV4Handler) HandleQuote(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.quotes.Quote(c.Request.Context(), req)
+	resp, err := quotes.Quote(c.Request.Context(), req)
 	if err != nil {
 		c.JSON(quoteStatusCode(err), errorHTTPResponse{Error: err.Error()})
 		return
 	}
 
 	c.JSON(http.StatusOK, toQuoteV4HTTPResponse(resp))
+}
+
+func (h *QuoteV4Handler) selectQuotes(chain string) (*quoteuniv4.AppService, bool) {
+	if h.quotesByChain == nil {
+		return h.quotes, true
+	}
+	key, ok := h.chains.selectKey(chain)
+	if !ok {
+		return nil, false
+	}
+	return h.quotesByChain[key], true
 }
 
 func toQuoteV4Request(payload quoteHTTPRequest) (quoteuniv4.Request, error) {

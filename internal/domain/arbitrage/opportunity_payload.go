@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 
+	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	"github.com/ethereum/go-ethereum/common"
@@ -21,7 +22,16 @@ type opportunityPayload struct {
 	AmountOut   string            `json:"amountOut,omitempty"`
 	GrossProfit string            `json:"grossProfit,omitempty"`
 	GasCost     string            `json:"gasCost,omitempty"`
+	FlashLoan   *opportunityFlash `json:"flashLoan,omitempty"`
 	NetProfit   string            `json:"netProfit,omitempty"`
+}
+
+type opportunityFlash struct {
+	Protocol string `json:"protocol,omitempty"`
+	PoolRef  string `json:"poolRef,omitempty"`
+	Amount   string `json:"amount,omitempty"`
+	Fee      string `json:"fee,omitempty"`
+	FeePPM   string `json:"feePpm,omitempty"`
 }
 
 type opportunityRoute struct {
@@ -31,12 +41,13 @@ type opportunityRoute struct {
 }
 
 type opportunityRouteHop struct {
-	Version       string `json:"version"`
-	PoolAddress   string `json:"poolAddress,omitempty"`
-	PoolPancakeV3 string `json:"poolPancakeV3,omitempty"`
-	PoolID        string `json:"poolId,omitempty"`
-	TokenIn       string `json:"tokenIn"`
-	TokenOut      string `json:"tokenOut"`
+	Version         string `json:"version"`
+	PoolAddress     string `json:"poolAddress,omitempty"`
+	PoolPancakeV3   string `json:"poolPancakeV3,omitempty"`
+	PoolQuickSwapV3 string `json:"poolQuickSwapV3,omitempty"`
+	PoolID          string `json:"poolId,omitempty"`
+	TokenIn         string `json:"tokenIn"`
+	TokenOut        string `json:"tokenOut"`
 }
 
 // EnsurePayload serializes the opportunity when payload is empty.
@@ -76,10 +87,31 @@ func encodeOpportunityPayload(o *Opportunity) ([]byte, error) {
 	if o.GasCost != nil {
 		payload.GasCost = o.GasCost.String()
 	}
+	payload.FlashLoan = encodeOpportunityFlash(o.FlashLoan)
 	if o.NetProfit != nil {
 		payload.NetProfit = o.NetProfit.String()
 	}
 	return json.Marshal(payload)
+}
+
+func encodeOpportunityFlash(flash FlashLoanQuote) *opportunityFlash {
+	if flash.Protocol == "" {
+		return nil
+	}
+	payload := &opportunityFlash{
+		Protocol: string(flash.Protocol),
+		PoolRef:  flash.PoolRef.Key(),
+	}
+	if flash.Amount != nil {
+		payload.Amount = flash.Amount.String()
+	}
+	if flash.Fee != nil {
+		payload.Fee = flash.Fee.String()
+	}
+	if flash.FeePPM != nil {
+		payload.FeePPM = flash.FeePPM.String()
+	}
+	return payload
 }
 
 func encodeOpportunityRoute(route quoteunified.Route) opportunityRoute {
@@ -99,8 +131,12 @@ func encodeOpportunityRoute(route quoteunified.Route) opportunityRoute {
 			item.PoolAddress = hop.PoolV3.Hex()
 		case quoteunified.PoolVersionPancakeV3:
 			item.PoolPancakeV3 = hop.PoolPancakeV3.Hex()
+		case quoteunified.PoolVersionQuickSwapV3:
+			item.PoolQuickSwapV3 = hop.PoolQuickSwapV3.Hex()
 		case quoteunified.PoolVersionV4:
 			item.PoolID = hop.PoolV4.String()
+		case quoteunified.PoolVersionBalancer:
+			item.PoolID = hop.PoolBalancer.String()
 		}
 		encoded.Hops = append(encoded.Hops, item)
 	}
@@ -137,6 +173,9 @@ func (o *Opportunity) ApplyPayload() error {
 	if o.GasCost == nil && payload.GasCost != "" {
 		o.GasCost = parsePayloadBigInt(payload.GasCost)
 	}
+	if o.FlashLoan.Protocol == "" && payload.FlashLoan != nil && payload.FlashLoan.Protocol != "" {
+		o.FlashLoan = decodeOpportunityFlash(*payload.FlashLoan)
+	}
 	if o.NetProfit == nil && payload.NetProfit != "" {
 		o.NetProfit = parsePayloadBigInt(payload.NetProfit)
 	}
@@ -170,9 +209,15 @@ func decodeOpportunityRoute(route opportunityRoute) quoteunified.Route {
 		case quoteunified.PoolVersionPancakeV3.String():
 			item.Version = quoteunified.PoolVersionPancakeV3
 			item.PoolPancakeV3 = common.HexToAddress(hop.PoolPancakeV3)
+		case quoteunified.PoolVersionQuickSwapV3.String():
+			item.Version = quoteunified.PoolVersionQuickSwapV3
+			item.PoolQuickSwapV3 = common.HexToAddress(hop.PoolQuickSwapV3)
 		case quoteunified.PoolVersionV4.String():
 			item.Version = quoteunified.PoolVersionV4
 			item.PoolV4 = decodePoolID(hop.PoolID)
+		case quoteunified.PoolVersionBalancer.String():
+			item.Version = quoteunified.PoolVersionBalancer
+			item.PoolBalancer = decodeBalancerPoolID(hop.PoolID)
 		case quoteunified.PoolVersionWrapWETH.String():
 			item.Version = quoteunified.PoolVersionWrapWETH
 		case quoteunified.PoolVersionUnwrapWETH.String():
@@ -183,8 +228,33 @@ func decodeOpportunityRoute(route opportunityRoute) quoteunified.Route {
 	return decoded
 }
 
+func decodeOpportunityFlash(payload opportunityFlash) FlashLoanQuote {
+	return FlashLoanQuote{
+		Protocol: FlashLoanProtocol(payload.Protocol),
+		PoolRef:  decodeOptionalPoolRef(payload.PoolRef),
+		Amount:   parsePayloadBigInt(payload.Amount),
+		Fee:      parsePayloadBigInt(payload.Fee),
+		FeePPM:   parsePayloadBigInt(payload.FeePPM),
+	}
+}
+
+func decodeOptionalPoolRef(raw string) PoolRef {
+	if raw == "" {
+		return PoolRef{}
+	}
+	ref, err := poolRefFromKey(raw)
+	if err != nil {
+		return PoolRef{}
+	}
+	return ref
+}
+
 func decodePoolID(raw string) marketv4.PoolID {
 	return marketv4.PoolID(common.HexToHash(raw))
+}
+
+func decodeBalancerPoolID(raw string) marketbalancer.PoolID {
+	return marketbalancer.PoolID(common.HexToHash(raw))
 }
 
 func parsePayloadBigInt(raw string) *big.Int {

@@ -101,21 +101,24 @@ func (g *DependencyGraph) Remove(routeID string) {
 }
 
 // AffectedRoutes returns routes that depend on any of the changed pools.
-func (g *DependencyGraph) AffectedRoutes(v3Pools, pancakePools []common.Address, v4Pools []marketv4.PoolID, balancerPoolsArg ...[]marketbalancer.PoolID) []RouteRef {
+func (g *DependencyGraph) AffectedRoutes(v3Pools, pancakePools, quickSwapPools []common.Address, v4Pools []marketv4.PoolID, balancerPoolsArg ...[]marketbalancer.PoolID) []RouteRef {
 	var balancerPools []marketbalancer.PoolID
 	if len(balancerPoolsArg) > 0 {
 		balancerPools = balancerPoolsArg[0]
 	}
-	if len(v3Pools) == 0 && len(pancakePools) == 0 && len(v4Pools) == 0 && len(balancerPools) == 0 {
+	if len(v3Pools) == 0 && len(pancakePools) == 0 && len(quickSwapPools) == 0 && len(v4Pools) == 0 && len(balancerPools) == 0 {
 		return nil
 	}
 
-	changedKeys := make([]string, 0, len(v3Pools)+len(pancakePools)+len(v4Pools)+len(balancerPools))
+	changedKeys := make([]string, 0, len(v3Pools)+len(pancakePools)+len(quickSwapPools)+len(v4Pools)+len(balancerPools))
 	for _, pool := range v3Pools {
 		changedKeys = append(changedKeys, PoolRefFromV3(pool).Key())
 	}
 	for _, pool := range pancakePools {
 		changedKeys = append(changedKeys, PoolRefFromPancakeV3(pool).Key())
+	}
+	for _, pool := range quickSwapPools {
+		changedKeys = append(changedKeys, PoolRefFromQuickSwapV3(pool).Key())
 	}
 	for _, pool := range v4Pools {
 		changedKeys = append(changedKeys, PoolRefFromV4(pool).Key())
