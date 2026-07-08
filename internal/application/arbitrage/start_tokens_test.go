@@ -63,3 +63,23 @@ func TestResolveTriangleStartTokensDedupesConfiguredAndAuto(t *testing.T) {
 		t.Fatalf("expected auto token B last, got %+v", resolved)
 	}
 }
+
+func TestTokensWithParallelPools(t *testing.T) {
+	tokenA := overlapToken(1)
+	tokenB := overlapToken(2)
+	tokenC := overlapToken(3)
+
+	edges := []quoteunified.PoolEdge{
+		{Version: quoteunified.PoolVersionV3, PoolV3: overlapToken(10), Token0: tokenA, Token1: tokenB},
+		{Version: quoteunified.PoolVersionV3, PoolV3: overlapToken(11), Token0: tokenA, Token1: tokenB},
+		{Version: quoteunified.PoolVersionV3, PoolV3: overlapToken(12), Token0: tokenB, Token1: tokenC},
+	}
+
+	tokens := arbitrageapp.TokensWithParallelPools(edges)
+	if len(tokens) != 2 {
+		t.Fatalf("expected 2 parallel-pair tokens, got %d: %+v", len(tokens), tokens)
+	}
+	if tokens[0] != tokenA && tokens[0] != tokenB {
+		t.Fatalf("expected tokenA or tokenB first, got %s", tokens[0].Hex())
+	}
+}

@@ -6,6 +6,7 @@ bin
 *.yaml
 
 logs/
+docs/
 
 # Executables
 /arbitrage

@@ -14,6 +14,7 @@ type StrategyKind string
 const (
 	StrategyKindCycle    StrategyKind = "cycle"
 	StrategyKindTriangle StrategyKind = "triangle"
+	StrategyKindSpread   StrategyKind = "spread"
 )
 
 const triangleHopCount = 3
@@ -51,6 +52,17 @@ func NewTriangleStrategy(id string, startToken common.Address, minNetProfitWei *
 	}
 }
 
+// NewSpreadStrategy builds a two-hop cross-pool spread strategy: A->B->A across distinct pools.
+func NewSpreadStrategy(id string, startToken common.Address, minNetProfitWei *big.Int) Strategy {
+	return Strategy{
+		ID:              id,
+		Kind:            StrategyKindSpread,
+		StartToken:      startToken,
+		MaxHops:         spreadHopCount,
+		MinNetProfitWei: cloneBigInt(minNetProfitWei),
+	}
+}
+
 func (s Strategy) Validate() error {
 	if s.ID == "" {
 		return fmt.Errorf("strategy id is required")
@@ -66,6 +78,10 @@ func (s Strategy) Validate() error {
 	case StrategyKindTriangle:
 		if s.MaxHops != triangleHopCount {
 			return fmt.Errorf("triangle strategy requires exactly %d hops", triangleHopCount)
+		}
+	case StrategyKindSpread:
+		if s.MaxHops != spreadHopCount {
+			return fmt.Errorf("spread strategy requires exactly %d hops", spreadHopCount)
 		}
 	default:
 		return fmt.Errorf("unsupported strategy kind %q", s.Kind)

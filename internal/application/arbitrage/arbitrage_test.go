@@ -384,6 +384,7 @@ func TestRefreshTriangleRoutesRebuildsGraph(t *testing.T) {
 		Registry:              registry,
 		Quotes:                unifiedQuotes(),
 		Readiness:             alwaysReady{},
+		TriangleEnabled:       true,
 		ConfiguredStartTokens: []common.Address{tokenA},
 		MinNetProfitWei:       big.NewInt(1),
 	})
@@ -449,6 +450,7 @@ func TestRefreshTriangleRoutesAddsAutoStartTokens(t *testing.T) {
 		Registry:        registry,
 		Quotes:          unifiedQuotes(),
 		Readiness:       alwaysReady{},
+		TriangleEnabled: true,
 		MinNetProfitWei: big.NewInt(1),
 	})
 
@@ -475,6 +477,68 @@ func (r *staticPoolRegistry) List(context.Context) ([]common.Address, error) {
 
 func (r *staticPoolRegistry) Add(context.Context, common.Address) error    { return nil }
 func (r *staticPoolRegistry) Remove(context.Context, common.Address) error { return nil }
+
+func TestScanServiceRegistersSpreadRoutes(t *testing.T) {
+	tokenA := testToken(2)
+	tokenB := testToken(3)
+	poolAB1 := testToken(10)
+	poolAB2 := testToken(11)
+
+	graph := quoteunified.NewStaticPoolGraph([]quoteunified.PoolEdge{
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolAB1, Token0: tokenA, Token1: tokenB},
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolAB2, Token0: tokenA, Token1: tokenB},
+	})
+
+	scan := arbitrageapp.NewScanService(domainarb.NewDependencyGraph())
+	count := scan.RegisterUnifiedSpreadRoutes(graph, tokenA)
+	if count != 2 {
+		t.Fatalf("expected 2 spread routes, got %d", count)
+	}
+
+	affected := scan.FindAffected([]common.Address{poolAB1}, nil, nil)
+	if len(affected) != 2 {
+		t.Fatalf("expected 2 affected spread routes, got %+v", affected)
+	}
+}
+
+func TestRefreshSpreadRoutesRebuildsGraph(t *testing.T) {
+	tokenA := testToken(2)
+	tokenB := testToken(3)
+	poolAB1 := testToken(10)
+	poolAB2 := testToken(11)
+
+	repo := newMemoryPoolRepo()
+	for _, spec := range []struct {
+		address, token0, token1 common.Address
+	}{
+		{poolAB1, tokenA, tokenB},
+		{poolAB2, tokenA, tokenB},
+	} {
+		pool := setupQuotedPool(spec.address, spec.token0, spec.token1, 100_000_000_000_000_000)
+		if err := repo.Save(context.Background(), pool); err != nil {
+			t.Fatalf("save pool: %v", err)
+		}
+	}
+
+	registry := &staticPoolRegistry{addresses: []common.Address{poolAB1, poolAB2}}
+	services := arbitrageapp.NewServices(arbitrageapp.ServiceDeps{
+		Pools:             repo,
+		Registry:          registry,
+		Quotes:            unifiedQuotes(),
+		Readiness:         alwaysReady{},
+		SpreadEnabled:     true,
+		SpreadStartTokens: []common.Address{tokenA},
+		MinNetProfitWei:   big.NewInt(1),
+	})
+
+	routes, err := services.RefreshArbitrageRoutes(context.Background())
+	if err != nil {
+		t.Fatalf("refresh spread routes: %v", err)
+	}
+	if routes != 4 {
+		t.Fatalf("expected 4 spread routes for both start tokens, got %d", routes)
+	}
+}
 
 func TestPublishServicePersistsOpportunity(t *testing.T) {
 	repo := newMemoryOpportunityRepo()

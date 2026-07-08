@@ -16,6 +16,7 @@ type ScanService struct {
 	mu               sync.Mutex
 	graph            *domainarb.DependencyGraph
 	triangleRouteIDs []string
+	spreadRouteIDs   []string
 }
 
 func NewScanService(graph *domainarb.DependencyGraph) *ScanService {
@@ -49,6 +50,22 @@ func (s *ScanService) ClearTriangleRoutes() {
 		s.graph.Remove(routeID)
 	}
 	s.triangleRouteIDs = nil
+}
+
+// ClearSpreadRoutes removes previously registered spread routes.
+func (s *ScanService) ClearSpreadRoutes() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, routeID := range s.spreadRouteIDs {
+		s.graph.Remove(routeID)
+	}
+	s.spreadRouteIDs = nil
+}
+
+// ClearMonitoredRoutes removes all auto-registered triangle and spread routes.
+func (s *ScanService) ClearMonitoredRoutes() {
+	s.ClearTriangleRoutes()
+	s.ClearSpreadRoutes()
 }
 
 // FindAffected returns routes that depend on any changed synced pool.
@@ -92,4 +109,24 @@ func (s *ScanService) RegisterUnifiedTriangleRoutes(graph quoteunified.PoolGraph
 // RegisterTriangleRoutes discovers and registers triangle routes on a V3-only graph.
 func (s *ScanService) RegisterTriangleRoutes(graph domainquote.PoolGraph, startToken common.Address) int {
 	return s.RegisterUnifiedTriangleRoutes(domainarb.V3GraphToUnified(graph), startToken)
+}
+
+// RegisterUnifiedSpreadRoutes discovers and registers A->B->A spread routes on a unified graph.
+func (s *ScanService) RegisterUnifiedSpreadRoutes(graph quoteunified.PoolGraph, startToken common.Address) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	routes := domainarb.FindUnifiedSpreadRoutes(graph, startToken)
+	registered := make([]string, 0, len(routes))
+	for _, route := range routes {
+		routeRef := domainarb.RouteRef{
+			ID:    domainarb.UnifiedSpreadRouteIDWithPools(route),
+			Route: route,
+		}
+		s.graph.Register(routeRef)
+		registered = append(registered, routeRef.ID)
+	}
+
+	s.spreadRouteIDs = append(s.spreadRouteIDs, registered...)
+	return len(registered)
 }

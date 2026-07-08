@@ -141,6 +141,17 @@ arbitrage:
     min_amount: "1000000"
     max_amount: "100000000000000"
     optimizer_iterations: 16
+  spread:
+    # Enable A->B->A cross-pool spread arbitrage for the same token pair on different pools.
+    enabled: false
+    # Optional base tokens. When empty, tokens from parallel pool pairs are auto-discovered.
+    start_tokens:
+      - "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"  # USDC
+      - "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH
+    min_net_profit_wei: "1000000"
+    min_amount: "1000000"
+    max_amount: "100000000000000"
+    optimizer_iterations: 16
 
 log:
   level: info

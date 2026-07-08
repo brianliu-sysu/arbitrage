@@ -42,6 +42,16 @@ type QuoteConfig struct {
 
 type ArbitrageConfig struct {
 	Triangle TriangleArbitrageConfig `yaml:"triangle"`
+	Spread   SpreadArbitrageConfig   `yaml:"spread"`
+}
+
+type SpreadArbitrageConfig struct {
+	Enabled             bool     `yaml:"enabled"`
+	StartTokens         []string `yaml:"start_tokens"`
+	MinNetProfitWei     string   `yaml:"min_net_profit_wei"`
+	MinAmount           string   `yaml:"min_amount"`
+	MaxAmount           string   `yaml:"max_amount"`
+	OptimizerIterations int      `yaml:"optimizer_iterations"`
 }
 
 type TriangleArbitrageConfig struct {
@@ -346,6 +356,13 @@ func Default() Config {
 				MaxAmount:           "100000000000000",
 				OptimizerIterations: 16,
 			},
+			Spread: SpreadArbitrageConfig{
+				Enabled:             false,
+				MinNetProfitWei:     "1",
+				MinAmount:           "1000000",
+				MaxAmount:           "100000000000000",
+				OptimizerIterations: 16,
+			},
 		},
 		Log: LogConfig{
 			Level:  "info",
@@ -588,6 +605,37 @@ func (c BalancerSyncConfig) IsActive() bool {
 
 func (c Config) TriangleArbitrageEnabled() bool {
 	return c.Arbitrage.Triangle.Enabled
+}
+
+func (c Config) SpreadArbitrageEnabled() bool {
+	return c.Arbitrage.Spread.Enabled
+}
+
+func (c Config) ArbitrageEnabled() bool {
+	return c.TriangleArbitrageEnabled() || c.SpreadArbitrageEnabled()
+}
+
+func (c SpreadArbitrageConfig) StartTokenAddresses() []common.Address {
+	addresses := make([]common.Address, 0, len(c.StartTokens))
+	for _, token := range c.StartTokens {
+		if token == "" {
+			continue
+		}
+		addresses = append(addresses, common.HexToAddress(token))
+	}
+	return addresses
+}
+
+func (c SpreadArbitrageConfig) MinNetProfit() *big.Int {
+	return parseConfigBigInt(c.MinNetProfitWei, big.NewInt(1))
+}
+
+func (c SpreadArbitrageConfig) OptimizerMinAmount() *big.Int {
+	return parseConfigBigInt(c.MinAmount, big.NewInt(1_000_000))
+}
+
+func (c SpreadArbitrageConfig) OptimizerMaxAmount() *big.Int {
+	return parseConfigBigInt(c.MaxAmount, big.NewInt(100_000_000_000_000))
 }
 
 func (c TriangleArbitrageConfig) StartTokenAddresses() []common.Address {

@@ -257,11 +257,29 @@ func newRuntimeBundle(
 	}
 
 	triangleCfg := cfg.Arbitrage.Triangle
+	spreadCfg := cfg.Arbitrage.Spread
 	configuredStartTokens := triangleCfg.StartTokenAddresses()
+	spreadStartTokens := spreadCfg.StartTokenAddresses()
 	minNetProfit := triangleCfg.MinNetProfit()
-	if !cfg.TriangleArbitrageEnabled() {
+	spreadMinNetProfit := spreadCfg.MinNetProfit()
+	triangleEnabled := cfg.TriangleArbitrageEnabled()
+	spreadEnabled := cfg.SpreadArbitrageEnabled()
+	if !triangleEnabled {
 		configuredStartTokens = nil
 		minNetProfit = nil
+	}
+	if !spreadEnabled {
+		spreadStartTokens = nil
+		spreadMinNetProfit = nil
+	}
+
+	optimizerMinAmount := triangleCfg.OptimizerMinAmount()
+	optimizerMaxAmount := triangleCfg.OptimizerMaxAmount()
+	optimizerIterations := triangleCfg.OptimizerIterations
+	if !triangleEnabled && spreadEnabled {
+		optimizerMinAmount = spreadCfg.OptimizerMinAmount()
+		optimizerMaxAmount = spreadCfg.OptimizerMaxAmount()
+		optimizerIterations = spreadCfg.OptimizerIterations
 	}
 
 	readiness := &quotecombined.SyncReadiness{}
@@ -296,11 +314,15 @@ func newRuntimeBundle(
 		),
 		Readiness:             readiness,
 		Repository:            store.Opportunities,
+		TriangleEnabled:       triangleEnabled,
+		SpreadEnabled:         spreadEnabled,
 		ConfiguredStartTokens: configuredStartTokens,
+		SpreadStartTokens:     spreadStartTokens,
 		MinNetProfitWei:       minNetProfit,
-		MinAmount:             triangleCfg.OptimizerMinAmount(),
-		MaxAmount:             triangleCfg.OptimizerMaxAmount(),
-		OptimizerIterations:   triangleCfg.OptimizerIterations,
+		SpreadMinNetProfitWei: spreadMinNetProfit,
+		MinAmount:             optimizerMinAmount,
+		MaxAmount:             optimizerMaxAmount,
+		OptimizerIterations:   optimizerIterations,
 	})
 
 	if syncServices != nil {
@@ -321,10 +343,10 @@ func newRuntimeBundle(
 		syncBalancerServices.BlockApply.SetLogger(logger.Named("sync.balancer"))
 		syncBalancerServices.Bootstrap.SetLogger(logger.Named("sync.balancer"))
 	}
-	if cfg.TriangleArbitrageEnabled() {
+	if cfg.ArbitrageEnabled() {
 		arbitrageServices.LogDiagnostics(context.Background(), logger, "startup")
 	} else {
-		logger.Info("triangle arbitrage disabled")
+		logger.Info("arbitrage discovery disabled")
 	}
 
 	return &runtimeBundle{
@@ -610,7 +632,7 @@ func (r *syncLifecycle) start(_ context.Context) error {
 		})
 	}
 
-	if r.bundle != nil && r.bundle.Arbitrage != nil && r.cfg.TriangleArbitrageEnabled() {
+	if r.bundle != nil && r.bundle.Arbitrage != nil && r.cfg.ArbitrageEnabled() {
 		r.runArbitrageRouteWatcher()
 	}
 	return nil
@@ -676,13 +698,13 @@ func (r *syncLifecycle) tryRefreshArbitrageRoutes(protocolReady map[string]bool)
 		return false
 	}
 
-	routes, err := r.bundle.Arbitrage.RefreshTriangleRoutes(r.runCtx)
+	routes, err := r.bundle.Arbitrage.RefreshArbitrageRoutes(r.runCtx)
 	if err != nil {
-		r.logger.Warn("refresh triangle routes failed", zap.Error(err))
+		r.logger.Warn("refresh arbitrage routes failed", zap.Error(err))
 		return false
 	}
 
-	r.logger.Info("triangle routes refreshed",
+	r.logger.Info("arbitrage routes refreshed",
 		zap.Int("routes", routes),
 		zap.Int("start_tokens", len(r.bundle.Arbitrage.StartTokens())),
 	)

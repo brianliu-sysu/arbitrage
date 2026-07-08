@@ -227,6 +227,8 @@ func MatchesUnifiedStrategy(strategy Strategy, route quoteunified.Route) bool {
 		return route.Len() > 0 && route.Len() <= strategy.MaxHops
 	case StrategyKindTriangle:
 		return IsUnifiedTriangleRoute(route)
+	case StrategyKindSpread:
+		return IsUnifiedSpreadRoute(route)
 	default:
 		return false
 	}
