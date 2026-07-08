@@ -121,7 +121,7 @@ func (s *BootstrapService[PoolID, Pool, Data]) bootstrap(
 		}
 		s.hooks.UpdatePoolFromChain(pool, chainData)
 		chainBootstrapped = true
-	} else if s.hooks.PoolLastBlock(pool) < blockNumber || NeedsChainRebootstrap(s.hooks.PoolLastBlock(pool), blockNumber, s.staleBlockThreshold) {
+	} else if NeedsChainRebootstrap(s.hooks.PoolLastBlock(pool), blockNumber, s.staleBlockThreshold) {
 		chainData, err = s.readChainData(ctx, poolID, blockNumber, preloaded, hasPreloaded)
 		if err != nil {
 			return zero, fmt.Errorf("read bootstrap data: %w", err)

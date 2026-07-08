@@ -23,6 +23,10 @@ func DetectReorg(
 	if localHead.Hash == remoteHead.Hash {
 		return nil, nil
 	}
+	// Non-adjacent heads are head gaps; catch up first instead of walking forks.
+	if remoteHead.Number > localHead.Number+1 {
+		return nil, nil
+	}
 
 	ancestor, err := FindCommonAncestor(ctx, blocks, maxDepth, localHead, remoteHead)
 	if err != nil {
@@ -46,7 +50,15 @@ func FindCommonAncestor(
 	localBlock := localHead
 	remoteBlock := remoteHead
 
-	for depth := uint64(0); depth <= maxDepth; depth++ {
+	heightDiff := uint64(0)
+	if localHead.Number < remoteHead.Number {
+		heightDiff = remoteHead.Number - localHead.Number
+	} else if localHead.Number > remoteHead.Number {
+		heightDiff = localHead.Number - remoteHead.Number
+	}
+	iterLimit := maxDepth + heightDiff
+
+	for depth := uint64(0); depth <= iterLimit; depth++ {
 		if localBlock.Number == 0 || remoteBlock.Number == 0 {
 			break
 		}
@@ -78,7 +90,7 @@ func FindCommonAncestor(
 		}
 		remoteBlock = header
 	}
-	return 0, fmt.Errorf("common ancestor not found within depth %d", maxDepth)
+	return 0, fmt.Errorf("common ancestor not found within depth %d", iterLimit)
 }
 
 func stepBack(

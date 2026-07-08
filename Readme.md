@@ -2,8 +2,6 @@
 
 基于 Go 的链上 DEX 池子同步、本地报价与三角套利发现系统。支持 **Uniswap V3**、**PancakeSwap V3**、**Uniswap V4**，在本地维护池子状态（slot0、liquidity、tick、bitmap），对外提供 HTTP 报价与套利机会查询。
 
-> 架构分层、目录约定与代码生成规则见 Cursor skill：`.cursor/skills/arbitrage-architecture/`
-
 ## 功能概览
 
 ### 池子同步

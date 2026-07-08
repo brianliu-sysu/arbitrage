@@ -146,7 +146,15 @@ func (s *HeadSyncService[PoolID, Event]) handleHead(ctx context.Context, head bl
 	if ShouldSkipHeadNotification(localHead, head) {
 		return nil
 	}
-	if localHead.Number > 0 {
+
+	if NeedsHeadGapCatchup(localHead, head) {
+		if err := s.catchUpGap(ctx, localHead, head); err != nil {
+			return err
+		}
+		localHead = s.LocalHead()
+	}
+
+	if localHead.Number > 0 && s.reorg != nil {
 		reorgEvent, err := s.reorg.DetectReorg(ctx, localHead, head)
 		if err != nil {
 			return fmt.Errorf("detect reorg: %w", err)
@@ -158,13 +166,6 @@ func (s *HeadSyncService[PoolID, Event]) handleHead(ctx context.Context, head bl
 			s.SetLocalHead(head)
 			return nil
 		}
-	}
-
-	if NeedsHeadGapCatchup(localHead, head) {
-		if err := s.catchUpGap(ctx, localHead, head); err != nil {
-			return err
-		}
-		localHead = s.LocalHead()
 	}
 
 	pools := s.lifecycle.ListActive()
