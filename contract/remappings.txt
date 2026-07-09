@@ -1,0 +1,6 @@
+@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/
+balancer-v2-monorepo/=lib/balancer-v2-monorepo/
+forge-std/=lib/forge-std/src/
+v3-core/=lib/v3-core/
+v4-core/=lib/v4-template/lib/uniswap-hooks/lib/v4-core/
+v4-template/=lib/v4-template/

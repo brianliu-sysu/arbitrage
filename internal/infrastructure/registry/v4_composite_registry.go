@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 
 	"github.com/brianliu-sysu/uniswapv3/internal/config"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
@@ -11,7 +12,9 @@ import (
 
 // CompositeV4Registry merges poolmanager static pools with a V4 subgraph-backed registry.
 type CompositeV4Registry struct {
+	mu              sync.RWMutex
 	static          []v4PoolEntry
+	dynamic         map[marketv4.PoolID]v4PoolEntry
 	subgraph        *V4SubgraphRegistry
 	subgraphEnabled bool
 }
@@ -23,16 +26,29 @@ func NewCompositeV4Registry(cfg config.Univ4SyncConfig) (*CompositeV4Registry, e
 	}
 	return &CompositeV4Registry{
 		static:          static,
+		dynamic:         make(map[marketv4.PoolID]v4PoolEntry),
 		subgraph:        NewV4SubgraphRegistry(cfg.Subgraph),
 		subgraphEnabled: cfg.Subgraph.IsEnabled(),
 	}, nil
 }
 
 func (r *CompositeV4Registry) List(ctx context.Context) ([]marketv4.PoolID, error) {
+	if r == nil {
+		return nil, nil
+	}
+	r.mu.RLock()
+	static := append([]v4PoolEntry(nil), r.static...)
+	dynamic := make([]v4PoolEntry, 0, len(r.dynamic))
+	for _, entry := range r.dynamic {
+		dynamic = append(dynamic, entry)
+	}
+	subgraph := r.subgraph
+	subgraphEnabled := r.subgraphEnabled
+	r.mu.RUnlock()
 	seen := make(map[marketv4.PoolID]v4PoolEntry)
 	entries := make([]v4PoolEntry, 0)
 
-	for _, entry := range r.static {
+	for _, entry := range static {
 		if _, ok := seen[entry.id]; ok {
 			continue
 		}
@@ -40,8 +56,16 @@ func (r *CompositeV4Registry) List(ctx context.Context) ([]marketv4.PoolID, erro
 		entries = append(entries, entry)
 	}
 
-	if r.subgraphEnabled {
-		subgraphEntries, err := r.subgraph.List(ctx)
+	for _, entry := range dynamic {
+		if _, ok := seen[entry.id]; ok {
+			continue
+		}
+		seen[entry.id] = entry
+		entries = append(entries, entry)
+	}
+
+	if subgraphEnabled && subgraph != nil {
+		subgraphEntries, err := subgraph.List(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -66,13 +90,22 @@ func (r *CompositeV4Registry) List(ctx context.Context) ([]marketv4.PoolID, erro
 }
 
 func (r *CompositeV4Registry) GetKey(ctx context.Context, id marketv4.PoolID) (marketv4.PoolKey, error) {
-	for _, entry := range r.static {
+	r.mu.RLock()
+	static := append([]v4PoolEntry(nil), r.static...)
+	if entry, ok := r.dynamic[id]; ok {
+		r.mu.RUnlock()
+		return entry.key, nil
+	}
+	subgraph := r.subgraph
+	subgraphEnabled := r.subgraphEnabled
+	r.mu.RUnlock()
+	for _, entry := range static {
 		if entry.id == id {
 			return entry.key, nil
 		}
 	}
-	if r.subgraphEnabled {
-		if key, ok, err := r.subgraph.GetKey(ctx, id); err != nil {
+	if subgraphEnabled && subgraph != nil {
+		if key, ok, err := subgraph.GetKey(ctx, id); err != nil {
 			return marketv4.PoolKey{}, err
 		} else if ok {
 			return key, nil
@@ -90,17 +123,25 @@ func (r *CompositeV4Registry) AsPoolRegistry() marketv4.PoolRegistry {
 }
 
 func (r *CompositeV4Registry) Add(ctx context.Context, id marketv4.PoolID, key marketv4.PoolKey) error {
-	if r.subgraph == nil {
-		r.subgraph = NewV4SubgraphRegistry(config.V4SubgraphPoolConfig{})
+	_ = ctx
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.dynamic == nil {
+		r.dynamic = make(map[marketv4.PoolID]v4PoolEntry)
 	}
-	return r.subgraph.Add(ctx, id, key)
+	r.dynamic[id] = v4PoolEntry{id: id, key: key}
+	return nil
 }
 
 func (r *CompositeV4Registry) Remove(ctx context.Context, id marketv4.PoolID) error {
-	if r.subgraph == nil {
-		r.subgraph = NewV4SubgraphRegistry(config.V4SubgraphPoolConfig{})
+	r.mu.Lock()
+	delete(r.dynamic, id)
+	subgraph := r.subgraph
+	r.mu.Unlock()
+	if subgraph != nil {
+		return subgraph.Remove(ctx, id)
 	}
-	return r.subgraph.Remove(ctx, id)
+	return nil
 }
 
 var _ marketv4.PoolRegistry = (*CompositeV4Registry)(nil)

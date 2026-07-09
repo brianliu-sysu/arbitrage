@@ -12,6 +12,7 @@ import (
 
 	arbitrageapp "github.com/brianliu-sysu/uniswapv3/internal/application/arbitrage"
 	assetapp "github.com/brianliu-sysu/uniswapv3/internal/application/asset"
+	poolmanager "github.com/brianliu-sysu/uniswapv3/internal/application/poolmanager"
 	poolsapp "github.com/brianliu-sysu/uniswapv3/internal/application/pools"
 	quotecombined "github.com/brianliu-sysu/uniswapv3/internal/application/quote/combined"
 	quotepancakev3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/pancakev3"
@@ -39,6 +40,7 @@ import (
 	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/persistence"
 	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/registry"
 	httpapi "github.com/brianliu-sysu/uniswapv3/internal/interfaces/http"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
@@ -176,6 +178,15 @@ type runtimeBundle struct {
 	SyncV4        *syncv4.Services
 	SyncBalancer  *syncbalancer.Services
 	Arbitrage     *arbitrageapp.Services
+	PoolManagers  runtimePoolManagers
+}
+
+type runtimePoolManagers struct {
+	V3          *poolmanager.PoolManager[common.Address]
+	PancakeV3   *poolmanager.PoolManager[common.Address]
+	QuickSwapV3 *poolmanager.PoolManager[common.Address]
+	V4          *poolmanager.PoolManager[marketv4.PoolID]
+	Balancer    *poolmanager.PoolManager[marketbalancer.PoolID]
 }
 
 type chainRuntime struct {
@@ -445,7 +456,39 @@ func newRuntimeBundle(
 		SyncV4:        syncV4Services,
 		SyncBalancer:  syncBalancerServices,
 		Arbitrage:     arbitrageServices,
+		PoolManagers:  newRuntimePoolManagers(chain, syncServices, syncPancakeServices, syncQuickSwapServices, syncV4Services, syncBalancerServices, arbitrageServices),
 	}, nil
+}
+
+func newRuntimePoolManagers(
+	chain *chaininfra.Services,
+	syncServices *syncv3.Services,
+	syncPancakeServices *syncpancakev3.Services,
+	syncQuickSwapServices *syncquickswapv3.Services,
+	syncV4Services *syncv4.Services,
+	syncBalancerServices *syncbalancer.Services,
+	arbitrageServices *arbitrageapp.Services,
+) runtimePoolManagers {
+	if chain == nil || arbitrageServices == nil {
+		return runtimePoolManagers{}
+	}
+	managers := runtimePoolManagers{}
+	if syncServices != nil {
+		managers.V3 = poolmanager.NewPoolManager[common.Address](syncServices.NewOrchestrator(chain.Client), arbitrageServices)
+	}
+	if syncPancakeServices != nil {
+		managers.PancakeV3 = poolmanager.NewPoolManager[common.Address](syncPancakeServices.NewOrchestrator(chain.Client), arbitrageServices)
+	}
+	if syncQuickSwapServices != nil {
+		managers.QuickSwapV3 = poolmanager.NewPoolManager[common.Address](syncQuickSwapServices.NewOrchestrator(chain.Client), arbitrageServices)
+	}
+	if syncV4Services != nil {
+		managers.V4 = poolmanager.NewPoolManager[marketv4.PoolID](syncV4Services.NewOrchestrator(chain.Client), arbitrageServices)
+	}
+	if syncBalancerServices != nil {
+		managers.Balancer = poolmanager.NewPoolManager[marketbalancer.PoolID](syncBalancerServices.NewOrchestrator(chain.Client), arbitrageServices)
+	}
+	return managers
 }
 
 func newRuntimeSet(

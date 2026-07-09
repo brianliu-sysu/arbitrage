@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"sort"
+	"sync"
 
 	"github.com/brianliu-sysu/uniswapv3/internal/config"
 	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
@@ -11,8 +12,10 @@ import (
 
 // CompositeRegistry merges static config pools with a subgraph-backed registry.
 type CompositeRegistry struct {
+	mu              sync.RWMutex
 	enabled         bool
 	static          []common.Address
+	dynamic         map[common.Address]struct{}
 	subgraph        *SubgraphRegistry
 	subgraphEnabled bool
 }
@@ -21,19 +24,40 @@ func NewCompositeRegistry(cfg config.Univ3SyncConfig) *CompositeRegistry {
 	return &CompositeRegistry{
 		enabled:         cfg.Enabled,
 		static:          staticAddresses(cfg.Pools),
+		dynamic:         make(map[common.Address]struct{}),
 		subgraph:        NewSubgraphRegistry(cfg.Subgraph),
 		subgraphEnabled: cfg.Subgraph.IsEnabled(),
 	}
 }
 
 func (r *CompositeRegistry) List(ctx context.Context) ([]common.Address, error) {
-	if r == nil || !r.enabled {
+	if r == nil {
+		return nil, nil
+	}
+	r.mu.RLock()
+	enabled := r.enabled
+	static := append([]common.Address(nil), r.static...)
+	dynamic := make([]common.Address, 0, len(r.dynamic))
+	for address := range r.dynamic {
+		dynamic = append(dynamic, address)
+	}
+	subgraph := r.subgraph
+	subgraphEnabled := r.subgraphEnabled
+	r.mu.RUnlock()
+	if !enabled && len(dynamic) == 0 {
 		return nil, nil
 	}
 	seen := make(map[common.Address]struct{})
 	addresses := make([]common.Address, 0)
 
-	for _, address := range r.static {
+	for _, address := range static {
+		if _, ok := seen[address]; ok {
+			continue
+		}
+		seen[address] = struct{}{}
+		addresses = append(addresses, address)
+	}
+	for _, address := range dynamic {
 		if _, ok := seen[address]; ok {
 			continue
 		}
@@ -41,8 +65,8 @@ func (r *CompositeRegistry) List(ctx context.Context) ([]common.Address, error) 
 		addresses = append(addresses, address)
 	}
 
-	if r.subgraphEnabled {
-		subgraphPools, err := r.subgraph.List(ctx)
+	if subgraphEnabled && subgraph != nil {
+		subgraphPools, err := subgraph.List(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -62,17 +86,25 @@ func (r *CompositeRegistry) List(ctx context.Context) ([]common.Address, error) 
 }
 
 func (r *CompositeRegistry) Add(ctx context.Context, address common.Address) error {
-	if r.subgraph == nil {
-		r.subgraph = NewSubgraphRegistry(config.SubgraphPoolConfig{})
+	_ = ctx
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.dynamic == nil {
+		r.dynamic = make(map[common.Address]struct{})
 	}
-	return r.subgraph.Add(ctx, address)
+	r.dynamic[address] = struct{}{}
+	return nil
 }
 
 func (r *CompositeRegistry) Remove(ctx context.Context, address common.Address) error {
-	if r.subgraph == nil {
-		r.subgraph = NewSubgraphRegistry(config.SubgraphPoolConfig{})
+	r.mu.Lock()
+	delete(r.dynamic, address)
+	subgraph := r.subgraph
+	r.mu.Unlock()
+	if subgraph != nil {
+		return subgraph.Remove(ctx, address)
 	}
-	return r.subgraph.Remove(ctx, address)
+	return nil
 }
 
 func staticAddresses(pools []config.StaticPoolConfig) []common.Address {

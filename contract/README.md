@@ -18,9 +18,30 @@ The backend submits an `ExecutionPlan` containing:
 
 The contract borrows, executes swaps in order, repays the loan plus fee, and reverts if final profit is below `minProfit`.
 
+## Setup
+
+After cloning this repository, install Foundry libraries declared in `.gitmodules`:
+
+```bash
+cd contract
+forge install
+```
+
 ## Build
 
 ```bash
 cd contract
 forge build
+```
+
+## Deploy
+
+Set `PRIVATE_KEY` for the deployer. `ARBITRAGE_EXECUTOR_OWNER` is optional and defaults to the deployer address.
+
+```bash
+cd contract
+PRIVATE_KEY=0x... forge script script/DeployArbitrageExecutor.s.sol:DeployArbitrageExecutor \
+  --rpc-url "$RPC_URL" \
+  --broadcast \
+  --verify
 ```

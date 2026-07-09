@@ -46,3 +46,19 @@ func TestCompositeRegistryEnabledReturnsStaticPools(t *testing.T) {
 		t.Fatalf("unexpected pool address %s", pools[0].Hex())
 	}
 }
+
+func TestCompositeRegistryAddVisibleWhenSubgraphDisabled(t *testing.T) {
+	address := common.HexToAddress("0x00000000000000000000000000000000000000a1")
+	reg := registry.NewCompositeRegistry(config.Univ3SyncConfig{Enabled: true})
+
+	if err := reg.Add(context.Background(), address); err != nil {
+		t.Fatalf("add pool: %v", err)
+	}
+	pools, err := reg.List(context.Background())
+	if err != nil {
+		t.Fatalf("list pools: %v", err)
+	}
+	if len(pools) != 1 || pools[0] != address {
+		t.Fatalf("expected dynamic pool %s, got %v", address.Hex(), pools)
+	}
+}

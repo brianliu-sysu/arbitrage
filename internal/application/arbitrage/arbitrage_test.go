@@ -222,6 +222,54 @@ func TestScanServiceFindsAffectedRoutes(t *testing.T) {
 	}
 }
 
+func TestScanServiceReplaceMonitoredRoutesAtomicallySwapsRoutes(t *testing.T) {
+	tokenA := testToken(2)
+	tokenB := testToken(3)
+	tokenC := testToken(4)
+	poolAB := testToken(10)
+	poolBC := testToken(11)
+
+	scan := arbitrageapp.NewScanService(domainarb.NewDependencyGraph())
+	oldRoute := domainarb.RouteRef{
+		ID: "spread-old",
+		Route: quoteunified.Route{
+			TokenIn:  tokenA,
+			TokenOut: tokenA,
+			Hops: []quoteunified.RouteHop{
+				{Version: quoteunified.PoolVersionV3, PoolV3: poolAB, TokenIn: tokenA, TokenOut: tokenB},
+				{Version: quoteunified.PoolVersionV3, PoolV3: poolAB, TokenIn: tokenB, TokenOut: tokenA},
+			},
+		},
+	}
+	newRoute := domainarb.RouteRef{
+		ID: "spread-new",
+		Route: quoteunified.Route{
+			TokenIn:  tokenB,
+			TokenOut: tokenB,
+			Hops: []quoteunified.RouteHop{
+				{Version: quoteunified.PoolVersionV3, PoolV3: poolBC, TokenIn: tokenB, TokenOut: tokenC},
+				{Version: quoteunified.PoolVersionV3, PoolV3: poolBC, TokenIn: tokenC, TokenOut: tokenB},
+			},
+		},
+	}
+
+	if count := scan.ReplaceMonitoredRoutes([]domainarb.RouteRef{oldRoute}); count != 1 {
+		t.Fatalf("expected one old route, got %d", count)
+	}
+	if count := scan.ReplaceMonitoredRoutes([]domainarb.RouteRef{newRoute}); count != 1 {
+		t.Fatalf("expected one new route, got %d", count)
+	}
+
+	oldAffected := scan.FindAffected([]common.Address{poolAB}, nil, nil, nil)
+	if len(oldAffected) != 0 {
+		t.Fatalf("expected old route removed, got %+v", oldAffected)
+	}
+	newAffected := scan.FindAffected([]common.Address{poolBC}, nil, nil, nil)
+	if len(newAffected) != 1 || newAffected[0].ID != "spread-new" {
+		t.Fatalf("expected spread-new affected, got %+v", newAffected)
+	}
+}
+
 func TestScanServiceRegistersTriangleRoutes(t *testing.T) {
 	tokenA := testToken(2)
 	tokenB := testToken(3)

@@ -68,6 +68,42 @@ func (s *ScanService) ClearMonitoredRoutes() {
 	s.ClearSpreadRoutes()
 }
 
+// ReplaceMonitoredRoutes atomically swaps all auto-registered monitored routes.
+func (s *ScanService) ReplaceMonitoredRoutes(routes []domainarb.RouteRef) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, routeID := range s.triangleRouteIDs {
+		s.graph.Remove(routeID)
+	}
+	for _, routeID := range s.spreadRouteIDs {
+		s.graph.Remove(routeID)
+	}
+	s.triangleRouteIDs = nil
+	s.spreadRouteIDs = nil
+
+	seen := make(map[string]struct{}, len(routes))
+	for _, route := range routes {
+		if route.ID == "" {
+			continue
+		}
+		if _, ok := seen[route.ID]; ok {
+			continue
+		}
+		seen[route.ID] = struct{}{}
+		s.graph.Register(route)
+		switch {
+		case domainarb.IsUnifiedTriangleRoute(route.Route):
+			s.triangleRouteIDs = append(s.triangleRouteIDs, route.ID)
+		case domainarb.IsUnifiedSpreadRoute(route.Route):
+			s.spreadRouteIDs = append(s.spreadRouteIDs, route.ID)
+		default:
+			s.triangleRouteIDs = append(s.triangleRouteIDs, route.ID)
+		}
+	}
+	return len(seen)
+}
+
 // FindAffected returns routes that depend on any changed synced pool.
 func (s *ScanService) FindAffected(univ3Pools, pancakePools, quickSwapPools []common.Address, univ4Pools []marketuniv4.PoolID, balancerPoolsArg ...[]marketbalancer.PoolID) []domainarb.RouteRef {
 	s.mu.Lock()

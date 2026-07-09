@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"sort"
+	"sync"
 
 	"github.com/brianliu-sysu/uniswapv3/internal/config"
 	marketquick "github.com/brianliu-sysu/uniswapv3/internal/domain/market/quickswapv3"
@@ -11,7 +12,9 @@ import (
 
 // QuickSwapCompositeRegistry merges static config pools with a subgraph-backed registry.
 type QuickSwapCompositeRegistry struct {
+	mu              sync.RWMutex
 	static          []common.Address
+	dynamic         map[common.Address]struct{}
 	subgraph        *QuickSwapSubgraphRegistry
 	subgraphEnabled bool
 }
@@ -19,16 +22,36 @@ type QuickSwapCompositeRegistry struct {
 func NewQuickSwapCompositeRegistry(cfg config.QuickSwapV3SyncConfig) *QuickSwapCompositeRegistry {
 	return &QuickSwapCompositeRegistry{
 		static:          staticAddresses(cfg.Pools),
+		dynamic:         make(map[common.Address]struct{}),
 		subgraph:        NewQuickSwapSubgraphRegistry(cfg.Subgraph),
 		subgraphEnabled: cfg.Subgraph.IsEnabled(),
 	}
 }
 
 func (r *QuickSwapCompositeRegistry) List(ctx context.Context) ([]common.Address, error) {
+	if r == nil {
+		return nil, nil
+	}
+	r.mu.RLock()
+	static := append([]common.Address(nil), r.static...)
+	dynamic := make([]common.Address, 0, len(r.dynamic))
+	for address := range r.dynamic {
+		dynamic = append(dynamic, address)
+	}
+	subgraph := r.subgraph
+	subgraphEnabled := r.subgraphEnabled
+	r.mu.RUnlock()
 	seen := make(map[common.Address]struct{})
 	addresses := make([]common.Address, 0)
 
-	for _, address := range r.static {
+	for _, address := range static {
+		if _, ok := seen[address]; ok {
+			continue
+		}
+		seen[address] = struct{}{}
+		addresses = append(addresses, address)
+	}
+	for _, address := range dynamic {
 		if _, ok := seen[address]; ok {
 			continue
 		}
@@ -36,8 +59,8 @@ func (r *QuickSwapCompositeRegistry) List(ctx context.Context) ([]common.Address
 		addresses = append(addresses, address)
 	}
 
-	if r.subgraphEnabled {
-		subgraphPools, err := r.subgraph.List(ctx)
+	if subgraphEnabled && subgraph != nil {
+		subgraphPools, err := subgraph.List(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -65,17 +88,25 @@ func (r *QuickSwapCompositeRegistry) AsPoolRegistry() marketquick.PoolRegistry {
 }
 
 func (r *QuickSwapCompositeRegistry) Add(ctx context.Context, address common.Address) error {
-	if r.subgraph == nil {
-		r.subgraph = NewQuickSwapSubgraphRegistry(config.SubgraphPoolConfig{})
+	_ = ctx
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.dynamic == nil {
+		r.dynamic = make(map[common.Address]struct{})
 	}
-	return r.subgraph.Add(ctx, address)
+	r.dynamic[address] = struct{}{}
+	return nil
 }
 
 func (r *QuickSwapCompositeRegistry) Remove(ctx context.Context, address common.Address) error {
-	if r.subgraph == nil {
-		r.subgraph = NewQuickSwapSubgraphRegistry(config.SubgraphPoolConfig{})
+	r.mu.Lock()
+	delete(r.dynamic, address)
+	subgraph := r.subgraph
+	r.mu.Unlock()
+	if subgraph != nil {
+		return subgraph.Remove(ctx, address)
 	}
-	return r.subgraph.Remove(ctx, address)
+	return nil
 }
 
 var _ marketquick.PoolRegistry = (*QuickSwapCompositeRegistry)(nil)

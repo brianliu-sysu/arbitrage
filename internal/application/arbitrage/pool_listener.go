@@ -66,6 +66,9 @@ func (s *Services) notifyPoolsChanged(
 	univ4Pools []marketuniv4.PoolID,
 	balancerPools []marketbalancer.PoolID,
 ) error {
+	s.routeMu.Lock()
+	defer s.routeMu.Unlock()
+
 	routes := s.Scan.FindAffected(univ3Pools, pancakePools, quickSwapPools, univ4Pools, balancerPools)
 	logger := s.logger
 	if logger == nil {

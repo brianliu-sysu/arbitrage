@@ -68,6 +68,7 @@ type Services struct {
 	Opportunities *OpportunityService
 	Publish       *PublishService
 
+	routeMu               sync.Mutex
 	mu                    sync.RWMutex
 	routeDeps             routeRefreshDeps
 	configuredStartTokens []common.Address
@@ -192,11 +193,13 @@ func (s *Services) RefreshArbitrageRoutes(ctx context.Context) (int, error) {
 	if s == nil || s.Scan == nil {
 		return 0, fmt.Errorf("arbitrage scan service is not configured")
 	}
+	s.routeMu.Lock()
+	defer s.routeMu.Unlock()
 
 	graph, err := loadPoolGraph(ctx, routeRefreshDepsToServiceDeps(s.routeDeps))
 	if err != nil {
 		s.rebuildStrategiesOnGraphError()
-		s.Scan.ClearMonitoredRoutes()
+		s.Scan.ReplaceMonitoredRoutes(nil)
 		return 0, err
 	}
 
@@ -205,7 +208,6 @@ func (s *Services) RefreshArbitrageRoutes(ctx context.Context) (int, error) {
 	s.updateArbitrageStrategies(triangleTokens, spreadTokens)
 	strategies := s.strategiesSnapshot()
 
-	s.Scan.ClearMonitoredRoutes()
 	return registerMonitoredRoutes(s.Scan, strategies, graph), nil
 }
 
@@ -288,19 +290,47 @@ func buildArbitrageStrategies(
 }
 
 func registerMonitoredRoutes(scan *ScanService, strategies []domainarb.Strategy, graph quoteunified.PoolGraph) int {
-	if graph == nil || len(strategies) == 0 {
+	if scan == nil {
 		return 0
 	}
-	total := 0
+	return scan.ReplaceMonitoredRoutes(buildMonitoredRoutes(strategies, graph))
+}
+
+func buildMonitoredRoutes(strategies []domainarb.Strategy, graph quoteunified.PoolGraph) []domainarb.RouteRef {
+	if graph == nil || len(strategies) == 0 {
+		return nil
+	}
+	routes := make([]domainarb.RouteRef, 0)
+	seen := make(map[string]struct{})
 	for _, strategy := range strategies {
 		switch strategy.Kind {
 		case domainarb.StrategyKindTriangle:
-			total += scan.RegisterUnifiedTriangleRoutes(graph, strategy.StartToken)
+			for _, route := range domainarb.FindUnifiedTriangleRoutes(graph, strategy.StartToken) {
+				routeRef := domainarb.RouteRef{
+					ID:    domainarb.UnifiedTriangleRouteIDWithPools(route),
+					Route: route,
+				}
+				if _, ok := seen[routeRef.ID]; ok {
+					continue
+				}
+				seen[routeRef.ID] = struct{}{}
+				routes = append(routes, routeRef)
+			}
 		case domainarb.StrategyKindSpread:
-			total += scan.RegisterUnifiedSpreadRoutes(graph, strategy.StartToken)
+			for _, route := range domainarb.FindUnifiedSpreadRoutes(graph, strategy.StartToken) {
+				routeRef := domainarb.RouteRef{
+					ID:    domainarb.UnifiedSpreadRouteIDWithPools(route),
+					Route: route,
+				}
+				if _, ok := seen[routeRef.ID]; ok {
+					continue
+				}
+				seen[routeRef.ID] = struct{}{}
+				routes = append(routes, routeRef)
+			}
 		}
 	}
-	return total
+	return routes
 }
 
 // SpreadAndTriangleStrategies builds enabled arbitrage strategies for the given start tokens.

@@ -12,6 +12,14 @@ docs/
 contract/cache/
 contract/out/
 contract/broadcast/
+contract/.forge-snapshots/
+contract/gas-snapshot
+contract/coverage/
+contract/coverage.json
+contract/lcov.info
+contract/node_modules/
+# Install with: cd contract && forge install
+contract/lib/
 
 # Executables
 /arbitrage
