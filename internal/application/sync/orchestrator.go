@@ -51,14 +51,16 @@ func RunStartup(ctx context.Context, blocks BlockReader, phases SyncPhases) erro
 
 // SyncOrchestrator coordinates bootstrap, catchup, and live head sync startup.
 type SyncOrchestrator[PoolID comparable] struct {
-	blocks     BlockReader
-	lifecycle  *PoolLifecycleService[PoolID]
-	catchup    interface {
+	blocks    BlockReader
+	lifecycle *PoolLifecycleService[PoolID]
+	catchup   interface {
 		CatchUpAll(context.Context, uint64) error
+		CatchUpPool(context.Context, PoolID, uint64) error
 	}
 	headSync interface {
 		Run(context.Context) error
 		SetLocalHead(blockchain.BlockHeader)
+		WithHeadSyncPaused(context.Context, func(context.Context) error) error
 	}
 	blockApply interface {
 		MarkPoolsReady(context.Context, []PoolID) error
@@ -74,10 +76,12 @@ func NewSyncOrchestrator[PoolID comparable](
 	lifecycle *PoolLifecycleService[PoolID],
 	catchup interface {
 		CatchUpAll(context.Context, uint64) error
+		CatchUpPool(context.Context, PoolID, uint64) error
 	},
 	headSync interface {
 		Run(context.Context) error
 		SetLocalHead(blockchain.BlockHeader)
+		WithHeadSyncPaused(context.Context, func(context.Context) error) error
 	},
 	blockApply interface {
 		MarkPoolsReady(context.Context, []PoolID) error
@@ -115,4 +119,49 @@ func (o *SyncOrchestrator[PoolID]) Start(ctx context.Context) error {
 		RunHeadSync:    o.headSync.Run,
 		RunScheduler:   schedulerRun,
 	})
+}
+
+// AddPool registers a pool, catches it up until the chain head is stable, then marks it ready.
+func (o *SyncOrchestrator[PoolID]) AddPool(ctx context.Context, poolID PoolID) error {
+	if o == nil {
+		return fmt.Errorf("sync orchestrator is nil")
+	}
+	if o.blocks == nil || o.lifecycle == nil || o.catchup == nil || o.headSync == nil || o.blockApply == nil {
+		return fmt.Errorf("sync orchestrator is missing dependencies")
+	}
+	return o.headSync.WithHeadSyncPaused(ctx, func(ctx context.Context) error {
+		head, err := o.blocks.GetLatestBlockHeader(ctx)
+		if err != nil {
+			return fmt.Errorf("load latest block: %w", err)
+		}
+		if err := o.lifecycle.RegisterAndBootstrapInactive(ctx, poolID, head.Number); err != nil {
+			return err
+		}
+		if err := o.catchUpPoolUntilStableHead(ctx, poolID, head); err != nil {
+			_ = o.lifecycle.Remove(ctx, poolID)
+			return err
+		}
+		o.lifecycle.Activate(poolID)
+		if err := o.blockApply.MarkPoolsReady(ctx, []PoolID{poolID}); err != nil {
+			_ = o.lifecycle.Remove(ctx, poolID)
+			return fmt.Errorf("mark pool ready: %w", err)
+		}
+		return nil
+	})
+}
+
+func (o *SyncOrchestrator[PoolID]) catchUpPoolUntilStableHead(ctx context.Context, poolID PoolID, head blockchain.BlockHeader) error {
+	for {
+		if err := o.catchup.CatchUpPool(ctx, poolID, head.Number); err != nil {
+			return fmt.Errorf("catch up pool to block %d: %w", head.Number, err)
+		}
+		current, err := o.blocks.GetLatestBlockHeader(ctx)
+		if err != nil {
+			return fmt.Errorf("load latest block after catchup: %w", err)
+		}
+		if current.Number <= head.Number {
+			return nil
+		}
+		head = current
+	}
 }

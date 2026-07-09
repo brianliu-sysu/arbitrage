@@ -35,6 +35,7 @@ type HeadSyncService[PoolID comparable, Event any] struct {
 
 	mu        sync.RWMutex
 	localHead blockchain.BlockHeader
+	handleMu  sync.Mutex
 
 	reconnectInitialDelay time.Duration
 	reconnectMaxDelay     time.Duration
@@ -81,6 +82,16 @@ func (s *HeadSyncService[PoolID, Event]) SetReconnectBackoff(initial, max time.D
 	}
 	s.reconnectInitialDelay = initial
 	s.reconnectMaxDelay = max
+}
+
+// WithHeadSyncPaused serializes a management operation with live head processing.
+func (s *HeadSyncService[PoolID, Event]) WithHeadSyncPaused(ctx context.Context, fn func(context.Context) error) error {
+	if fn == nil {
+		return nil
+	}
+	s.handleMu.Lock()
+	defer s.handleMu.Unlock()
+	return fn(ctx)
 }
 
 func (s *HeadSyncService[PoolID, Event]) Run(ctx context.Context) error {
@@ -142,6 +153,12 @@ func nextReconnectDelay(current, max time.Duration) time.Duration {
 }
 
 func (s *HeadSyncService[PoolID, Event]) handleHead(ctx context.Context, head blockchain.BlockHeader) error {
+	s.handleMu.Lock()
+	defer s.handleMu.Unlock()
+	return s.handleHeadLocked(ctx, head)
+}
+
+func (s *HeadSyncService[PoolID, Event]) handleHeadLocked(ctx context.Context, head blockchain.BlockHeader) error {
 	localHead := s.LocalHead()
 	if ShouldSkipHeadNotification(localHead, head) {
 		return nil

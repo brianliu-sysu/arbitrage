@@ -74,16 +74,27 @@ func (s *PoolLifecycleService[PoolID]) StartAll(ctx context.Context, blockNumber
 }
 
 func (s *PoolLifecycleService[PoolID]) Start(ctx context.Context, poolID PoolID, blockNumber uint64) error {
+	if err := s.BootstrapInactive(ctx, poolID, blockNumber); err != nil {
+		return err
+	}
+	s.Activate(poolID)
+	return nil
+}
+
+// BootstrapInactive initializes pool state without adding it to the live head-sync active set.
+func (s *PoolLifecycleService[PoolID]) BootstrapInactive(ctx context.Context, poolID PoolID, blockNumber uint64) error {
 	if err := s.hooks.Bootstrap(ctx, poolID, blockNumber); err != nil {
 		return fmt.Errorf("bootstrap pool %v: %w", poolID, err)
 	}
+	s.readiness.SetPoolReady(poolID, false)
+	return nil
+}
 
+// Activate adds a bootstrapped pool to the live head-sync active set.
+func (s *PoolLifecycleService[PoolID]) Activate(poolID PoolID) {
 	s.mu.Lock()
 	s.active[poolID] = struct{}{}
 	s.mu.Unlock()
-
-	s.readiness.SetPoolReady(poolID, false)
-	return nil
 }
 
 func (s *PoolLifecycleService[PoolID]) Stop(poolID PoolID) {
@@ -98,6 +109,18 @@ func (s *PoolLifecycleService[PoolID]) Add(ctx context.Context, poolID PoolID, b
 		return fmt.Errorf("add pool to registry: %w", err)
 	}
 	return s.Start(ctx, poolID, blockNumber)
+}
+
+// RegisterAndBootstrapInactive adds a pool to the registry and bootstraps it without activating live head sync.
+func (s *PoolLifecycleService[PoolID]) RegisterAndBootstrapInactive(ctx context.Context, poolID PoolID, blockNumber uint64) error {
+	if err := s.hooks.Register(ctx, poolID); err != nil {
+		return fmt.Errorf("add pool to registry: %w", err)
+	}
+	if err := s.BootstrapInactive(ctx, poolID, blockNumber); err != nil {
+		_ = s.hooks.Unregister(ctx, poolID)
+		return err
+	}
+	return nil
 }
 
 func (s *PoolLifecycleService[PoolID]) Remove(ctx context.Context, poolID PoolID) error {
