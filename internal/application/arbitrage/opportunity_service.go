@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"sync"
 	"time"
 
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
@@ -39,6 +40,7 @@ type OpportunityService struct {
 	optimizer      *domainarb.Optimizer
 	gas            domainarb.GasEstimator
 	flashLoans     []domainarb.FlashLoanOption
+	mu             sync.RWMutex
 	strategies     []domainarb.Strategy
 	readiness      ReadinessChecker
 	logger         *zap.Logger
@@ -92,17 +94,20 @@ func NewOpportunityService(
 
 // SetStrategies replaces the active arbitrage strategies.
 func (s *OpportunityService) SetStrategies(strategies []domainarb.Strategy) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.strategies = append([]domainarb.Strategy(nil), strategies...)
 }
 
 // Generate evaluates affected routes and returns accepted opportunities.
 func (s *OpportunityService) Generate(ctx context.Context, req GenerateRequest) ([]*domainarb.Opportunity, error) {
+	strategies := s.strategiesSnapshot()
 	if s.readiness != nil && !s.readiness.IsSystemReady() {
 		s.logger.Debug("arbitrage scan skipped",
 			zap.Uint64("block", req.BlockNumber),
 			zap.String("reason", "system_not_ready"),
 			zap.Int("routes", len(req.Routes)),
-			zap.Int("strategies", len(s.strategies)),
+			zap.Int("strategies", len(strategies)),
 		)
 		return nil, nil
 	}
@@ -110,11 +115,11 @@ func (s *OpportunityService) Generate(ctx context.Context, req GenerateRequest) 
 		s.logger.Debug("arbitrage scan skipped",
 			zap.Uint64("block", req.BlockNumber),
 			zap.String("reason", "no_affected_routes"),
-			zap.Int("strategies", len(s.strategies)),
+			zap.Int("strategies", len(strategies)),
 		)
 		return nil, nil
 	}
-	if len(s.strategies) == 0 {
+	if len(strategies) == 0 {
 		s.logger.Debug("arbitrage scan skipped",
 			zap.Uint64("block", req.BlockNumber),
 			zap.String("reason", "no_strategies"),
@@ -140,7 +145,7 @@ func (s *OpportunityService) Generate(ctx context.Context, req GenerateRequest) 
 			continue
 		}
 
-		for _, strategy := range s.strategies {
+		for _, strategy := range strategies {
 			if !matchesStrategy(strategy, routeRef) {
 				strategyMismatches++
 				continue
@@ -169,7 +174,7 @@ func (s *OpportunityService) Generate(ctx context.Context, req GenerateRequest) 
 	s.logger.Debug("arbitrage scan completed",
 		zap.Uint64("block", req.BlockNumber),
 		zap.Int("routes", len(req.Routes)),
-		zap.Int("strategies", len(s.strategies)),
+		zap.Int("strategies", len(strategies)),
 		zap.Int("route_not_ready", routeNotReady),
 		zap.Int("strategy_mismatches", strategyMismatches),
 		zap.Int("generate_errors", quoteErrors),
@@ -177,6 +182,12 @@ func (s *OpportunityService) Generate(ctx context.Context, req GenerateRequest) 
 		zap.Int("opportunities", len(opportunities)),
 	)
 	return opportunities, nil
+}
+
+func (s *OpportunityService) strategiesSnapshot() []domainarb.Strategy {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]domainarb.Strategy(nil), s.strategies...)
 }
 
 func (s *OpportunityService) generateForRoute(

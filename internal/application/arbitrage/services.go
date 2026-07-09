@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"sync"
 
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
 	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
@@ -67,6 +68,7 @@ type Services struct {
 	Opportunities *OpportunityService
 	Publish       *PublishService
 
+	mu                    sync.RWMutex
 	routeDeps             routeRefreshDeps
 	configuredStartTokens []common.Address
 	spreadStartTokens     []common.Address
@@ -182,7 +184,7 @@ func (s *Services) StartTokens() []common.Address {
 	if s == nil {
 		return nil
 	}
-	return dedupeStartTokens(collectStrategyStartTokens(s.strategies))
+	return dedupeStartTokens(collectStrategyStartTokens(s.strategiesSnapshot()))
 }
 
 // RefreshArbitrageRoutes rebuilds monitored triangle and spread routes from synced pool state.
@@ -201,9 +203,10 @@ func (s *Services) RefreshArbitrageRoutes(ctx context.Context) (int, error) {
 	triangleTokens := ResolveTriangleStartTokens(s.configuredStartTokens, graph.Edges(), autoStartTokenCount)
 	spreadTokens := ResolveSpreadStartTokens(s.spreadStartTokens, triangleTokens, graph.Edges())
 	s.updateArbitrageStrategies(triangleTokens, spreadTokens)
+	strategies := s.strategiesSnapshot()
 
 	s.Scan.ClearMonitoredRoutes()
-	return registerMonitoredRoutes(s.Scan, s.strategies, graph), nil
+	return registerMonitoredRoutes(s.Scan, strategies, graph), nil
 }
 
 // RefreshTriangleRoutes rebuilds triangle routes only. Prefer RefreshArbitrageRoutes when spread is enabled.
@@ -224,10 +227,18 @@ func (s *Services) updateArbitrageStrategies(triangleTokens, spreadTokens []comm
 		s.minNetProfitWei,
 		s.spreadMinNetProfitWei,
 	)
-	s.strategies = strategies
+	s.mu.Lock()
+	s.strategies = append([]domainarb.Strategy(nil), strategies...)
+	s.mu.Unlock()
 	if s.Opportunities != nil {
 		s.Opportunities.SetStrategies(strategies)
 	}
+}
+
+func (s *Services) strategiesSnapshot() []domainarb.Strategy {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]domainarb.Strategy(nil), s.strategies...)
 }
 
 func routeRefreshDepsToServiceDeps(deps routeRefreshDeps) ServiceDeps {
