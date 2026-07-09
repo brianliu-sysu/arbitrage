@@ -12,6 +12,7 @@ import (
 
 	arbitrageapp "github.com/brianliu-sysu/uniswapv3/internal/application/arbitrage"
 	assetapp "github.com/brianliu-sysu/uniswapv3/internal/application/asset"
+	contractapp "github.com/brianliu-sysu/uniswapv3/internal/application/contract"
 	poolmanager "github.com/brianliu-sysu/uniswapv3/internal/application/poolmanager"
 	poolsapp "github.com/brianliu-sysu/uniswapv3/internal/application/pools"
 	quotecombined "github.com/brianliu-sysu/uniswapv3/internal/application/quote/combined"
@@ -80,6 +81,7 @@ func Module(params Params) fx.Option {
 			newQuoteV4AppService,
 			newQuoteCombinedAppService,
 			newPoolsAppService,
+			newContractExecutorAppService,
 			newHTTPRouter,
 		),
 		fx.Invoke(registerLoggerLifecycle, registerSyncLifecycle, registerHTTPLifecycle),
@@ -129,6 +131,14 @@ func newPersistence(cfg config.Config) (*persistence.Services, error) {
 func newBlockchain(cfg config.Config) (*chaininfra.Services, error) {
 	chainCfg := cfg.PrimaryRuntimeConfig()
 	return chaininfra.NewServices(chainCfg.BlockchainConfig())
+}
+
+func newContractExecutorAppService() (*contractapp.AppService, error) {
+	broadcaster, err := chaininfra.NewContractExecutorBroadcaster()
+	if err != nil {
+		return nil, err
+	}
+	return contractapp.NewAppService(broadcaster), nil
 }
 
 func newPoolRegistry(cfg config.Config) *registry.CompositeRegistry {
@@ -788,7 +798,7 @@ func newPoolsAppService(
 	)
 }
 
-func newHTTPRouter(runtimes *runtimeSet) *gin.Engine {
+func newHTTPRouter(runtimes *runtimeSet, contractExecutor *contractapp.AppService) *gin.Engine {
 	chains, services := newHTTPChainServices(runtimes)
 	return httpapi.NewRouter(httpapi.Handlers{
 		Health:           httpapi.NewHealthHandler(),
@@ -799,6 +809,7 @@ func newHTTPRouter(runtimes *runtimeSet) *gin.Engine {
 		QuoteV4:          httpapi.NewQuoteV4ChainHandler(chains, services.quoteV4),
 		Opportunities:    httpapi.NewOpportunityChainHandler(chains, services.opportunities),
 		Pools:            httpapi.NewPoolsChainHandler(chains, services.pools),
+		ContractExecutor: httpapi.NewContractExecutorHandler(contractExecutor),
 	})
 }
 

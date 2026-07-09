@@ -18,6 +18,7 @@ type Handlers struct {
 	QuoteQuickSwapV3 *QuoteQuickSwapV3Handler
 	Opportunities    *OpportunityHandler
 	Pools            *PoolsHandler
+	ContractExecutor *ContractExecutorHandler
 }
 
 // NewRouter registers HTTP routes on a Gin engine.
@@ -57,6 +58,9 @@ func NewRouter(handlers Handlers) *gin.Engine {
 		if handlers.Pools != nil {
 			v1.GET("/pools/diagnostics", handlers.Pools.HandleDiagnostics)
 			v1.GET("/pools", handlers.Pools.HandleList)
+		}
+		if handlers.ContractExecutor != nil {
+			v1.POST("/contracts/arbitrage/execute", handlers.ContractExecutor.HandleExecute)
 		}
 	}
 
