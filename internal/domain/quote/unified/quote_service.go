@@ -36,6 +36,16 @@ type QuoteService struct {
 	balancer  *quotebalancer.QuoteService
 }
 
+type RouteQuoteStep struct {
+	Index        int
+	Hop          RouteHop
+	AmountIn     *big.Int
+	AmountOut    *big.Int
+	FeeAmount    *big.Int
+	SqrtPriceX96 *big.Int
+	Tick         int32
+}
+
 func NewQuoteService(v3 *quoteuniv3.QuoteService, pancake *quotepancakev3.QuoteService, v4 *quoteuniv4.QuoteService, balancer ...*quotebalancer.QuoteService) *QuoteService {
 	if v3 == nil {
 		v3 = quoteuniv3.NewQuoteService()
@@ -105,29 +115,49 @@ func (s *QuoteService) QuoteExactOutputBalancer(pool *marketbalancer.Pool, token
 
 // QuoteRoute quotes an exact-input swap along a multi-hop unified route.
 func (s *QuoteService) QuoteRoute(pools RoutePools, route Route, amountIn *big.Int) (quoteshared.QuoteResult, error) {
+	steps, err := s.QuoteRouteSteps(pools, route, amountIn)
+	if err != nil {
+		return quoteshared.QuoteResult{}, err
+	}
+	totalFee := big.NewInt(0)
+	for _, step := range steps {
+		totalFee.Add(totalFee, step.FeeAmount)
+	}
+	last := steps[len(steps)-1]
+
+	return quoteshared.NewQuoteResult(amountIn, last.AmountOut, totalFee, last.SqrtPriceX96, last.Tick), nil
+}
+
+func (s *QuoteService) QuoteRouteSteps(pools RoutePools, route Route, amountIn *big.Int) ([]RouteQuoteStep, error) {
 	if amountIn == nil || amountIn.Sign() <= 0 {
-		return quoteshared.QuoteResult{}, fmt.Errorf("amountIn must be positive")
+		return nil, fmt.Errorf("amountIn must be positive")
 	}
 	if len(route.Hops) == 0 {
-		return quoteshared.QuoteResult{}, fmt.Errorf("route has no hops")
+		return nil, fmt.Errorf("route has no hops")
 	}
 
 	currentAmount := new(big.Int).Set(amountIn)
-	totalFee := big.NewInt(0)
-	var last quoteshared.QuoteResult
+	steps := make([]RouteQuoteStep, 0, len(route.Hops))
 
 	for i, hop := range route.Hops {
 		step, err := s.quoteHop(pools, hop, currentAmount)
 		if err != nil {
-			return quoteshared.QuoteResult{}, fmt.Errorf("hop %d: %w", i, err)
+			return nil, fmt.Errorf("hop %d: %w", i, err)
 		}
 
-		totalFee.Add(totalFee, step.FeeAmount)
+		steps = append(steps, RouteQuoteStep{
+			Index:        i,
+			Hop:          hop,
+			AmountIn:     new(big.Int).Set(currentAmount),
+			AmountOut:    cloneBigInt(step.AmountOut),
+			FeeAmount:    cloneBigInt(step.FeeAmount),
+			SqrtPriceX96: cloneBigInt(step.SqrtPriceX96),
+			Tick:         step.Tick,
+		})
 		currentAmount = step.AmountOut
-		last = step
 	}
 
-	return quoteshared.NewQuoteResult(amountIn, currentAmount, totalFee, last.SqrtPriceX96, last.Tick), nil
+	return steps, nil
 }
 
 func (s *QuoteService) quoteHop(pools RoutePools, hop RouteHop, amountIn *big.Int) (quoteshared.QuoteResult, error) {
@@ -167,4 +197,11 @@ func (s *QuoteService) quoteHop(pools RoutePools, hop RouteHop, amountIn *big.In
 	default:
 		return quoteshared.QuoteResult{}, fmt.Errorf("unsupported pool version %d", hop.Version)
 	}
+}
+
+func cloneBigInt(v *big.Int) *big.Int {
+	if v == nil {
+		return big.NewInt(0)
+	}
+	return new(big.Int).Set(v)
 }

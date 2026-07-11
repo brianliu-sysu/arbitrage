@@ -152,7 +152,7 @@ func refreshPlanAmounts(plan domaincontract.ExecutionPlan, opportunity *domainar
 	}
 	if originalLoanAmount != nil && plan.Loan.Amount != nil && originalLoanAmount.Cmp(plan.Loan.Amount) != 0 {
 		for i, route := range plan.Routes {
-			if route.FillToken == (common.Address{}) {
+			if route.FillSource == domaincontract.FillSourceNone {
 				return domaincontract.ExecutionPlan{}, fmt.Errorf(
 					"embedded execution route[%d] has fixed calldata amount; refusing to change loan amount from %s to %s",
 					i,

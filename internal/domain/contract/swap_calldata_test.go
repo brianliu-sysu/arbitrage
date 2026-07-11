@@ -44,6 +44,31 @@ func TestPackExactInputSingleAmountInOffset(t *testing.T) {
 	}
 }
 
+func TestPackPancakeV3ExactInputSingleAmountInOffset(t *testing.T) {
+	amount := big.NewInt(999)
+	data, err := PackPancakeV3ExactInputSingle(ExactInputSingleParams{
+		TokenIn:          common.HexToAddress("0x1"),
+		TokenOut:         common.HexToAddress("0x2"),
+		Fee:              big.NewInt(500),
+		Recipient:        common.HexToAddress("0x3"),
+		AmountIn:         amount,
+		AmountOutMinimum: big.NewInt(0),
+	})
+	if err != nil {
+		t.Fatalf("pack pancake exactInputSingle: %v", err)
+	}
+	if got, want := common.Bytes2Hex(data[:4]), "414bf389"; got != want {
+		t.Fatalf("expected pancake selector %s, got %s", want, got)
+	}
+	if len(data) < PancakeV3ExactInputSingleAmountInOffset+32 {
+		t.Fatalf("calldata too short: %d", len(data))
+	}
+	got := new(big.Int).SetBytes(data[PancakeV3ExactInputSingleAmountInOffset : PancakeV3ExactInputSingleAmountInOffset+32])
+	if got.Cmp(amount) != 0 {
+		t.Fatalf("expected amountIn %s at offset %d, got %s", amount, PancakeV3ExactInputSingleAmountInOffset, got)
+	}
+}
+
 func TestPackBalancerVaultSwapAmountOffset(t *testing.T) {
 	amount := big.NewInt(4242)
 	data, err := PackBalancerVaultSwap(BalancerVaultSwapParams{

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"strings"
 	"sync"
 	"time"
 
@@ -200,6 +201,9 @@ func (s *OpportunityService) generateForRoute(
 	if err != nil {
 		return nil, err
 	}
+	if err := ensureRoutePoolsSyncedAtBlock(routeRef.Route, pools, blockNumber); err != nil {
+		return nil, err
+	}
 
 	quoter := routeQuoter{
 		quotes: s.quotes,
@@ -210,6 +214,7 @@ func (s *OpportunityService) generateForRoute(
 	if err != nil {
 		return nil, err
 	}
+	quoteSteps, quoteStepsErr := s.quotes.QuoteRouteSteps(pools, routeRef.Route, optimized.AmountIn)
 	if optimized.AmountIn.Sign() <= 0 {
 		s.logger.Debug("arbitrage route rejected",
 			zap.Uint64("block", blockNumber),
@@ -240,6 +245,7 @@ func (s *OpportunityService) generateForRoute(
 		AmountOut:   optimized.AmountOut,
 		GasCost:     gas.CostWei,
 		FlashLoan:   flashLoan,
+		QuoteSteps:  opportunityQuoteSteps(quoteSteps),
 	})
 	if !evaluation.Accepted {
 		s.logger.Debug("arbitrage route rejected",
@@ -257,6 +263,7 @@ func (s *OpportunityService) generateForRoute(
 			zap.String("net_profit", evaluation.NetProfit.String()),
 			zap.Bool("profitable", evaluation.Profitable),
 			zap.String("min_net_profit", bigIntString(strategy.MinNetProfitWei)),
+			zap.String("quote_steps", formatQuoteSteps(quoteSteps, quoteStepsErr)),
 		)
 		return nil, nil
 	}
@@ -273,7 +280,10 @@ func (s *OpportunityService) generateForRoute(
 		zap.String("flash_loan_protocol", string(flashLoan.Protocol)),
 		zap.String("flash_loan_pool", flashLoan.PoolRef.Key()),
 		zap.String("flash_loan_fee", flashLoan.Fee.String()),
+		zap.String("amount_in", evaluation.AmountIn.String()),
+		zap.String("amount_out", evaluation.AmountOut.String()),
 		zap.String("net_profit", evaluation.NetProfit.String()),
+		zap.String("quote_steps", formatQuoteSteps(quoteSteps, quoteStepsErr)),
 	)
 	return opp, nil
 }
@@ -287,6 +297,48 @@ func bigIntString(value *big.Int) string {
 		return ""
 	}
 	return value.String()
+}
+
+func formatQuoteSteps(steps []quoteunified.RouteQuoteStep, err error) string {
+	if err != nil {
+		return "error=" + err.Error()
+	}
+	if len(steps) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(steps))
+	for _, step := range steps {
+		parts = append(parts, fmt.Sprintf(
+			"hop=%d version=%s tokenIn=%s tokenOut=%s amountIn=%s amountOut=%s fee=%s",
+			step.Index,
+			step.Hop.Version.String(),
+			step.Hop.TokenIn.Hex(),
+			step.Hop.TokenOut.Hex(),
+			bigIntString(step.AmountIn),
+			bigIntString(step.AmountOut),
+			bigIntString(step.FeeAmount),
+		))
+	}
+	return strings.Join(parts, " | ")
+}
+
+func opportunityQuoteSteps(steps []quoteunified.RouteQuoteStep) []domainarb.OpportunityQuoteStep {
+	if len(steps) == 0 {
+		return nil
+	}
+	out := make([]domainarb.OpportunityQuoteStep, 0, len(steps))
+	for _, step := range steps {
+		out = append(out, domainarb.OpportunityQuoteStep{
+			Index:     step.Index,
+			Version:   step.Hop.Version.String(),
+			TokenIn:   step.Hop.TokenIn,
+			TokenOut:  step.Hop.TokenOut,
+			AmountIn:  cloneBigIntOrZero(step.AmountIn),
+			AmountOut: cloneBigIntOrZero(step.AmountOut),
+			FeeAmount: cloneBigIntOrZero(step.FeeAmount),
+		})
+	}
+	return out
 }
 
 func (s *OpportunityService) ensureRouteReady(routeRef domainarb.RouteRef) error {
@@ -314,6 +366,58 @@ func (s *OpportunityService) ensureRouteReady(routeRef domainarb.RouteRef) error
 		case quoteunified.PoolVersionBalancer:
 			if !s.readiness.IsBalancerPoolReady(hop.PoolBalancer) {
 				return fmt.Errorf("balancer pool %s is not ready", hop.PoolBalancer.String())
+			}
+		case quoteunified.PoolVersionWrapWETH, quoteunified.PoolVersionUnwrapWETH:
+			continue
+		default:
+			return fmt.Errorf("unsupported pool version %d", hop.Version)
+		}
+	}
+	return nil
+}
+
+func ensureRoutePoolsSyncedAtBlock(route quoteunified.Route, pools quoteunified.RoutePools, blockNumber uint64) error {
+	for _, hop := range route.Hops {
+		switch hop.Version {
+		case quoteunified.PoolVersionV3:
+			pool := pools.V3[hop.PoolV3]
+			if pool == nil {
+				return fmt.Errorf("univ3 pool %s not loaded", hop.PoolV3.Hex())
+			}
+			if pool.LastBlockNumber < blockNumber {
+				return fmt.Errorf("univ3 pool %s synced at block %d before opportunity block %d", hop.PoolV3.Hex(), pool.LastBlockNumber, blockNumber)
+			}
+		case quoteunified.PoolVersionPancakeV3:
+			pool := pools.PancakeV3[hop.PoolPancakeV3]
+			if pool == nil {
+				return fmt.Errorf("pancakev3 pool %s not loaded", hop.PoolPancakeV3.Hex())
+			}
+			if pool.LastBlockNumber < blockNumber {
+				return fmt.Errorf("pancakev3 pool %s synced at block %d before opportunity block %d", hop.PoolPancakeV3.Hex(), pool.LastBlockNumber, blockNumber)
+			}
+		case quoteunified.PoolVersionQuickSwapV3:
+			pool := pools.QuickSwapV3[hop.PoolQuickSwapV3]
+			if pool == nil {
+				return fmt.Errorf("quickswapv3 pool %s not loaded", hop.PoolQuickSwapV3.Hex())
+			}
+			if pool.LastBlockNumber < blockNumber {
+				return fmt.Errorf("quickswapv3 pool %s synced at block %d before opportunity block %d", hop.PoolQuickSwapV3.Hex(), pool.LastBlockNumber, blockNumber)
+			}
+		case quoteunified.PoolVersionV4:
+			pool := pools.V4[hop.PoolV4]
+			if pool == nil {
+				return fmt.Errorf("v4 pool %s not loaded", hop.PoolV4.String())
+			}
+			if pool.LastBlockNumber < blockNumber {
+				return fmt.Errorf("v4 pool %s synced at block %d before opportunity block %d", hop.PoolV4.String(), pool.LastBlockNumber, blockNumber)
+			}
+		case quoteunified.PoolVersionBalancer:
+			pool := pools.Balancer[hop.PoolBalancer]
+			if pool == nil {
+				return fmt.Errorf("balancer pool %s not loaded", hop.PoolBalancer.String())
+			}
+			if pool.LastBlockNumber < blockNumber {
+				return fmt.Errorf("balancer pool %s synced at block %d before opportunity block %d", hop.PoolBalancer.String(), pool.LastBlockNumber, blockNumber)
 			}
 		case quoteunified.PoolVersionWrapWETH, quoteunified.PoolVersionUnwrapWETH:
 			continue

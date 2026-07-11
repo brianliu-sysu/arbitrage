@@ -176,6 +176,11 @@ contract MockSwapTarget {
         require(msg.value > 0, "zero deposit");
     }
 
+    function sendETH(address payable to, uint256 amount) external {
+        (bool ok,) = to.call{ value: amount }("");
+        require(ok, "send eth failed");
+    }
+
     function forcePoolManagerDelta(MockPoolManager manager, address target, address token, int256 delta) external {
         manager.forceDelta(target, Currency.wrap(token), delta);
     }
@@ -240,6 +245,61 @@ contract ArbitrageExecutorTest is Test {
         assertEq(token.balanceOf(address(vault)), plan.loan.amount);
     }
 
+    function testExecuteTransfersNativeProfit() external {
+        uint256 nativeProfit = 2 ether;
+        _setProfitRecipient();
+        vm.deal(address(swapTarget), nativeProfit);
+
+        ArbitrageExecutor.RouterCall[] memory routers = new ArbitrageExecutor.RouterCall[](1);
+        routers[0] = ArbitrageExecutor.RouterCall({
+            routerAddress: address(swapTarget),
+            value: 0,
+            data: abi.encodeCall(MockSwapTarget.sendETH, (payable(address(executor)), nativeProfit)),
+            fillSource: ArbitrageExecutor.FillSource.None,
+            fillToken: address(0),
+            patchAmount: false,
+            amountAsCallValue: false,
+            fillOffset: 0
+        });
+
+        ArbitrageExecutor.ExecutionPlan memory plan = ArbitrageExecutor.ExecutionPlan({
+            loan: ArbitrageExecutor.FlashLoan({
+                protocol: ArbitrageExecutor.FlashLoanProtocol.Balancer,
+                lender: address(vault),
+                token: address(token),
+                amount: 100 ether,
+                borrowToken0: true
+            }),
+            routers: routers,
+            settleCurrencies: new address[](0),
+            profitToken: address(0),
+            minProfit: nativeProfit,
+            deadline: block.timestamp + 1
+        });
+
+        vm.prank(operator);
+        uint256 returnedProfit = executor.execute(plan);
+
+        assertEq(returnedProfit, nativeProfit);
+        assertEq(recipient.balance, nativeProfit);
+        assertEq(address(executor).balance, 0);
+    }
+
+    function testRejectsDirectBalancerCallbackWithoutActiveExecution() external {
+        ArbitrageExecutor.ExecutionPlan memory plan = _balancerPlan(25 ether, 1 ether);
+        uint256[] memory initialFillBalances = new uint256[](plan.routers.length);
+        bytes memory userData = abi.encode(operator, plan, uint256(0), initialFillBalances);
+        BalancerIERC20[] memory tokens = new BalancerIERC20[](1);
+        tokens[0] = BalancerIERC20(address(token));
+        uint256[] memory amounts = new uint256[](1);
+        amounts[0] = plan.loan.amount;
+        uint256[] memory fees = new uint256[](1);
+
+        vm.prank(address(vault));
+        vm.expectRevert(ArbitrageExecutor.InvalidCallback.selector);
+        executor.receiveFlashLoan(tokens, amounts, fees, userData);
+    }
+
     function testExecuteDefaultsProfitRecipientToOwner() external {
         uint256 profit = 25 ether;
         ArbitrageExecutor.ExecutionPlan memory plan = _balancerPlan(profit, 1 ether);
@@ -261,7 +321,10 @@ contract ArbitrageExecutorTest is Test {
             routerAddress: address(swapTarget),
             value: 0,
             data: abi.encodeCall(MockSwapTarget.mintProfit, (token, address(executor), mintedAmount)),
+            fillSource: ArbitrageExecutor.FillSource.None,
             fillToken: address(0),
+            patchAmount: false,
+            amountAsCallValue: false,
             fillOffset: 0
         });
 
@@ -295,6 +358,47 @@ contract ArbitrageExecutorTest is Test {
         executor.execute(plan);
     }
 
+    function testExecuteRevertsWithInsufficientRepayBalance() external {
+        uint256 loanAmount = 100 ether;
+        ArbitrageExecutor.RouterCall[] memory routers = new ArbitrageExecutor.RouterCall[](1);
+        routers[0] = ArbitrageExecutor.RouterCall({
+            routerAddress: address(swapTarget),
+            value: 0,
+            data: abi.encodeCall(MockSwapTarget.pullAndMint, (token, loanAmount, uint256(0))),
+            fillSource: ArbitrageExecutor.FillSource.None,
+            fillToken: address(0),
+            patchAmount: false,
+            amountAsCallValue: false,
+            fillOffset: 0
+        });
+
+        vm.prank(address(executor));
+        token.approve(address(swapTarget), type(uint256).max);
+
+        ArbitrageExecutor.ExecutionPlan memory plan = ArbitrageExecutor.ExecutionPlan({
+            loan: ArbitrageExecutor.FlashLoan({
+                protocol: ArbitrageExecutor.FlashLoanProtocol.Balancer,
+                lender: address(vault),
+                token: address(token),
+                amount: loanAmount,
+                borrowToken0: true
+            }),
+            routers: routers,
+            settleCurrencies: new address[](0),
+            profitToken: address(token),
+            minProfit: 0,
+            deadline: block.timestamp + 1
+        });
+
+        vm.prank(operator);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ArbitrageExecutor.InsufficientRepayBalance.selector, address(token), uint256(0), loanAmount
+            )
+        );
+        executor.execute(plan);
+    }
+
     function testExecuteMultipleRouterCallsTransfersProfit() external {
         MockERC20 outputToken = new MockERC20("Output Token", "OUT");
         uint256 intermediateAmount = 40 ether;
@@ -306,14 +410,20 @@ contract ArbitrageExecutorTest is Test {
             routerAddress: address(swapTarget),
             value: 0,
             data: abi.encodeCall(MockSwapTarget.mintProfit, (outputToken, address(executor), intermediateAmount)),
+            fillSource: ArbitrageExecutor.FillSource.None,
             fillToken: address(0),
+            patchAmount: false,
+            amountAsCallValue: false,
             fillOffset: 0
         });
         routers[1] = ArbitrageExecutor.RouterCall({
             routerAddress: address(swapTarget),
             value: 0,
             data: abi.encodeCall(MockSwapTarget.mintProfit, (token, address(executor), profit)),
+            fillSource: ArbitrageExecutor.FillSource.None,
             fillToken: address(0),
+            patchAmount: false,
+            amountAsCallValue: false,
             fillOffset: 0
         });
 
@@ -343,8 +453,10 @@ contract ArbitrageExecutorTest is Test {
     function testExecuteFillsAmountFromLiveTokenBalance() external {
         MockERC20 midToken = new MockERC20("Mid Token", "MID");
         uint256 intermediateAmount = 40 ether;
+        uint256 historicalAmount = 7 ether;
         uint256 profit = 25 ether;
         _setProfitRecipient();
+        midToken.mint(address(executor), historicalAmount);
 
         // pullDynamicAndMint(tokenIn, tokenOut, pullAmount, mintAmount):
         // selector(4) + tokenIn(32) + tokenOut(32) + pullAmount@68.
@@ -357,14 +469,20 @@ contract ArbitrageExecutorTest is Test {
             routerAddress: address(swapTarget),
             value: 0,
             data: abi.encodeCall(MockSwapTarget.mintProfit, (midToken, address(executor), intermediateAmount)),
+            fillSource: ArbitrageExecutor.FillSource.None,
             fillToken: address(0),
+            patchAmount: false,
+            amountAsCallValue: false,
             fillOffset: 0
         });
         routers[1] = ArbitrageExecutor.RouterCall({
             routerAddress: address(swapTarget),
             value: 0,
             data: secondCall,
+            fillSource: ArbitrageExecutor.FillSource.ERC20Balance,
             fillToken: address(midToken),
+            patchAmount: true,
+            amountAsCallValue: false,
             fillOffset: fillOffset
         });
 
@@ -391,23 +509,95 @@ contract ArbitrageExecutorTest is Test {
 
         assertEq(returnedProfit, profit);
         assertEq(token.balanceOf(recipient), profit);
-        assertEq(midToken.balanceOf(address(executor)), 0);
+        assertEq(midToken.balanceOf(address(executor)), historicalAmount);
         assertEq(midToken.balanceOf(address(swapTarget)), intermediateAmount);
+    }
+
+    function testExecuteRevertsWhenFillOffsetIsOutOfRange() external {
+        MockERC20 midToken = new MockERC20("Mid Token", "MID");
+        uint256 intermediateAmount = 40 ether;
+        uint256 profit = 25 ether;
+
+        bytes memory secondCall =
+            abi.encodeCall(MockSwapTarget.pullDynamicAndMint, (midToken, token, uint256(0), profit));
+
+        ArbitrageExecutor.RouterCall[] memory routers = new ArbitrageExecutor.RouterCall[](2);
+        routers[0] = ArbitrageExecutor.RouterCall({
+            routerAddress: address(swapTarget),
+            value: 0,
+            data: abi.encodeCall(MockSwapTarget.mintProfit, (midToken, address(executor), intermediateAmount)),
+            fillSource: ArbitrageExecutor.FillSource.None,
+            fillToken: address(0),
+            patchAmount: false,
+            amountAsCallValue: false,
+            fillOffset: 0
+        });
+        routers[1] = ArbitrageExecutor.RouterCall({
+            routerAddress: address(swapTarget),
+            value: 0,
+            data: secondCall,
+            fillSource: ArbitrageExecutor.FillSource.ERC20Balance,
+            fillToken: address(midToken),
+            patchAmount: true,
+            amountAsCallValue: false,
+            fillOffset: secondCall.length
+        });
+
+        ArbitrageExecutor.ExecutionPlan memory plan = ArbitrageExecutor.ExecutionPlan({
+            loan: ArbitrageExecutor.FlashLoan({
+                protocol: ArbitrageExecutor.FlashLoanProtocol.Balancer,
+                lender: address(vault),
+                token: address(token),
+                amount: 100 ether,
+                borrowToken0: true
+            }),
+            routers: routers,
+            settleCurrencies: new address[](0),
+            profitToken: address(token),
+            minProfit: profit,
+            deadline: block.timestamp + 1
+        });
+
+        vm.prank(operator);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ArbitrageExecutor.InvalidFillOffset.selector, uint256(1), secondCall.length, secondCall.length
+            )
+        );
+        executor.execute(plan);
     }
 
     function testExecuteFillsAmountFromNativeETHBalance() external {
         uint256 ethAmount = 5 ether;
+        uint256 historicalETH = 2 ether;
         uint256 profit = 25 ether;
-        address nativeToken = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
         _setProfitRecipient();
-        vm.deal(address(executor), ethAmount);
+        vm.deal(address(executor), historicalETH);
+        vm.deal(address(swapTarget), ethAmount);
 
         // spendETHAndMint(amount, tokenOut, mintAmount): selector(4) + amount@4.
         bytes memory callData = abi.encodeCall(MockSwapTarget.spendETHAndMint, (uint256(0), token, profit));
 
-        ArbitrageExecutor.RouterCall[] memory routers = new ArbitrageExecutor.RouterCall[](1);
+        ArbitrageExecutor.RouterCall[] memory routers = new ArbitrageExecutor.RouterCall[](2);
         routers[0] = ArbitrageExecutor.RouterCall({
-            routerAddress: address(swapTarget), value: ethAmount, data: callData, fillToken: nativeToken, fillOffset: 4
+            routerAddress: address(swapTarget),
+            value: 0,
+            data: abi.encodeCall(MockSwapTarget.sendETH, (payable(address(executor)), ethAmount)),
+            fillSource: ArbitrageExecutor.FillSource.None,
+            fillToken: address(0),
+            patchAmount: false,
+            amountAsCallValue: false,
+            fillOffset: 0
+        });
+        routers[1] = ArbitrageExecutor.RouterCall({
+            routerAddress: address(swapTarget),
+            value: 0,
+            data: callData,
+            fillSource: ArbitrageExecutor.FillSource.NativeBalance,
+            fillToken: address(0),
+            patchAmount: true,
+            amountAsCallValue: true,
+            fillOffset: 4
         });
 
         ArbitrageExecutor.ExecutionPlan memory plan = ArbitrageExecutor.ExecutionPlan({
@@ -430,33 +620,48 @@ contract ArbitrageExecutorTest is Test {
 
         assertEq(returnedProfit, profit);
         assertEq(token.balanceOf(recipient), profit);
-        assertEq(address(executor).balance, 0);
+        assertEq(address(executor).balance, historicalETH);
         assertEq(address(swapTarget).balance, ethAmount);
     }
 
     function testExecuteFillsNativeValueForSelectorOnlyCall() external {
         uint256 ethAmount = 3 ether;
         uint256 profit = 25 ether;
-        address nativeToken = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
         _setProfitRecipient();
-        vm.deal(address(executor), ethAmount);
+        vm.deal(address(swapTarget), ethAmount);
 
         // deposit() is selector-only; fill must override msg.value without patching calldata.
         bytes memory callData = abi.encodeCall(MockSwapTarget.deposit, ());
 
-        ArbitrageExecutor.RouterCall[] memory routers = new ArbitrageExecutor.RouterCall[](2);
+        ArbitrageExecutor.RouterCall[] memory routers = new ArbitrageExecutor.RouterCall[](3);
         routers[0] = ArbitrageExecutor.RouterCall({
             routerAddress: address(swapTarget),
             value: 0,
-            data: callData,
-            fillToken: nativeToken,
+            data: abi.encodeCall(MockSwapTarget.sendETH, (payable(address(executor)), ethAmount)),
+            fillSource: ArbitrageExecutor.FillSource.None,
+            fillToken: address(0),
+            patchAmount: false,
+            amountAsCallValue: false,
             fillOffset: 0
         });
         routers[1] = ArbitrageExecutor.RouterCall({
             routerAddress: address(swapTarget),
             value: 0,
-            data: abi.encodeCall(MockSwapTarget.mintProfit, (token, address(executor), profit)),
+            data: callData,
+            fillSource: ArbitrageExecutor.FillSource.NativeBalance,
             fillToken: address(0),
+            patchAmount: false,
+            amountAsCallValue: true,
+            fillOffset: 0
+        });
+        routers[2] = ArbitrageExecutor.RouterCall({
+            routerAddress: address(swapTarget),
+            value: 0,
+            data: abi.encodeCall(MockSwapTarget.mintProfit, (token, address(executor), profit)),
+            fillSource: ArbitrageExecutor.FillSource.None,
+            fillToken: address(0),
+            patchAmount: false,
+            amountAsCallValue: false,
             fillOffset: 0
         });
 
@@ -486,19 +691,31 @@ contract ArbitrageExecutorTest is Test {
     function testExecuteFillsNativeValueWithoutPatchingRouterCalldata() external {
         uint256 ethAmount = 3 ether;
         uint256 profit = 25 ether;
-        address nativeToken = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
         _setProfitRecipient();
-        vm.deal(address(executor), ethAmount);
+        vm.deal(address(swapTarget), ethAmount);
 
         // fillOffset=0 for native means "override msg.value only"; calldata keeps its encoded amount.
         bytes memory callData = abi.encodeCall(MockSwapTarget.spendETHAndMint, (ethAmount, token, profit));
 
-        ArbitrageExecutor.RouterCall[] memory routers = new ArbitrageExecutor.RouterCall[](1);
+        ArbitrageExecutor.RouterCall[] memory routers = new ArbitrageExecutor.RouterCall[](2);
         routers[0] = ArbitrageExecutor.RouterCall({
             routerAddress: address(swapTarget),
             value: 0,
+            data: abi.encodeCall(MockSwapTarget.sendETH, (payable(address(executor)), ethAmount)),
+            fillSource: ArbitrageExecutor.FillSource.None,
+            fillToken: address(0),
+            patchAmount: false,
+            amountAsCallValue: false,
+            fillOffset: 0
+        });
+        routers[1] = ArbitrageExecutor.RouterCall({
+            routerAddress: address(swapTarget),
+            value: 0,
             data: callData,
-            fillToken: nativeToken,
+            fillSource: ArbitrageExecutor.FillSource.NativeBalance,
+            fillToken: address(0),
+            patchAmount: false,
+            amountAsCallValue: true,
             fillOffset: 0
         });
 
@@ -550,7 +767,10 @@ contract ArbitrageExecutorTest is Test {
             routerAddress: address(swapTarget),
             value: 0,
             data: abi.encodeCall(MockSwapTarget.mintProfit, (token, address(executor), profit)),
+            fillSource: ArbitrageExecutor.FillSource.None,
             fillToken: address(0),
+            patchAmount: false,
+            amountAsCallValue: false,
             fillOffset: 0
         });
 
@@ -593,7 +813,10 @@ contract ArbitrageExecutorTest is Test {
             routerAddress: address(swapTarget),
             value: 0,
             data: abi.encodeCall(MockSwapTarget.mintProfit, (token, address(executor), profit)),
+            fillSource: ArbitrageExecutor.FillSource.None,
             fillToken: address(0),
+            patchAmount: false,
+            amountAsCallValue: false,
             fillOffset: 0
         });
 
@@ -640,14 +863,20 @@ contract ArbitrageExecutorTest is Test {
             data: abi.encodeCall(
                 MockSwapTarget.forcePoolManagerDelta, (manager, address(executor), address(other), -int256(extraDebt))
             ),
+            fillSource: ArbitrageExecutor.FillSource.None,
             fillToken: address(0),
+            patchAmount: false,
+            amountAsCallValue: false,
             fillOffset: 0
         });
         routers[1] = ArbitrageExecutor.RouterCall({
             routerAddress: address(swapTarget),
             value: 0,
             data: abi.encodeCall(MockSwapTarget.mintProfit, (token, address(executor), profit)),
+            fillSource: ArbitrageExecutor.FillSource.None,
             fillToken: address(0),
+            patchAmount: false,
+            amountAsCallValue: false,
             fillOffset: 0
         });
 
@@ -691,7 +920,10 @@ contract ArbitrageExecutorTest is Test {
             data: abi.encodeCall(
                 MockSwapTarget.forcePoolManagerDelta, (manager, address(executor), address(other), -int256(5 ether))
             ),
+            fillSource: ArbitrageExecutor.FillSource.None,
             fillToken: address(0),
+            patchAmount: false,
+            amountAsCallValue: false,
             fillOffset: 0
         });
 
@@ -729,7 +961,10 @@ contract ArbitrageExecutorTest is Test {
             routerAddress: address(swapTarget),
             value: 0,
             data: abi.encodeCall(MockSwapTarget.mintProfit, (token, address(executor), mintedProfit)),
+            fillSource: ArbitrageExecutor.FillSource.None,
             fillToken: address(0),
+            patchAmount: false,
+            amountAsCallValue: false,
             fillOffset: 0
         });
 

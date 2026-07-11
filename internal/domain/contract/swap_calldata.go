@@ -42,6 +42,30 @@ const swapRouter02ABIJSON = `[
   }
 ]`
 
+const pancakeV3SwapRouterABIJSON = `[
+  {
+    "inputs":[{
+      "components":[
+        {"internalType":"address","name":"tokenIn","type":"address"},
+        {"internalType":"address","name":"tokenOut","type":"address"},
+        {"internalType":"uint24","name":"fee","type":"uint24"},
+        {"internalType":"address","name":"recipient","type":"address"},
+        {"internalType":"uint256","name":"deadline","type":"uint256"},
+        {"internalType":"uint256","name":"amountIn","type":"uint256"},
+        {"internalType":"uint256","name":"amountOutMinimum","type":"uint256"},
+        {"internalType":"uint160","name":"sqrtPriceLimitX96","type":"uint160"}
+      ],
+      "internalType":"struct ISwapRouter.ExactInputSingleParams",
+      "name":"params",
+      "type":"tuple"
+    }],
+    "name":"exactInputSingle",
+    "outputs":[{"internalType":"uint256","name":"amountOut","type":"uint256"}],
+    "stateMutability":"payable",
+    "type":"function"
+  }
+]`
+
 const erc20TransferABIJSON = `[
   {"inputs":[{"internalType":"address","name":"to","type":"address"},{"internalType":"uint256","name":"amount","type":"uint256"}],"name":"transfer","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"}
 ]`
@@ -172,6 +196,7 @@ var (
 var (
 	wethABI             abi.ABI
 	swapRouter02ABI     abi.ABI
+	pancakeV3RouterABI  abi.ABI
 	erc20TransferABI    abi.ABI
 	balancerVaultABI    abi.ABI
 	balancerV3RouterABI abi.ABI
@@ -192,6 +217,10 @@ func init() {
 	swapRouter02ABI, err = abi.JSON(strings.NewReader(swapRouter02ABIJSON))
 	if err != nil {
 		panic(fmt.Sprintf("parse swap router02 abi: %v", err))
+	}
+	pancakeV3RouterABI, err = abi.JSON(strings.NewReader(pancakeV3SwapRouterABIJSON))
+	if err != nil {
+		panic(fmt.Sprintf("parse pancake v3 router abi: %v", err))
 	}
 	erc20TransferABI, err = abi.JSON(strings.NewReader(erc20TransferABIJSON))
 	if err != nil {
@@ -275,6 +304,7 @@ type ExactInputSingleParams struct {
 	TokenOut          common.Address
 	Fee               *big.Int
 	Recipient         common.Address
+	Deadline          *big.Int
 	AmountIn          *big.Int
 	AmountOutMinimum  *big.Int
 	SqrtPriceLimitX96 *big.Int
@@ -313,6 +343,49 @@ func PackExactInputSingle(params ExactInputSingleParams) ([]byte, error) {
 }
 
 const ExactInputSingleAmountInOffset = 4 + 32*4
+
+func PackPancakeV3ExactInputSingle(params ExactInputSingleParams) ([]byte, error) {
+	if params.Fee == nil {
+		params.Fee = big.NewInt(0)
+	}
+	if params.Deadline == nil {
+		params.Deadline = maxUint256Big()
+	}
+	if params.AmountIn == nil {
+		params.AmountIn = big.NewInt(0)
+	}
+	if params.AmountOutMinimum == nil {
+		params.AmountOutMinimum = big.NewInt(0)
+	}
+	if params.SqrtPriceLimitX96 == nil {
+		params.SqrtPriceLimitX96 = big.NewInt(0)
+	}
+	return pancakeV3RouterABI.Pack("exactInputSingle", struct {
+		TokenIn           common.Address
+		TokenOut          common.Address
+		Fee               *big.Int
+		Recipient         common.Address
+		Deadline          *big.Int
+		AmountIn          *big.Int
+		AmountOutMinimum  *big.Int
+		SqrtPriceLimitX96 *big.Int
+	}{
+		TokenIn:           params.TokenIn,
+		TokenOut:          params.TokenOut,
+		Fee:               params.Fee,
+		Recipient:         params.Recipient,
+		Deadline:          params.Deadline,
+		AmountIn:          params.AmountIn,
+		AmountOutMinimum:  params.AmountOutMinimum,
+		SqrtPriceLimitX96: params.SqrtPriceLimitX96,
+	})
+}
+
+const PancakeV3ExactInputSingleAmountInOffset = 4 + 32*5
+
+func maxUint256Big() *big.Int {
+	return new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
+}
 
 func PackERC20Transfer(to common.Address, amount *big.Int) ([]byte, error) {
 	if amount == nil {

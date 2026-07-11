@@ -279,11 +279,14 @@ type flashLoanPayload struct {
 }
 
 type swapRoutePayload struct {
-	RouterAddress string `json:"routerAddress"`
-	Value         string `json:"value,omitempty"`
-	Data          string `json:"data"`
-	FillToken     string `json:"fillToken,omitempty"`
-	FillOffset    uint64 `json:"fillOffset,omitempty"`
+	RouterAddress     string `json:"routerAddress"`
+	Value             string `json:"value,omitempty"`
+	Data              string `json:"data"`
+	FillSource        string `json:"fillSource,omitempty"`
+	FillToken         string `json:"fillToken,omitempty"`
+	PatchAmount       *bool  `json:"patchAmount,omitempty"`
+	AmountAsCallValue *bool  `json:"amountAsCallValue,omitempty"`
+	FillOffset        uint64 `json:"fillOffset,omitempty"`
 }
 
 type approvalPayload struct {
@@ -389,13 +392,72 @@ func (p swapRoutePayload) toDomain() (domaincontract.SwapRoute, error) {
 			return domaincontract.SwapRoute{}, err
 		}
 	}
+	fillSource, fillToken, patchAmount, amountAsCallValue, err := p.resolveFillOptions(fillToken)
+	if err != nil {
+		return domaincontract.SwapRoute{}, err
+	}
 	return domaincontract.SwapRoute{
-		RouterAddress: router,
-		Value:         parseOptionalPayloadBigInt(p.Value),
-		Data:          data,
-		FillToken:     fillToken,
-		FillOffset:    p.FillOffset,
+		RouterAddress:     router,
+		Value:             parseOptionalPayloadBigInt(p.Value),
+		Data:              data,
+		FillSource:        fillSource,
+		FillToken:         fillToken,
+		PatchAmount:       patchAmount,
+		AmountAsCallValue: amountAsCallValue,
+		FillOffset:        p.FillOffset,
 	}, nil
+}
+
+func (p swapRoutePayload) resolveFillOptions(fillToken common.Address) (domaincontract.FillSource, common.Address, bool, bool, error) {
+	rawSource := strings.TrimSpace(p.FillSource)
+	if rawSource != "" {
+		fillSource, err := parseFillSource(rawSource)
+		if err != nil {
+			return domaincontract.FillSourceNone, common.Address{}, false, false, err
+		}
+		patchAmount := boolValue(p.PatchAmount)
+		amountAsCallValue := boolValue(p.AmountAsCallValue)
+		if fillSource == domaincontract.FillSourceNativeBalance {
+			fillToken = common.Address{}
+		}
+		return fillSource, fillToken, patchAmount, amountAsCallValue, nil
+	}
+	if fillToken == (common.Address{}) {
+		return domaincontract.FillSourceNone, common.Address{}, false, false, nil
+	}
+	if fillToken == domaincontract.NativeETHSentinel {
+		patchAmount := p.FillOffset != 0
+		if p.PatchAmount != nil {
+			patchAmount = *p.PatchAmount
+		}
+		amountAsCallValue := true
+		if p.AmountAsCallValue != nil {
+			amountAsCallValue = *p.AmountAsCallValue
+		}
+		return domaincontract.FillSourceNativeBalance, common.Address{}, patchAmount, amountAsCallValue, nil
+	}
+	patchAmount := true
+	if p.PatchAmount != nil {
+		patchAmount = *p.PatchAmount
+	}
+	return domaincontract.FillSourceERC20Balance, fillToken, patchAmount, boolValue(p.AmountAsCallValue), nil
+}
+
+func parseFillSource(raw string) (domaincontract.FillSource, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "none":
+		return domaincontract.FillSourceNone, nil
+	case "erc20", "erc20balance", "erc20_balance":
+		return domaincontract.FillSourceERC20Balance, nil
+	case "native", "nativebalance", "native_balance", "eth":
+		return domaincontract.FillSourceNativeBalance, nil
+	default:
+		return domaincontract.FillSourceNone, fmt.Errorf("fillSource %q is invalid", raw)
+	}
+}
+
+func boolValue(value *bool) bool {
+	return value != nil && *value
 }
 
 func (p approvalPayload) toDomain() (domaincontract.TokenApproval, error) {

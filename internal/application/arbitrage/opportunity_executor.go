@@ -373,16 +373,36 @@ func validateExecutionPlanForConfig(plan domaincontract.ExecutionPlan, approvals
 }
 
 func validateRouteFillSlot(index int, route domaincontract.SwapRoute) error {
-	if route.FillToken == (common.Address{}) {
+	switch route.FillSource {
+	case domaincontract.FillSourceNone:
+		if route.PatchAmount || route.AmountAsCallValue || route.FillToken != (common.Address{}) {
+			return fmt.Errorf("routes[%d] has fill options but fillSource is none", index)
+		}
 		return nil
+	case domaincontract.FillSourceERC20Balance:
+		if route.FillToken == (common.Address{}) || route.FillToken == domaincontract.NativeETHSentinel {
+			return fmt.Errorf("routes[%d].fillToken must be an ERC20 token", index)
+		}
+		if route.AmountAsCallValue {
+			return fmt.Errorf("routes[%d].amountAsCallValue cannot be used with ERC20 fill", index)
+		}
+		if route.Value != nil && route.Value.Sign() > 0 {
+			return fmt.Errorf("routes[%d].value cannot be used with ERC20 fill", index)
+		}
+	case domaincontract.FillSourceNativeBalance:
+		if route.FillToken != (common.Address{}) {
+			return fmt.Errorf("routes[%d].fillToken must be empty for native fill", index)
+		}
+	default:
+		return fmt.Errorf("routes[%d].fillSource is invalid", index)
 	}
-	if route.FillOffset == 0 && route.FillToken == domaincontract.NativeETHSentinel {
-		return nil
+	if route.PatchAmount {
+		if route.FillOffset <= uint64(len(route.Data)) && uint64(len(route.Data))-route.FillOffset >= 32 {
+			return nil
+		}
+		return fmt.Errorf("routes[%d].fillOffset %d does not fit calldata length %d", index, route.FillOffset, len(route.Data))
 	}
-	if route.FillOffset <= uint64(len(route.Data)) && uint64(len(route.Data))-route.FillOffset >= 32 {
-		return nil
-	}
-	return fmt.Errorf("routes[%d].fillOffset %d does not fit calldata length %d", index, route.FillOffset, len(route.Data))
+	return nil
 }
 
 func addressSet(values []common.Address) map[common.Address]bool {
@@ -414,11 +434,14 @@ func flashbotsGasPriceFromConfig(cfg ExecutionConfig, opportunity *domainarb.Opp
 
 func marshalExecutionPlan(plan domaincontract.ExecutionPlan, approvals []domaincontract.TokenApproval) (json.RawMessage, error) {
 	type routeJSON struct {
-		RouterAddress string `json:"routerAddress"`
-		Value         string `json:"value,omitempty"`
-		Data          string `json:"data"`
-		FillToken     string `json:"fillToken,omitempty"`
-		FillOffset    uint64 `json:"fillOffset,omitempty"`
+		RouterAddress     string `json:"routerAddress"`
+		Value             string `json:"value,omitempty"`
+		Data              string `json:"data"`
+		FillSource        string `json:"fillSource,omitempty"`
+		FillToken         string `json:"fillToken,omitempty"`
+		PatchAmount       bool   `json:"patchAmount,omitempty"`
+		AmountAsCallValue bool   `json:"amountAsCallValue,omitempty"`
+		FillOffset        uint64 `json:"fillOffset,omitempty"`
 	}
 	type approvalJSON struct {
 		Token   string `json:"token"`
@@ -471,6 +494,11 @@ func marshalExecutionPlan(plan domaincontract.ExecutionPlan, approvals []domainc
 		if route.FillToken != (common.Address{}) {
 			item.FillToken = route.FillToken.Hex()
 		}
+		if route.FillSource != domaincontract.FillSourceNone {
+			item.FillSource = fillSourceString(route.FillSource)
+			item.PatchAmount = route.PatchAmount
+			item.AmountAsCallValue = route.AmountAsCallValue
+		}
 		out.Routes = append(out.Routes, item)
 	}
 	for _, approval := range approvals {
@@ -481,6 +509,17 @@ func marshalExecutionPlan(plan domaincontract.ExecutionPlan, approvals []domainc
 		})
 	}
 	return json.Marshal(out)
+}
+
+func fillSourceString(value domaincontract.FillSource) string {
+	switch value {
+	case domaincontract.FillSourceERC20Balance:
+		return "erc20Balance"
+	case domaincontract.FillSourceNativeBalance:
+		return "nativeBalance"
+	default:
+		return ""
+	}
 }
 
 func bigIntStringOrEmpty(value *big.Int) string {

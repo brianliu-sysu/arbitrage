@@ -38,6 +38,26 @@ func TestOpportunityEnsurePayloadIncludesWrapHop(t *testing.T) {
 				Fee:      big.NewInt(0),
 				FeePPM:   big.NewInt(0),
 			},
+			QuoteSteps: []OpportunityQuoteStep{
+				{
+					Index:     0,
+					Version:   quoteunified.PoolVersionUnwrapWETH.String(),
+					TokenIn:   weth,
+					TokenOut:  native,
+					AmountIn:  big.NewInt(1_000),
+					AmountOut: big.NewInt(1_000),
+					FeeAmount: big.NewInt(0),
+				},
+				{
+					Index:     1,
+					Version:   quoteunified.PoolVersionV4.String(),
+					TokenIn:   native,
+					TokenOut:  testToken(2),
+					AmountIn:  big.NewInt(1_000),
+					AmountOut: big.NewInt(1_100),
+					FeeAmount: big.NewInt(5),
+				},
+			},
 			NetProfit:  big.NewInt(80),
 			Profitable: true,
 			Accepted:   true,
@@ -61,6 +81,12 @@ func TestOpportunityEnsurePayloadIncludesWrapHop(t *testing.T) {
 	}
 	if payload.FlashLoan == nil || payload.FlashLoan.Protocol != string(FlashLoanProtocolBalancer) {
 		t.Fatalf("expected balancer flash loan payload, got %+v", payload.FlashLoan)
+	}
+	if len(payload.QuoteSteps) != 2 {
+		t.Fatalf("expected 2 quote steps, got %d", len(payload.QuoteSteps))
+	}
+	if payload.QuoteSteps[1].AmountIn != "1000" || payload.QuoteSteps[1].AmountOut != "1100" {
+		t.Fatalf("unexpected quote step payload: %+v", payload.QuoteSteps[1])
 	}
 }
 
@@ -145,6 +171,17 @@ func TestOpportunityApplyPayloadRestoresFields(t *testing.T) {
 				FeePPM:       big.NewInt(500),
 				BorrowToken0: true,
 			},
+			QuoteSteps: []OpportunityQuoteStep{
+				{
+					Index:     0,
+					Version:   quoteunified.PoolVersionV3.String(),
+					TokenIn:   testToken(1),
+					TokenOut:  testToken(2),
+					AmountIn:  big.NewInt(1_000),
+					AmountOut: big.NewInt(1_100),
+					FeeAmount: big.NewInt(3),
+				},
+			},
 			NetProfit:  big.NewInt(80),
 			Profitable: true,
 			Accepted:   true,
@@ -177,5 +214,8 @@ func TestOpportunityApplyPayloadRestoresFields(t *testing.T) {
 	}
 	if !loaded.FlashLoan.BorrowToken0 {
 		t.Fatal("expected restored borrowToken0")
+	}
+	if len(loaded.QuoteSteps) != 1 || loaded.QuoteSteps[0].AmountOut.Cmp(big.NewInt(1_100)) != 0 {
+		t.Fatalf("expected restored quote step, got %+v", loaded.QuoteSteps)
 	}
 }

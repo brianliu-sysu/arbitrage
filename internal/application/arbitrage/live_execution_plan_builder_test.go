@@ -80,6 +80,9 @@ func TestLiveExecutionPlanBuilderEncodesV3(t *testing.T) {
 	if plan.Routes[0].RouterAddress != router {
 		t.Fatalf("expected v3 router, got %s", plan.Routes[0].RouterAddress.Hex())
 	}
+	if got, want := common.Bytes2Hex(plan.Routes[0].Data[:4]), "04e45aaf"; got != want {
+		t.Fatalf("expected SwapRouter02 exactInputSingle selector %s, got %s", want, got)
+	}
 	if plan.Routes[0].FillToken != (common.Address{}) {
 		t.Fatalf("first hop should use known amount, not fill")
 	}
@@ -409,8 +412,11 @@ func TestLiveExecutionPlanBuilderEncodesNativeV4ViaUniversalRouter(t *testing.T)
 	if plan.Routes[1].RouterAddress != ur {
 		t.Fatalf("expected universal router, got %s", plan.Routes[1].RouterAddress.Hex())
 	}
-	if plan.Routes[1].FillToken != domaincontract.NativeETHSentinel {
-		t.Fatalf("expected native fill token, got %s", plan.Routes[1].FillToken.Hex())
+	if plan.Routes[1].FillSource != domaincontract.FillSourceNativeBalance {
+		t.Fatalf("expected native fill source, got %d", plan.Routes[1].FillSource)
+	}
+	if !plan.Routes[1].AmountAsCallValue {
+		t.Fatalf("expected native fill to be used as call value")
 	}
 }
 
@@ -464,8 +470,11 @@ func TestLiveExecutionPlanBuilderEncodesWrapFromNativeBalance(t *testing.T) {
 	if wrap.RouterAddress != weth {
 		t.Fatalf("expected wrap via weth, got %s", wrap.RouterAddress.Hex())
 	}
-	if wrap.FillToken != domaincontract.NativeETHSentinel {
-		t.Fatalf("expected native fill on wrap, got %s", wrap.FillToken.Hex())
+	if wrap.FillSource != domaincontract.FillSourceNativeBalance {
+		t.Fatalf("expected native fill on wrap, got %d", wrap.FillSource)
+	}
+	if !wrap.AmountAsCallValue {
+		t.Fatalf("expected wrap native fill to be used as call value")
 	}
 }
 

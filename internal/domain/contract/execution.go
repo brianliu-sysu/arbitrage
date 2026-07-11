@@ -22,16 +22,25 @@ type FlashLoan struct {
 	BorrowToken0 bool
 }
 
+type FillSource uint8
+
+const (
+	FillSourceNone FillSource = iota
+	FillSourceERC20Balance
+	FillSourceNativeBalance
+)
+
 type SwapRoute struct {
 	RouterAddress common.Address
 	Value         *big.Int
 	Data          []byte
-	// FillToken, if set, overwrites Data[FillOffset:FillOffset+32] with the live balance
-	// when the 32-byte slot fits in Data. Use address(0) to disable.
-	// Use 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE for native ETH: the executor also
-	// overrides call msg.value with its ETH balance (needed for WETH.deposit / native UR).
-	FillToken  common.Address
-	FillOffset uint64
+	// FillSource controls how the executor computes a dynamic amount for this route.
+	// ERC20Balance requires FillToken; NativeBalance uses native ETH via address(0) in the contract.
+	FillSource        FillSource
+	FillToken         common.Address
+	PatchAmount       bool
+	AmountAsCallValue bool
+	FillOffset        uint64
 }
 
 type ExecutionPlan struct {

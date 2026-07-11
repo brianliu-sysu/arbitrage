@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"fmt"
+	"log"
 	"math/big"
 	"regexp"
 	"strings"
@@ -27,6 +28,15 @@ const arbitrageExecutorABI = `[
 			{"name":"index","type":"uint256"},
 			{"name":"router","type":"address"},
 			{"name":"reason","type":"bytes"}
+		]
+	},
+	{
+		"type":"error",
+		"name":"InsufficientRepayBalance",
+		"inputs":[
+			{"name":"token","type":"address"},
+			{"name":"balance","type":"uint256"},
+			{"name":"required","type":"uint256"}
 		]
 	},
 	{
@@ -67,7 +77,10 @@ const arbitrageExecutorABI = `[
 							{"name":"routerAddress","type":"address"},
 							{"name":"value","type":"uint256"},
 							{"name":"data","type":"bytes"},
+							{"name":"fillSource","type":"uint8"},
 							{"name":"fillToken","type":"address"},
+							{"name":"patchAmount","type":"bool"},
+							{"name":"amountAsCallValue","type":"bool"},
 							{"name":"fillOffset","type":"uint256"}
 						]
 					},
@@ -141,6 +154,7 @@ func (b *ContractExecutorBroadcaster) BroadcastExecution(
 	if err != nil {
 		return domaincontract.BroadcastResponse{}, fmt.Errorf("pack execute calldata: %w", err)
 	}
+	logExecuteCalldata("broadcast", from, req.Executor, chainID, data)
 
 	txHash, err := b.sendTransaction(ctx, client, req, from, privateKey, chainID, data)
 	if err != nil {
@@ -173,6 +187,7 @@ func (b *ContractExecutorBroadcaster) SimulateExecution(
 	if err != nil {
 		return fmt.Errorf("pack execute calldata: %w", err)
 	}
+	logExecuteCalldata("simulate", from, req.Executor, nil, data)
 	_, err = client.CallContract(ctx, ethereum.CallMsg{
 		From: from,
 		To:   &req.Executor,
@@ -182,6 +197,21 @@ func (b *ContractExecutorBroadcaster) SimulateExecution(
 		return fmt.Errorf("simulate execute: %w%s", err, b.decodeRevertError(err))
 	}
 	return nil
+}
+
+func logExecuteCalldata(stage string, from common.Address, executor common.Address, chainID *big.Int, data []byte) {
+	chainIDText := ""
+	if chainID != nil {
+		chainIDText = chainID.String()
+	}
+	log.Printf(
+		"contract executor %s calldata from=%s executor=%s chain_id=%s data=%s",
+		stage,
+		from.Hex(),
+		executor.Hex(),
+		chainIDText,
+		hexutil.Encode(data),
+	)
 }
 
 func (b *ContractExecutorBroadcaster) decodeRevertError(err error) string {
@@ -412,11 +442,14 @@ type flashLoanABI struct {
 }
 
 type swapRouteABI struct {
-	RouterAddress common.Address
-	Value         *big.Int
-	Data          []byte
-	FillToken     common.Address
-	FillOffset    *big.Int
+	RouterAddress     common.Address
+	Value             *big.Int
+	Data              []byte
+	FillSource        uint8
+	FillToken         common.Address
+	PatchAmount       bool
+	AmountAsCallValue bool
+	FillOffset        *big.Int
 }
 
 type executionPlanABI struct {
@@ -432,11 +465,14 @@ func toExecutionPlanABI(plan domaincontract.ExecutionPlan) executionPlanABI {
 	routers := make([]swapRouteABI, 0, len(plan.Routes))
 	for _, route := range plan.Routes {
 		routers = append(routers, swapRouteABI{
-			RouterAddress: route.RouterAddress,
-			Value:         zeroIfNilBigInt(route.Value),
-			Data:          append([]byte(nil), route.Data...),
-			FillToken:     route.FillToken,
-			FillOffset:    new(big.Int).SetUint64(route.FillOffset),
+			RouterAddress:     route.RouterAddress,
+			Value:             zeroIfNilBigInt(route.Value),
+			Data:              append([]byte(nil), route.Data...),
+			FillSource:        uint8(route.FillSource),
+			FillToken:         route.FillToken,
+			PatchAmount:       route.PatchAmount,
+			AmountAsCallValue: route.AmountAsCallValue,
+			FillOffset:        new(big.Int).SetUint64(route.FillOffset),
 		})
 	}
 

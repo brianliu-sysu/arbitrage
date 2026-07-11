@@ -31,6 +31,12 @@ contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallb
         UniswapV4
     }
 
+    enum FillSource {
+        None,
+        ERC20Balance,
+        NativeBalance
+    }
+
     struct FlashLoan {
         FlashLoanProtocol protocol;
         address lender;
@@ -43,9 +49,11 @@ contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallb
         address routerAddress;
         uint256 value;
         bytes data;
-        /// @dev Token whose live balance patches data[fillOffset:fillOffset+32].
-        ///      address(0) disables fill; use 0xEeee... for native ETH.
+        /// @dev Explicit source for dynamic amount fill. Native assets use address(0) internally.
+        FillSource fillSource;
         address fillToken;
+        bool patchAmount;
+        bool amountAsCallValue;
         uint256 fillOffset;
     }
 
@@ -61,6 +69,8 @@ contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallb
 
     mapping(address => bool) public operators;
     address public profitRecipient;
+    bool private executionActive;
+    bytes32 private activeExecutionHash;
 
     /// @dev Conventional native-ETH sentinel used by routers / aggregators.
     address internal constant NATIVE_TOKEN = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
@@ -69,6 +79,10 @@ contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallb
     error DeadlineExpired();
     error InvalidAddress();
     error InvalidCallback();
+    error InvalidFillToken();
+    error InvalidFillOffset(uint256 index, uint256 offset, uint256 dataLength);
+    error InsufficientRepayBalance(address token, uint256 balance, uint256 required);
+    error NativeTransferFailed();
     error SwapFailed();
     error SwapCallFailed(uint256 index, address router, bytes reason);
     error ProfitTooLow(uint256 profit, uint256 minProfit);
@@ -116,7 +130,10 @@ contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallb
         if (plan.deadline != 0 && block.timestamp > plan.deadline) revert DeadlineExpired();
 
         uint256 initialProfitBalance = _balanceOf(plan.profitToken, address(this));
-        bytes memory data = abi.encode(msg.sender, plan, initialProfitBalance);
+        uint256[] memory initialFillBalances = _snapshotFillBalances(plan.routers);
+        bytes memory data = abi.encode(msg.sender, plan, initialProfitBalance, initialFillBalances);
+
+        _activateExecution(data);
 
         if (plan.loan.protocol == FlashLoanProtocol.Balancer) {
             BalancerIERC20[] memory tokens = new BalancerIERC20[](1);
@@ -132,6 +149,7 @@ contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallb
             IPoolManager(plan.loan.lender).unlock(data);
         }
 
+        _clearActiveExecution();
         profit = _settleProfit(msg.sender, plan, initialProfitBalance);
     }
 
@@ -141,32 +159,44 @@ contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallb
         uint256[] memory feeAmounts,
         bytes memory userData
     ) external override {
-        (, ExecutionPlan memory plan,) = abi.decode(userData, (address, ExecutionPlan, uint256));
+        (, ExecutionPlan memory plan,, uint256[] memory initialFillBalances) =
+            abi.decode(userData, (address, ExecutionPlan, uint256, uint256[]));
 
-        if (plan.loan.protocol != FlashLoanProtocol.Balancer || msg.sender != plan.loan.lender) {
+        if (
+            plan.loan.protocol != FlashLoanProtocol.Balancer || msg.sender != plan.loan.lender
+                || !_isActiveExecutionHash(keccak256(userData))
+        ) {
             revert InvalidCallback();
         }
 
-        _executeSwaps(plan.routers);
-        IERC20(plan.loan.token).safeTransfer(plan.loan.lender, plan.loan.amount + feeAmounts[0]);
+        _executeSwaps(plan.routers, initialFillBalances);
+        _repayERC20(plan.loan.token, plan.loan.lender, plan.loan.amount + feeAmounts[0]);
     }
 
     function uniswapV3FlashCallback(uint256 fee0, uint256 fee1, bytes calldata data) external override {
-        (, ExecutionPlan memory plan,) = abi.decode(data, (address, ExecutionPlan, uint256));
+        (, ExecutionPlan memory plan,, uint256[] memory initialFillBalances) =
+            abi.decode(data, (address, ExecutionPlan, uint256, uint256[]));
 
-        if (plan.loan.protocol != FlashLoanProtocol.UniswapV3 || msg.sender != plan.loan.lender) {
+        if (
+            plan.loan.protocol != FlashLoanProtocol.UniswapV3 || msg.sender != plan.loan.lender
+                || !_isActiveExecutionHash(keccak256(data))
+        ) {
             revert InvalidCallback();
         }
 
         uint256 fee = plan.loan.borrowToken0 ? fee0 : fee1;
-        _executeSwaps(plan.routers);
-        IERC20(plan.loan.token).safeTransfer(plan.loan.lender, plan.loan.amount + fee);
+        _executeSwaps(plan.routers, initialFillBalances);
+        _repayERC20(plan.loan.token, plan.loan.lender, plan.loan.amount + fee);
     }
 
     function unlockCallback(bytes calldata data) external override returns (bytes memory) {
-        (, ExecutionPlan memory plan,) = abi.decode(data, (address, ExecutionPlan, uint256));
+        (, ExecutionPlan memory plan,, uint256[] memory initialFillBalances) =
+            abi.decode(data, (address, ExecutionPlan, uint256, uint256[]));
 
-        if (plan.loan.protocol != FlashLoanProtocol.UniswapV4 || msg.sender != plan.loan.lender) {
+        if (
+            plan.loan.protocol != FlashLoanProtocol.UniswapV4 || msg.sender != plan.loan.lender
+                || !_isActiveExecutionHash(keccak256(data))
+        ) {
             revert InvalidCallback();
         }
 
@@ -175,7 +205,7 @@ contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallb
 
         // Borrow creates a negative currency delta that must be cleared before unlock returns.
         manager.take(loanCurrency, address(this), plan.loan.amount);
-        _executeSwaps(plan.routers);
+        _executeSwaps(plan.routers, initialFillBalances);
         _clearUniswapV4Deltas(manager, plan.loan.token, plan.settleCurrencies);
 
         return "";
@@ -190,42 +220,76 @@ contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallb
         return profitRecipient == address(0) ? owner() : profitRecipient;
     }
 
-    function _executeSwaps(RouterCall[] memory routers) private {
+    function _activateExecution(bytes memory data) private {
+        activeExecutionHash = keccak256(data);
+        executionActive = true;
+    }
+
+    function _clearActiveExecution() private {
+        executionActive = false;
+        delete activeExecutionHash;
+    }
+
+    function _isActiveExecutionHash(bytes32 dataHash) private view returns (bool) {
+        return executionActive && activeExecutionHash == dataHash;
+    }
+
+    function _snapshotFillBalances(RouterCall[] calldata routers) private view returns (uint256[] memory balances) {
+        balances = new uint256[](routers.length);
         for (uint256 i = 0; i < routers.length; i++) {
-            _executeSwap(i, routers[i]);
+            if (routers[i].fillSource == FillSource.None) continue;
+            balances[i] = _fillBalance(routers[i]);
         }
     }
 
-    function _executeSwap(uint256 index, RouterCall memory router) private {
+    function _executeSwaps(RouterCall[] memory routers, uint256[] memory initialFillBalances) private {
+        if (routers.length != initialFillBalances.length) revert InvalidCallback();
+        for (uint256 i = 0; i < routers.length; i++) {
+            _executeSwap(i, routers[i], initialFillBalances[i]);
+        }
+    }
+
+    function _executeSwap(uint256 index, RouterCall memory router, uint256 initialFillBalance) private {
         bytes memory midData = router.data;
         uint256 callValue = router.value;
 
-        // When fillToken is set, patch the amount placeholder with the live on-chain balance.
-        // address(0) disables fill; NATIVE_TOKEN (0xEeee...) fills with this contract's ETH balance
-        // and also overrides call value (needed for WETH.deposit / native Universal Router hops).
-        if (router.fillToken != address(0)) {
-            uint256 actualBalance = router.fillToken == NATIVE_TOKEN
-                ? address(this).balance
-                : IERC20(router.fillToken).balanceOf(address(this));
-            if (router.fillToken == NATIVE_TOKEN) {
-                callValue = actualBalance;
-            }
-            // Native fillOffset=0 means "fill msg.value only" for selector-only calls and routers
-            // whose calldata uses an internal balance sentinel (e.g. Universal Router v4 OPEN_DELTA).
-            if (
-                !(router.fillToken == NATIVE_TOKEN && router.fillOffset == 0)
-                    && router.fillOffset + 32 <= midData.length
-            ) {
+        if (router.fillSource != FillSource.None) {
+            uint256 currentBalance = _fillBalance(router);
+            uint256 actualAmount = currentBalance > initialFillBalance ? currentBalance - initialFillBalance : 0;
+            if (router.patchAmount) {
+                if (router.fillOffset > midData.length || midData.length - router.fillOffset < 32) {
+                    revert InvalidFillOffset(index, router.fillOffset, midData.length);
+                }
                 uint256 offset = router.fillOffset;
                 assembly ("memory-safe") {
                     // midData layout: length at midData, payload starts at midData + 32.
-                    mstore(add(add(midData, 32), offset), actualBalance)
+                    mstore(add(add(midData, 32), offset), actualAmount)
                 }
+            }
+            if (router.amountAsCallValue) {
+                callValue = actualAmount;
             }
         }
 
         (bool ok, bytes memory reason) = router.routerAddress.call{ value: callValue }(midData);
         if (!ok) revert SwapCallFailed(index, router.routerAddress, reason);
+    }
+
+    function _fillBalance(RouterCall memory router) private view returns (uint256) {
+        if (router.fillSource == FillSource.NativeBalance) {
+            return address(this).balance;
+        }
+        if (router.fillSource == FillSource.ERC20Balance) {
+            if (router.fillToken == address(0) || router.fillToken == NATIVE_TOKEN) revert InvalidFillToken();
+            return IERC20(router.fillToken).balanceOf(address(this));
+        }
+        return 0;
+    }
+
+    function _repayERC20(address token, address lender, uint256 required) private {
+        uint256 balance = IERC20(token).balanceOf(address(this));
+        if (balance < required) revert InsufficientRepayBalance(token, balance, required);
+        IERC20(token).safeTransfer(lender, required);
     }
 
     /// @dev Clears open deltas with CurrencySettler. Operator must list every currency that may be nonzero.
@@ -260,13 +324,25 @@ contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallb
 
         address recipient = _profitRecipient();
         if (profit > 0) {
-            IERC20(plan.profitToken).safeTransfer(recipient, profit);
+            _transferAsset(plan.profitToken, recipient, profit);
         }
 
         emit ArbitrageExecuted(caller, plan.loan.protocol, plan.profitToken, profit, recipient);
     }
 
     function _balanceOf(address token, address account) private view returns (uint256) {
+        if (token == address(0)) {
+            return account.balance;
+        }
         return IERC20(token).balanceOf(account);
+    }
+
+    function _transferAsset(address token, address recipient, uint256 amount) private {
+        if (token == address(0)) {
+            (bool success,) = payable(recipient).call{ value: amount }("");
+            if (!success) revert NativeTransferFailed();
+            return;
+        }
+        IERC20(token).safeTransfer(recipient, amount);
     }
 }

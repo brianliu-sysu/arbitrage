@@ -93,7 +93,18 @@ func TestOpportunityHandlerList(t *testing.T) {
 				PoolAddress: common.HexToAddress("0x000000000000000000000000000000000000000a"),
 				BlockNumber: 42,
 				NetProfit:   big.NewInt(80),
-				CreatedAt:   time.Unix(0, 0).UTC(),
+				QuoteSteps: []domainarb.OpportunityQuoteStep{
+					{
+						Index:     0,
+						Version:   "v4",
+						TokenIn:   common.HexToAddress("0x0000000000000000000000000000000000000001"),
+						TokenOut:  common.HexToAddress("0x0000000000000000000000000000000000000002"),
+						AmountIn:  big.NewInt(100),
+						AmountOut: big.NewInt(110),
+						FeeAmount: big.NewInt(1),
+					},
+				},
+				CreatedAt: time.Unix(0, 0).UTC(),
 			},
 		},
 	}
@@ -113,8 +124,12 @@ func TestOpportunityHandlerList(t *testing.T) {
 	var resp struct {
 		Count int `json:"count"`
 		Items []struct {
-			ID        string `json:"id"`
-			NetProfit string `json:"netProfit"`
+			ID         string `json:"id"`
+			NetProfit  string `json:"netProfit"`
+			QuoteSteps []struct {
+				AmountIn  string `json:"amountIn"`
+				AmountOut string `json:"amountOut"`
+			} `json:"quoteSteps"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
@@ -125,6 +140,9 @@ func TestOpportunityHandlerList(t *testing.T) {
 	}
 	if resp.Items[0].ID != "opp-1" || resp.Items[0].NetProfit != "80" {
 		t.Fatalf("unexpected item: %#v", resp.Items[0])
+	}
+	if len(resp.Items[0].QuoteSteps) != 1 || resp.Items[0].QuoteSteps[0].AmountIn != "100" || resp.Items[0].QuoteSteps[0].AmountOut != "110" {
+		t.Fatalf("unexpected quote steps: %#v", resp.Items[0].QuoteSteps)
 	}
 }
 
@@ -174,7 +192,7 @@ func TestOpportunityHandlerExecuteByID(t *testing.T) {
 			NetProfit:   big.NewInt(50),
 			FlashLoan: domainarb.FlashLoanQuote{
 				Protocol: domainarb.FlashLoanProtocolBalancer,
-				Amount:   big.NewInt(2000),
+				Amount:   big.NewInt(1000),
 			},
 			Payload: payload,
 		}},
@@ -233,8 +251,8 @@ func TestOpportunityHandlerExecuteByID(t *testing.T) {
 	if contractExec.executeCalls != 1 {
 		t.Fatalf("expected one execute call, got %d", contractExec.executeCalls)
 	}
-	if contractExec.lastPlan.Loan.Amount.Cmp(big.NewInt(2000)) != 0 {
-		t.Fatalf("expected refreshed loan amount 2000, got %s", contractExec.lastPlan.Loan.Amount)
+	if contractExec.lastPlan.Loan.Amount.Cmp(big.NewInt(1000)) != 0 {
+		t.Fatalf("expected loan amount 1000, got %s", contractExec.lastPlan.Loan.Amount)
 	}
 	if len(resp.Execution) == 0 {
 		t.Fatalf("expected execution payload in response")

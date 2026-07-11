@@ -33,8 +33,19 @@ type Opportunity struct {
 	GasCost     *big.Int
 	FlashLoan   FlashLoanQuote
 	NetProfit   *big.Int
+	QuoteSteps  []OpportunityQuoteStep
 	Payload     []byte
 	CreatedAt   time.Time
+}
+
+type OpportunityQuoteStep struct {
+	Index     int
+	Version   string
+	TokenIn   common.Address
+	TokenOut  common.Address
+	AmountIn  *big.Int
+	AmountOut *big.Int
+	FeeAmount *big.Int
 }
 
 // NewOpportunity builds an opportunity from evaluation output.
@@ -68,10 +79,30 @@ func NewOpportunity(
 		GasCost:     cloneBigInt(gas.CostWei),
 		FlashLoan:   cloneFlashLoanQuote(evaluation.FlashLoan),
 		NetProfit:   cloneBigInt(evaluation.NetProfit),
+		QuoteSteps:  cloneQuoteSteps(evaluation.QuoteSteps),
 		CreatedAt:   createdAt,
 	}
 	_ = o.EnsurePayload()
 	return o
+}
+
+func cloneQuoteSteps(steps []OpportunityQuoteStep) []OpportunityQuoteStep {
+	if len(steps) == 0 {
+		return nil
+	}
+	out := make([]OpportunityQuoteStep, 0, len(steps))
+	for _, step := range steps {
+		out = append(out, OpportunityQuoteStep{
+			Index:     step.Index,
+			Version:   step.Version,
+			TokenIn:   step.TokenIn,
+			TokenOut:  step.TokenOut,
+			AmountIn:  cloneBigInt(step.AmountIn),
+			AmountOut: cloneBigInt(step.AmountOut),
+			FeeAmount: cloneBigInt(step.FeeAmount),
+		})
+	}
+	return out
 }
 
 // IsProfitable reports whether net profit is positive.

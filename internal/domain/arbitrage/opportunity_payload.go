@@ -12,18 +12,19 @@ import (
 )
 
 type opportunityPayload struct {
-	ID          string            `json:"id"`
-	StrategyID  string            `json:"strategyId,omitempty"`
-	Status      OpportunityStatus `json:"status,omitempty"`
-	PoolRef     string            `json:"poolRef,omitempty"`
-	BlockNumber uint64            `json:"blockNumber"`
-	Route       opportunityRoute  `json:"route,omitempty"`
-	AmountIn    string            `json:"amountIn,omitempty"`
-	AmountOut   string            `json:"amountOut,omitempty"`
-	GrossProfit string            `json:"grossProfit,omitempty"`
-	GasCost     string            `json:"gasCost,omitempty"`
-	FlashLoan   *opportunityFlash `json:"flashLoan,omitempty"`
-	NetProfit   string            `json:"netProfit,omitempty"`
+	ID          string                 `json:"id"`
+	StrategyID  string                 `json:"strategyId,omitempty"`
+	Status      OpportunityStatus      `json:"status,omitempty"`
+	PoolRef     string                 `json:"poolRef,omitempty"`
+	BlockNumber uint64                 `json:"blockNumber"`
+	Route       opportunityRoute       `json:"route,omitempty"`
+	AmountIn    string                 `json:"amountIn,omitempty"`
+	AmountOut   string                 `json:"amountOut,omitempty"`
+	GrossProfit string                 `json:"grossProfit,omitempty"`
+	GasCost     string                 `json:"gasCost,omitempty"`
+	FlashLoan   *opportunityFlash      `json:"flashLoan,omitempty"`
+	NetProfit   string                 `json:"netProfit,omitempty"`
+	QuoteSteps  []opportunityQuoteStep `json:"quoteSteps,omitempty"`
 }
 
 type opportunityFlash struct {
@@ -49,6 +50,16 @@ type opportunityRouteHop struct {
 	PoolID          string `json:"poolId,omitempty"`
 	TokenIn         string `json:"tokenIn"`
 	TokenOut        string `json:"tokenOut"`
+}
+
+type opportunityQuoteStep struct {
+	Index     int    `json:"index"`
+	Version   string `json:"version,omitempty"`
+	TokenIn   string `json:"tokenIn"`
+	TokenOut  string `json:"tokenOut"`
+	AmountIn  string `json:"amountIn"`
+	AmountOut string `json:"amountOut"`
+	FeeAmount string `json:"feeAmount,omitempty"`
 }
 
 // EnsurePayload serializes the opportunity when payload is empty, and keeps the
@@ -124,6 +135,7 @@ func encodeOpportunityPayload(o *Opportunity) ([]byte, error) {
 	if o.NetProfit != nil {
 		payload.NetProfit = o.NetProfit.String()
 	}
+	payload.QuoteSteps = encodeOpportunityQuoteSteps(o.QuoteSteps)
 	return json.Marshal(payload)
 }
 
@@ -177,6 +189,25 @@ func encodeOpportunityRoute(route quoteunified.Route) opportunityRoute {
 	return encoded
 }
 
+func encodeOpportunityQuoteSteps(steps []OpportunityQuoteStep) []opportunityQuoteStep {
+	if len(steps) == 0 {
+		return nil
+	}
+	encoded := make([]opportunityQuoteStep, 0, len(steps))
+	for _, step := range steps {
+		encoded = append(encoded, opportunityQuoteStep{
+			Index:     step.Index,
+			Version:   step.Version,
+			TokenIn:   step.TokenIn.Hex(),
+			TokenOut:  step.TokenOut.Hex(),
+			AmountIn:  bigIntString(step.AmountIn),
+			AmountOut: bigIntString(step.AmountOut),
+			FeeAmount: bigIntString(step.FeeAmount),
+		})
+	}
+	return encoded
+}
+
 // ApplyPayload decodes persisted payload fields onto the opportunity.
 func (o *Opportunity) ApplyPayload() error {
 	if o == nil || len(o.Payload) == 0 {
@@ -213,6 +244,9 @@ func (o *Opportunity) ApplyPayload() error {
 	if o.NetProfit == nil && payload.NetProfit != "" {
 		o.NetProfit = parsePayloadBigInt(payload.NetProfit)
 	}
+	if len(o.QuoteSteps) == 0 && len(payload.QuoteSteps) > 0 {
+		o.QuoteSteps = decodeOpportunityQuoteSteps(payload.QuoteSteps)
+	}
 	if o.Route.Len() == 0 && len(payload.Route.Hops) > 0 {
 		o.Route = decodeOpportunityRoute(payload.Route)
 	}
@@ -223,6 +257,32 @@ func (o *Opportunity) ApplyPayload() error {
 		}
 	}
 	return nil
+}
+
+func decodeOpportunityQuoteSteps(steps []opportunityQuoteStep) []OpportunityQuoteStep {
+	if len(steps) == 0 {
+		return nil
+	}
+	decoded := make([]OpportunityQuoteStep, 0, len(steps))
+	for _, step := range steps {
+		decoded = append(decoded, OpportunityQuoteStep{
+			Index:     step.Index,
+			Version:   step.Version,
+			TokenIn:   common.HexToAddress(step.TokenIn),
+			TokenOut:  common.HexToAddress(step.TokenOut),
+			AmountIn:  parsePayloadBigInt(step.AmountIn),
+			AmountOut: parsePayloadBigInt(step.AmountOut),
+			FeeAmount: parsePayloadBigInt(step.FeeAmount),
+		})
+	}
+	return decoded
+}
+
+func bigIntString(value *big.Int) string {
+	if value == nil {
+		return ""
+	}
+	return value.String()
 }
 
 func decodeOpportunityRoute(route opportunityRoute) quoteunified.Route {

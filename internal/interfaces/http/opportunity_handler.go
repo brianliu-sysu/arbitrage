@@ -40,18 +40,29 @@ func NewOpportunityChainHandler(
 }
 
 type opportunityHTTPResponse struct {
-	ID          string                 `json:"id"`
-	StrategyID  string                 `json:"strategyId,omitempty"`
-	Status      string                 `json:"status,omitempty"`
-	PoolAddress string                 `json:"poolAddress,omitempty"`
-	BlockNumber uint64                 `json:"blockNumber"`
-	AmountIn    string                 `json:"amountIn,omitempty"`
-	AmountOut   string                 `json:"amountOut,omitempty"`
-	GrossProfit string                 `json:"grossProfit,omitempty"`
-	GasCost     string                 `json:"gasCost,omitempty"`
-	FlashLoan   *flashLoanHTTPResponse `json:"flashLoan,omitempty"`
-	NetProfit   string                 `json:"netProfit,omitempty"`
-	CreatedAt   string                 `json:"createdAt"`
+	ID          string                  `json:"id"`
+	StrategyID  string                  `json:"strategyId,omitempty"`
+	Status      string                  `json:"status,omitempty"`
+	PoolAddress string                  `json:"poolAddress,omitempty"`
+	BlockNumber uint64                  `json:"blockNumber"`
+	AmountIn    string                  `json:"amountIn,omitempty"`
+	AmountOut   string                  `json:"amountOut,omitempty"`
+	GrossProfit string                  `json:"grossProfit,omitempty"`
+	GasCost     string                  `json:"gasCost,omitempty"`
+	FlashLoan   *flashLoanHTTPResponse  `json:"flashLoan,omitempty"`
+	NetProfit   string                  `json:"netProfit,omitempty"`
+	QuoteSteps  []quoteStepHTTPResponse `json:"quoteSteps,omitempty"`
+	CreatedAt   string                  `json:"createdAt"`
+}
+
+type quoteStepHTTPResponse struct {
+	Index     int    `json:"index"`
+	Version   string `json:"version,omitempty"`
+	TokenIn   string `json:"tokenIn"`
+	TokenOut  string `json:"tokenOut"`
+	AmountIn  string `json:"amountIn"`
+	AmountOut string `json:"amountOut"`
+	FeeAmount string `json:"feeAmount,omitempty"`
 }
 
 type flashLoanHTTPResponse struct {
@@ -199,6 +210,7 @@ func toOpportunityHTTPResponse(item *domainarb.Opportunity) opportunityHTTPRespo
 	if item == nil {
 		return opportunityHTTPResponse{}
 	}
+	_ = item.ApplyPayload()
 
 	resp := opportunityHTTPResponse{
 		ID:          item.ID,
@@ -234,7 +246,27 @@ func toOpportunityHTTPResponse(item *domainarb.Opportunity) opportunityHTTPRespo
 	if item.NetProfit != nil {
 		resp.NetProfit = item.NetProfit.String()
 	}
+	resp.QuoteSteps = quoteStepsHTTPResponse(item.QuoteSteps)
 	return resp
+}
+
+func quoteStepsHTTPResponse(steps []domainarb.OpportunityQuoteStep) []quoteStepHTTPResponse {
+	if len(steps) == 0 {
+		return nil
+	}
+	out := make([]quoteStepHTTPResponse, 0, len(steps))
+	for _, step := range steps {
+		out = append(out, quoteStepHTTPResponse{
+			Index:     step.Index,
+			Version:   step.Version,
+			TokenIn:   step.TokenIn.Hex(),
+			TokenOut:  step.TokenOut.Hex(),
+			AmountIn:  bigIntString(step.AmountIn),
+			AmountOut: bigIntString(step.AmountOut),
+			FeeAmount: bigIntString(step.FeeAmount),
+		})
+	}
+	return out
 }
 
 func bigIntString(value *big.Int) string {

@@ -133,8 +133,8 @@ func (e *LiveCalldataEncoder) Encode(
 			}
 			if fillFromBalance {
 				// Native fill overrides msg.value; deposit() has no amount slot to patch.
-				route.FillToken = domaincontract.NativeETHSentinel
-				route.FillOffset = 0
+				route.FillSource = domaincontract.FillSourceNativeBalance
+				route.AmountAsCallValue = true
 			} else {
 				route.Value = amountIn
 			}
@@ -150,7 +150,9 @@ func (e *LiveCalldataEncoder) Encode(
 				Data:          data,
 			}
 			if fillFromBalance {
+				route.FillSource = domaincontract.FillSourceERC20Balance
 				route.FillToken = weth
+				route.PatchAmount = true
 				route.FillOffset = domaincontract.WETHWithdrawAmountOffset
 			}
 			routes = append(routes, route)
@@ -180,7 +182,9 @@ func (e *LiveCalldataEncoder) Encode(
 				Data:          data,
 			}
 			if fillFromBalance {
+				route.FillSource = domaincontract.FillSourceERC20Balance
 				route.FillToken = hop.TokenIn
+				route.PatchAmount = true
 				route.FillOffset = domaincontract.ExactInputSingleAmountInOffset
 			}
 			routes = append(routes, route)
@@ -197,7 +201,7 @@ func (e *LiveCalldataEncoder) Encode(
 			if pool == nil {
 				return domaincontract.ExecutionPlan{}, nil, fmt.Errorf("pancakev3 pool %s not loaded", hop.PoolPancakeV3.Hex())
 			}
-			data, err := domaincontract.PackExactInputSingle(domaincontract.ExactInputSingleParams{
+			data, err := domaincontract.PackPancakeV3ExactInputSingle(domaincontract.ExactInputSingleParams{
 				TokenIn:          hop.TokenIn,
 				TokenOut:         hop.TokenOut,
 				Fee:              big.NewInt(int64(pool.Fee)),
@@ -210,8 +214,10 @@ func (e *LiveCalldataEncoder) Encode(
 			}
 			route := domaincontract.SwapRoute{RouterAddress: router, Data: data}
 			if fillFromBalance {
+				route.FillSource = domaincontract.FillSourceERC20Balance
 				route.FillToken = hop.TokenIn
-				route.FillOffset = domaincontract.ExactInputSingleAmountInOffset
+				route.PatchAmount = true
+				route.FillOffset = domaincontract.PancakeV3ExactInputSingleAmountInOffset
 			}
 			routes = append(routes, route)
 			addApproval(hop.TokenIn, router)
@@ -286,8 +292,8 @@ func (e *LiveCalldataEncoder) Encode(
 						Data:          urData,
 					}
 					if fillFromBalance {
-						urRoute.FillToken = domaincontract.NativeETHSentinel
-						urRoute.FillOffset = 0
+						urRoute.FillSource = domaincontract.FillSourceNativeBalance
+						urRoute.AmountAsCallValue = true
 					} else {
 						urRoute.Value = amountIn
 					}
@@ -305,7 +311,9 @@ func (e *LiveCalldataEncoder) Encode(
 					Data:          transferData,
 				}
 				if fillFromBalance {
+					transferRoute.FillSource = domaincontract.FillSourceERC20Balance
 					transferRoute.FillToken = hop.TokenIn
+					transferRoute.PatchAmount = true
 					transferRoute.FillOffset = domaincontract.ERC20TransferAmountOffset
 				}
 				routes = append(routes, transferRoute)
@@ -349,7 +357,9 @@ func (e *LiveCalldataEncoder) Encode(
 					Data:          data,
 				}
 				if fillFromBalance {
+					route.FillSource = domaincontract.FillSourceERC20Balance
 					route.FillToken = hop.TokenIn
+					route.PatchAmount = true
 					route.FillOffset = domaincontract.BalancerV3SwapExactAmountInOffset
 				}
 				routes = append(routes, route)
@@ -376,7 +386,9 @@ func (e *LiveCalldataEncoder) Encode(
 				Data:          data,
 			}
 			if fillFromBalance {
+				route.FillSource = domaincontract.FillSourceERC20Balance
 				route.FillToken = hop.TokenIn
+				route.PatchAmount = true
 				route.FillOffset = domaincontract.BalancerSwapAmountOffset
 			}
 			routes = append(routes, route)
