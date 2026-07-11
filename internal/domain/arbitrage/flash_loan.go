@@ -20,18 +20,20 @@ var flashLoanFeeDenominator = big.NewInt(1_000_000)
 
 // FlashLoanOption configures the fee charged by one flash-loan source in ppm.
 type FlashLoanOption struct {
-	Protocol FlashLoanProtocol
-	PoolRef  PoolRef
-	FeePPM   *big.Int
+	Protocol     FlashLoanProtocol
+	PoolRef      PoolRef
+	FeePPM       *big.Int
+	BorrowToken0 bool // univ3 only: true when route.TokenIn is pool token0
 }
 
 // FlashLoanQuote is the selected flash-loan source and fee for a borrow amount.
 type FlashLoanQuote struct {
-	Protocol FlashLoanProtocol
-	PoolRef  PoolRef
-	Amount   *big.Int
-	Fee      *big.Int
-	FeePPM   *big.Int
+	Protocol     FlashLoanProtocol
+	PoolRef      PoolRef
+	Amount       *big.Int
+	Fee          *big.Int
+	FeePPM       *big.Int
+	BorrowToken0 bool // univ3 only
 }
 
 // DefaultFlashLoanOptions compares protocol-level flash-loan sources.
@@ -70,9 +72,10 @@ func FlashLoanOptionsForRoute(route quoteunified.Route, pools quoteunified.Route
 		}
 		seen[poolRef.Key()] = struct{}{}
 		options = append(options, FlashLoanOption{
-			Protocol: FlashLoanProtocolUniv3,
-			PoolRef:  poolRef,
-			FeePPM:   new(big.Int).SetUint64(uint64(pool.Fee)),
+			Protocol:     FlashLoanProtocolUniv3,
+			PoolRef:      poolRef,
+			FeePPM:       new(big.Int).SetUint64(uint64(pool.Fee)),
+			BorrowToken0: pool.Token0 == route.TokenIn,
 		})
 	}
 	return options
@@ -117,11 +120,12 @@ func (o FlashLoanOption) Quote(amount *big.Int) (FlashLoanQuote, error) {
 	}
 	fee := divUpBig(new(big.Int).Mul(amount, feePPM), flashLoanFeeDenominator)
 	return FlashLoanQuote{
-		Protocol: o.Protocol,
-		PoolRef:  o.PoolRef,
-		Amount:   cloneBigInt(amount),
-		Fee:      fee,
-		FeePPM:   feePPM,
+		Protocol:     o.Protocol,
+		PoolRef:      o.PoolRef,
+		Amount:       cloneBigInt(amount),
+		Fee:          fee,
+		FeePPM:       feePPM,
+		BorrowToken0: o.BorrowToken0,
 	}, nil
 }
 

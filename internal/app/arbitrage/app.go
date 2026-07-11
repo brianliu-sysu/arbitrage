@@ -226,6 +226,7 @@ func newRuntimeBundle(
 	quickSwapPoolRegistry *registry.QuickSwapCompositeRegistry,
 	v4PoolRegistry *registry.CompositeV4Registry,
 	balancerPoolRegistry *registry.CompositeBalancerRegistry,
+	contractExecutor *contractapp.AppService,
 ) (*runtimeBundle, error) {
 	cfg = cfg.PrimaryRuntimeConfig()
 	deps := syncv3.ServiceDeps{
@@ -414,6 +415,10 @@ func newRuntimeBundle(
 		),
 		Readiness:             readiness,
 		Repository:            store.Opportunities,
+		Executor:              contractExecutor,
+		ExecutionHead:         chain.Client,
+		Execution:             executionConfigFromRuntime(cfg),
+		LivePlan:              livePlanConfigFromRuntime(cfg),
 		TriangleEnabled:       triangleEnabled,
 		SpreadEnabled:         spreadEnabled,
 		ConfiguredStartTokens: configuredStartTokens,
@@ -501,6 +506,48 @@ func newRuntimePoolManagers(
 	return managers
 }
 
+func executionConfigFromRuntime(cfg config.Config) arbitrageapp.ExecutionConfig {
+	execution := cfg.Arbitrage.Execution
+	return arbitrageapp.ExecutionConfig{
+		Enabled:             execution.Enabled,
+		RPCURL:              execution.ResolveRPCURL(cfg.RPC.URL),
+		PrivateKey:          execution.PrivateKey,
+		Executor:            execution.Executor(),
+		FlashbotsRPCURL:     execution.FlashbotsRPCURL,
+		FlashbotsPaymentBPS: execution.FlashbotsPaymentBPS,
+		GasLimit:            execution.GasLimit,
+		GasPriceWei:         execution.GasPrice(),
+		SkipEstimate:        execution.SkipEstimate,
+		BroadcastToken:      execution.BroadcastToken,
+		MaxOpportunityAge:   maxOpportunityAge(execution.MaxOpportunityAge),
+		AllowedRouters:      execution.AllowedRouterAddresses(),
+		AllowedSpenders:     execution.AllowedSpenderAddresses(),
+	}
+}
+
+func livePlanConfigFromRuntime(cfg config.Config) arbitrageapp.LivePlanConfig {
+	blockchainCfg := cfg.BlockchainConfig()
+	execution := cfg.Arbitrage.Execution
+	return arbitrageapp.LivePlanConfig{
+		WETH:                execution.WETH(),
+		BalancerVault:       blockchainCfg.BalancerVaultAddress,
+		BalancerVaultV3:     blockchainCfg.BalancerVaultV3Address,
+		BalancerRouterV3:    execution.BalancerRouterV3Address(),
+		PoolManager:         blockchainCfg.PoolManagerAddress,
+		SwapRouterV3:        execution.SwapRouterV3Address(),
+		SwapRouterPancakeV3: execution.SwapRouterPancakeV3Address(),
+		UniversalRouter:     execution.UniversalRouterAddress(),
+		Executor:            execution.Executor(),
+	}
+}
+
+func maxOpportunityAge(configured uint64) uint64 {
+	if configured == 0 {
+		return 3
+	}
+	return configured
+}
+
 func newRuntimeSet(
 	cfg config.Config,
 	logger *zap.Logger,
@@ -512,6 +559,7 @@ func newRuntimeSet(
 	primaryV4PoolRegistry *registry.CompositeV4Registry,
 	primaryBalancerPoolRegistry *registry.CompositeBalancerRegistry,
 	primaryBundle *runtimeBundle,
+	contractExecutor *contractapp.AppService,
 ) (*runtimeSet, error) {
 	normalized := cfg.NormalizedChains()
 	if len(normalized) > 1 && !cfg.MemoryMode() {
@@ -565,6 +613,7 @@ func newRuntimeSet(
 			quickSwapPoolRegistry,
 			v4PoolRegistry,
 			balancerPoolRegistry,
+			contractExecutor,
 		)
 		if err != nil {
 			chainServices.Close()
@@ -798,8 +847,8 @@ func newPoolsAppService(
 	)
 }
 
-func newHTTPRouter(runtimes *runtimeSet, contractExecutor *contractapp.AppService) *gin.Engine {
-	chains, services := newHTTPChainServices(runtimes)
+func newHTTPRouter(runtimes *runtimeSet, contractExecutor *contractapp.AppService, logger *zap.Logger) *gin.Engine {
+	chains, services := newHTTPChainServices(runtimes, contractExecutor, logger)
 	return httpapi.NewRouter(httpapi.Handlers{
 		Health:           httpapi.NewHealthHandler(),
 		QuoteCombined:    httpapi.NewQuoteCombinedChainHandler(chains, services.quoteCombined),
@@ -807,31 +856,33 @@ func newHTTPRouter(runtimes *runtimeSet, contractExecutor *contractapp.AppServic
 		QuotePancakeV3:   httpapi.NewQuotePancakeV3ChainHandler(chains, services.quotePancakeV3),
 		QuoteQuickSwapV3: httpapi.NewQuoteQuickSwapV3ChainHandler(chains, services.quoteQuickSwapV3),
 		QuoteV4:          httpapi.NewQuoteV4ChainHandler(chains, services.quoteV4),
-		Opportunities:    httpapi.NewOpportunityChainHandler(chains, services.opportunities),
+		Opportunities:    httpapi.NewOpportunityChainHandler(chains, services.opportunities, services.opportunityExecutors),
 		Pools:            httpapi.NewPoolsChainHandler(chains, services.pools),
 		ContractExecutor: httpapi.NewContractExecutorHandler(contractExecutor),
 	})
 }
 
 type httpChainServices struct {
-	quoteCombined    map[string]*quotecombined.AppService
-	quoteV3          map[string]*quoteuniv3.AppService
-	quotePancakeV3   map[string]*quotepancakev3.AppService
-	quoteQuickSwapV3 map[string]*quotequickswapv3.AppService
-	quoteV4          map[string]*quoteuniv4.AppService
-	opportunities    map[string]domainarb.OpportunityRepository
-	pools            map[string]*poolsapp.AppService
+	quoteCombined        map[string]*quotecombined.AppService
+	quoteV3              map[string]*quoteuniv3.AppService
+	quotePancakeV3       map[string]*quotepancakev3.AppService
+	quoteQuickSwapV3     map[string]*quotequickswapv3.AppService
+	quoteV4              map[string]*quoteuniv4.AppService
+	opportunities        map[string]domainarb.OpportunityRepository
+	opportunityExecutors map[string]*arbitrageapp.OpportunityExecutor
+	pools                map[string]*poolsapp.AppService
 }
 
-func newHTTPChainServices(runtimes *runtimeSet) ([]httpapi.ChainInfo, httpChainServices) {
+func newHTTPChainServices(runtimes *runtimeSet, contractExecutor *contractapp.AppService, logger *zap.Logger) ([]httpapi.ChainInfo, httpChainServices) {
 	services := httpChainServices{
-		quoteCombined:    make(map[string]*quotecombined.AppService),
-		quoteV3:          make(map[string]*quoteuniv3.AppService),
-		quotePancakeV3:   make(map[string]*quotepancakev3.AppService),
-		quoteQuickSwapV3: make(map[string]*quotequickswapv3.AppService),
-		quoteV4:          make(map[string]*quoteuniv4.AppService),
-		opportunities:    make(map[string]domainarb.OpportunityRepository),
-		pools:            make(map[string]*poolsapp.AppService),
+		quoteCombined:        make(map[string]*quotecombined.AppService),
+		quoteV3:              make(map[string]*quoteuniv3.AppService),
+		quotePancakeV3:       make(map[string]*quotepancakev3.AppService),
+		quoteQuickSwapV3:     make(map[string]*quotequickswapv3.AppService),
+		quoteV4:              make(map[string]*quoteuniv4.AppService),
+		opportunities:        make(map[string]domainarb.OpportunityRepository),
+		opportunityExecutors: make(map[string]*arbitrageapp.OpportunityExecutor),
+		pools:                make(map[string]*poolsapp.AppService),
 	}
 	if runtimes == nil {
 		return nil, services
@@ -866,6 +917,7 @@ func newHTTPChainServices(runtimes *runtimeSet) ([]httpapi.ChainInfo, httpChainS
 		services.quoteQuickSwapV3[key] = newQuoteQuickSwapV3AppService(runtime.cfg, runtime.store, runtime.quickSwapPoolRegistry, runtime.bundle)
 		services.quoteV4[key] = newQuoteV4AppService(runtime.cfg, runtime.store, runtime.v4PoolRegistry, runtime.bundle)
 		services.opportunities[key] = runtime.store.Opportunities
+		services.opportunityExecutors[key] = newOpportunityExecutor(runtime.cfg, runtime.store, contractExecutor, runtime.chain, logger)
 		services.pools[key] = newPoolsAppService(
 			runtime.cfg,
 			runtime.store,
@@ -877,6 +929,38 @@ func newHTTPChainServices(runtimes *runtimeSet) ([]httpapi.ChainInfo, httpChainS
 		)
 	}
 	return chains, services
+}
+
+func newOpportunityExecutor(
+	cfg config.Config,
+	store *persistence.Services,
+	contractExecutor *contractapp.AppService,
+	chain *chaininfra.Services,
+	logger *zap.Logger,
+) *arbitrageapp.OpportunityExecutor {
+	if store == nil || store.Opportunities == nil || contractExecutor == nil || chain == nil {
+		return nil
+	}
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+	livePlan := livePlanConfigFromRuntime(cfg)
+	encoder := arbitrageapp.NewLiveCalldataEncoder(livePlan, arbitrageapp.NewRepositoryRoutePoolLoader(
+		store.Pools,
+		store.PancakePools,
+		store.QuickSwapPools,
+		store.V4Pools,
+		store.BalancerPools,
+	))
+	builder := arbitrageapp.NewLiveExecutionPlanBuilder(livePlan, encoder)
+	return arbitrageapp.NewOpportunityExecutor(
+		store.Opportunities,
+		builder,
+		contractExecutor,
+		chain.Client,
+		executionConfigFromRuntime(cfg),
+		logger.Named("opportunity.execute"),
+	)
 }
 
 func httpChainKey(name string) string {

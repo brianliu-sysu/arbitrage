@@ -6,18 +6,40 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"regexp"
 	"strings"
 
 	domaincontract "github.com/brianliu-sysu/uniswapv3/internal/domain/contract"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
 const arbitrageExecutorABI = `[
+	{
+		"type":"error",
+		"name":"SwapCallFailed",
+		"inputs":[
+			{"name":"index","type":"uint256"},
+			{"name":"router","type":"address"},
+			{"name":"reason","type":"bytes"}
+		]
+	},
+	{
+		"type":"function",
+		"name":"approveToken",
+		"stateMutability":"nonpayable",
+		"inputs":[
+			{"name":"token","type":"address"},
+			{"name":"spender","type":"address"},
+			{"name":"amount","type":"uint256"}
+		],
+		"outputs":[]
+	},
 	{
 		"type":"function",
 		"name":"execute",
@@ -60,8 +82,22 @@ const arbitrageExecutorABI = `[
 	}
 ]`
 
+const erc20AllowanceABI = `[
+	{
+		"type":"function",
+		"name":"allowance",
+		"stateMutability":"view",
+		"inputs":[
+			{"name":"owner","type":"address"},
+			{"name":"spender","type":"address"}
+		],
+		"outputs":[{"name":"","type":"uint256"}]
+	}
+]`
+
 type ContractExecutorBroadcaster struct {
 	parsedABI abi.ABI
+	erc20ABI  abi.ABI
 }
 
 func NewContractExecutorBroadcaster() (*ContractExecutorBroadcaster, error) {
@@ -69,7 +105,11 @@ func NewContractExecutorBroadcaster() (*ContractExecutorBroadcaster, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse arbitrage executor abi: %w", err)
 	}
-	return &ContractExecutorBroadcaster{parsedABI: parsedABI}, nil
+	erc20ABI, err := abi.JSON(strings.NewReader(erc20AllowanceABI))
+	if err != nil {
+		return nil, fmt.Errorf("parse erc20 abi: %w", err)
+	}
+	return &ContractExecutorBroadcaster{parsedABI: parsedABI, erc20ABI: erc20ABI}, nil
 }
 
 func (b *ContractExecutorBroadcaster) BroadcastExecution(
@@ -102,9 +142,203 @@ func (b *ContractExecutorBroadcaster) BroadcastExecution(
 		return domaincontract.BroadcastResponse{}, fmt.Errorf("pack execute calldata: %w", err)
 	}
 
-	nonce, err := resolveNonce(ctx, client, from, req.Nonce)
+	txHash, err := b.sendTransaction(ctx, client, req, from, privateKey, chainID, data)
 	if err != nil {
 		return domaincontract.BroadcastResponse{}, err
+	}
+	return domaincontract.BroadcastResponse{TxHash: txHash}, nil
+}
+
+func (b *ContractExecutorBroadcaster) SimulateExecution(
+	ctx context.Context,
+	req domaincontract.BroadcastRequest,
+) error {
+	if b == nil {
+		return errors.New("contract executor broadcaster is nil")
+	}
+
+	privateKey, err := parsePrivateKey(req.PrivateKey)
+	if err != nil {
+		return err
+	}
+	from := crypto.PubkeyToAddress(privateKey.PublicKey)
+
+	client, err := ethclient.DialContext(ctx, req.RPCURL)
+	if err != nil {
+		return fmt.Errorf("dial rpc: %w", err)
+	}
+	defer client.Close()
+
+	data, err := b.parsedABI.Pack("execute", toExecutionPlanABI(req.Plan))
+	if err != nil {
+		return fmt.Errorf("pack execute calldata: %w", err)
+	}
+	_, err = client.CallContract(ctx, ethereum.CallMsg{
+		From: from,
+		To:   &req.Executor,
+		Data: data,
+	}, nil)
+	if err != nil {
+		return fmt.Errorf("simulate execute: %w%s", err, b.decodeRevertError(err))
+	}
+	return nil
+}
+
+func (b *ContractExecutorBroadcaster) decodeRevertError(err error) string {
+	if err == nil {
+		return ""
+	}
+	raw, ok := ethclient.RevertErrorData(err)
+	if !ok {
+		raw = extractHexRevertData(err.Error())
+	}
+	if len(raw) < 4 {
+		return ""
+	}
+	decoded := b.decodeABIError(raw)
+	if decoded == "" {
+		return ""
+	}
+	return ": " + decoded
+}
+
+var hexDataPattern = regexp.MustCompile(`0x[0-9a-fA-F]{8,}`)
+
+func extractHexRevertData(message string) []byte {
+	matches := hexDataPattern.FindAllString(message, -1)
+	for i := len(matches) - 1; i >= 0; i-- {
+		raw, err := hexutil.Decode(matches[i])
+		if err == nil && len(raw) >= 4 {
+			return raw
+		}
+	}
+	return nil
+}
+
+func (b *ContractExecutorBroadcaster) decodeABIError(raw []byte) string {
+	if b == nil || len(raw) < 4 {
+		return ""
+	}
+	for name, abiError := range b.parsedABI.Errors {
+		if len(abiError.ID) >= 4 && string(abiError.ID[:4]) == string(raw[:4]) {
+			values, err := abiError.Inputs.Unpack(raw[4:])
+			if err != nil {
+				return fmt.Sprintf("%s(unpack failed: %v)", name, err)
+			}
+			return formatABIError(name, values)
+		}
+	}
+	return fmt.Sprintf("custom error 0x%x", raw[:4])
+}
+
+func formatABIError(name string, values []any) string {
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		switch typed := value.(type) {
+		case *big.Int:
+			parts = append(parts, typed.String())
+		case common.Address:
+			parts = append(parts, typed.Hex())
+		case []byte:
+			parts = append(parts, "0x"+common.Bytes2Hex(typed))
+		default:
+			parts = append(parts, fmt.Sprintf("%v", typed))
+		}
+	}
+	return fmt.Sprintf("%s(%s)", name, strings.Join(parts, ", "))
+}
+
+func (b *ContractExecutorBroadcaster) Allowance(
+	ctx context.Context,
+	rpcURL string,
+	token common.Address,
+	owner common.Address,
+	spender common.Address,
+) (*big.Int, error) {
+	if b == nil {
+		return nil, errors.New("contract executor broadcaster is nil")
+	}
+	client, err := ethclient.DialContext(ctx, rpcURL)
+	if err != nil {
+		return nil, fmt.Errorf("dial rpc: %w", err)
+	}
+	defer client.Close()
+
+	data, err := b.erc20ABI.Pack("allowance", owner, spender)
+	if err != nil {
+		return nil, fmt.Errorf("pack allowance calldata: %w", err)
+	}
+	output, err := client.CallContract(ctx, ethereum.CallMsg{
+		To:   &token,
+		Data: data,
+	}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("call allowance: %w", err)
+	}
+	values, err := b.erc20ABI.Unpack("allowance", output)
+	if err != nil {
+		return nil, fmt.Errorf("unpack allowance: %w", err)
+	}
+	if len(values) != 1 {
+		return nil, fmt.Errorf("unexpected allowance output count %d", len(values))
+	}
+	allowance, ok := values[0].(*big.Int)
+	if !ok {
+		return nil, fmt.Errorf("unexpected allowance output type %T", values[0])
+	}
+	return new(big.Int).Set(allowance), nil
+}
+
+func (b *ContractExecutorBroadcaster) BroadcastApprove(
+	ctx context.Context,
+	req domaincontract.BroadcastRequest,
+	approval domaincontract.TokenApproval,
+) (domaincontract.BroadcastResponse, error) {
+	if b == nil {
+		return domaincontract.BroadcastResponse{}, errors.New("contract executor broadcaster is nil")
+	}
+
+	privateKey, err := parsePrivateKey(req.PrivateKey)
+	if err != nil {
+		return domaincontract.BroadcastResponse{}, err
+	}
+	from := crypto.PubkeyToAddress(privateKey.PublicKey)
+
+	client, err := ethclient.DialContext(ctx, req.RPCURL)
+	if err != nil {
+		return domaincontract.BroadcastResponse{}, fmt.Errorf("dial rpc: %w", err)
+	}
+	defer client.Close()
+
+	chainID, err := client.ChainID(ctx)
+	if err != nil {
+		return domaincontract.BroadcastResponse{}, fmt.Errorf("chain id: %w", err)
+	}
+
+	data, err := b.parsedABI.Pack("approveToken", approval.Token, approval.Spender, maxUint256Big())
+	if err != nil {
+		return domaincontract.BroadcastResponse{}, fmt.Errorf("pack approveToken calldata: %w", err)
+	}
+
+	txHash, err := b.sendTransaction(ctx, client, req, from, privateKey, chainID, data)
+	if err != nil {
+		return domaincontract.BroadcastResponse{}, err
+	}
+	return domaincontract.BroadcastResponse{TxHash: txHash}, nil
+}
+
+func (b *ContractExecutorBroadcaster) sendTransaction(
+	ctx context.Context,
+	client *ethclient.Client,
+	req domaincontract.BroadcastRequest,
+	from common.Address,
+	privateKey *ecdsa.PrivateKey,
+	chainID *big.Int,
+	data []byte,
+) (common.Hash, error) {
+	nonce, err := resolveNonce(ctx, client, from, req.Nonce)
+	if err != nil {
+		return common.Hash{}, err
 	}
 
 	gasLimit := req.GasLimit
@@ -115,31 +349,39 @@ func (b *ContractExecutorBroadcaster) BroadcastExecution(
 			Data: data,
 		})
 		if err != nil {
-			return domaincontract.BroadcastResponse{}, fmt.Errorf("estimate gas: %w", err)
+			return common.Hash{}, fmt.Errorf("estimate gas: %w", err)
 		}
 	}
 	if gasLimit == 0 {
-		return domaincontract.BroadcastResponse{}, errors.New("gasLimit is required when gas estimation is skipped")
+		return common.Hash{}, errors.New("gasLimit is required when gas estimation is skipped")
 	}
 
 	gasPrice := req.GasPriceWei
 	if gasPrice == nil {
 		gasPrice, err = client.SuggestGasPrice(ctx)
 		if err != nil {
-			return domaincontract.BroadcastResponse{}, fmt.Errorf("suggest gas price: %w", err)
+			return common.Hash{}, fmt.Errorf("suggest gas price: %w", err)
 		}
 	}
 
 	tx := types.NewTransaction(nonce, req.Executor, new(big.Int), gasLimit, new(big.Int).Set(gasPrice), data)
 	signedTx, err := types.SignTx(tx, types.LatestSignerForChainID(chainID), privateKey)
 	if err != nil {
-		return domaincontract.BroadcastResponse{}, fmt.Errorf("sign tx: %w", err)
+		return common.Hash{}, fmt.Errorf("sign tx: %w", err)
 	}
-	if err := client.SendTransaction(ctx, signedTx); err != nil {
-		return domaincontract.BroadcastResponse{}, fmt.Errorf("send tx: %w", err)
+	submitClient := client
+	if submitRPCURL := strings.TrimSpace(req.SubmitRPCURL); submitRPCURL != "" && submitRPCURL != req.RPCURL {
+		submitClient, err = ethclient.DialContext(ctx, submitRPCURL)
+		if err != nil {
+			return common.Hash{}, fmt.Errorf("dial submit rpc: %w", err)
+		}
+		defer submitClient.Close()
+	}
+	if err := submitClient.SendTransaction(ctx, signedTx); err != nil {
+		return common.Hash{}, fmt.Errorf("send tx: %w", err)
 	}
 
-	return domaincontract.BroadcastResponse{TxHash: signedTx.Hash()}, nil
+	return signedTx.Hash(), nil
 }
 
 func parsePrivateKey(raw string) (*ecdsa.PrivateKey, error) {
@@ -235,4 +477,8 @@ func zeroIfNilBigInt(v *big.Int) *big.Int {
 		return new(big.Int)
 	}
 	return new(big.Int).Set(v)
+}
+
+func maxUint256Big() *big.Int {
+	return new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
 }

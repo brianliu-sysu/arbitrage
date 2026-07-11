@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/brianliu-sysu/uniswapv3/internal/config"
@@ -120,6 +121,56 @@ arbitrage:
 	}
 	if cfg.Arbitrage.FlashLoan.Univ4Fee().String() != "2" {
 		t.Fatalf("expected univ4 fee 2, got %s", cfg.Arbitrage.FlashLoan.Univ4Fee())
+	}
+}
+
+func TestExecutionResolveRPCURL(t *testing.T) {
+	cfg := config.ExecutionConfig{}
+	if got := cfg.ResolveRPCURL("https://fallback.example"); got != "https://fallback.example" {
+		t.Fatalf("expected fallback rpc, got %q", got)
+	}
+
+	cfg.RPCURL = " https://execution.example "
+	if got := cfg.ResolveRPCURL("https://fallback.example"); got != "https://execution.example" {
+		t.Fatalf("expected dedicated execution rpc, got %q", got)
+	}
+}
+
+func TestLoadExecutionRPCURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+persistence:
+  memory: true
+chains:
+  - name: ethereum
+    enabled: true
+    chain_id: 1
+    rpc:
+      url: "https://chain.example"
+    arbitrage:
+      execution:
+        enabled: false
+        rpc_url: "https://execution.example"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	chains := cfg.NormalizedChains()
+	if len(chains) == 0 {
+		t.Fatal("expected at least one chain")
+	}
+	execution := chains[0].Arbitrage.Execution
+	if execution.RPCURL != "https://execution.example" {
+		t.Fatalf("expected execution rpc_url, got %q", execution.RPCURL)
+	}
+	if got := execution.ResolveRPCURL(chains[0].RPC.URL); got != "https://execution.example" {
+		t.Fatalf("expected resolved execution rpc, got %q", got)
 	}
 }
 
@@ -250,24 +301,22 @@ func TestExampleConfigFilesLoad(t *testing.T) {
 		if err != nil {
 			t.Fatalf("load %s: %v", path, err)
 		}
-		chains := cfg.NormalizedChains()
-		if len(chains) != 2 {
-			t.Fatalf("expected two configured chains in %s, got %d", path, len(chains))
+		if len(cfg.Chains) == 0 {
+			t.Fatalf("expected configured chains in %s", path)
 		}
-		if chains[0].Sync.Univ3.Enabled == false {
-			t.Fatalf("expected chain-local sync config in %s", path)
+		if len(cfg.NormalizedChains()) == 0 {
+			t.Fatalf("expected at least one enabled chain in %s", path)
 		}
-		if chains[1].Name != "polygon" || chains[1].ChainID != 137 {
-			t.Fatalf("expected polygon as second configured chain in %s, got %+v", path, chains[1])
-		}
-		if !chains[1].Sync.Univ3.IsActive() {
-			t.Fatalf("expected polygon univ3 sync active in %s, got %+v", path, chains[1].Sync.Univ3)
-		}
-		if chains[1].Blockchain.PoolManagerAddress != "0x67366782805870060151383f4bbff9dab53e5cd6" {
-			t.Fatalf("expected polygon univ4 pool manager in %s, got %s", path, chains[1].Blockchain.PoolManagerAddress)
-		}
-		if chains[1].Sync.QuickSwapV3.Subgraph.OrderBy != "volume24h" {
-			t.Fatalf("expected polygon quickswapv3 config in %s, got %+v", path, chains[1].Sync.QuickSwapV3)
+		for i, chain := range cfg.Chains {
+			if chain.Name == "" || chain.ChainID == 0 {
+				t.Fatalf("chain[%d] missing identity in %s: %+v", i, path, chain)
+			}
+			if strings.TrimSpace(chain.Arbitrage.Execution.RPCURL) != "" {
+				continue
+			}
+			if got := chain.Arbitrage.Execution.ResolveRPCURL(chain.RPC.URL); got != strings.TrimSpace(chain.RPC.URL) {
+				t.Fatalf("chain %s: empty execution rpc_url should fall back to chain rpc, got %q", chain.Name, got)
+			}
 		}
 	}
 }

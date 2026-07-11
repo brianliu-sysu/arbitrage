@@ -54,6 +54,7 @@ func NewRouter(handlers Handlers) *gin.Engine {
 		}
 		if handlers.Opportunities != nil {
 			v1.GET("/opportunities", handlers.Opportunities.HandleList)
+			v1.POST("/opportunities/:opportunityID/execute", handlers.Opportunities.HandleExecute)
 		}
 		if handlers.Pools != nil {
 			v1.GET("/pools/diagnostics", handlers.Pools.HandleDiagnostics)

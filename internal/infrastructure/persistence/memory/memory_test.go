@@ -2,6 +2,7 @@ package memory_test
 
 import (
 	"context"
+	"errors"
 	"math/big"
 	"testing"
 	"time"
@@ -158,6 +159,17 @@ func TestOpportunityRepositorySaveList(t *testing.T) {
 	items, err := repo.List(ctx, 10)
 	if err != nil || len(items) != 1 || items[0].ID != "opp-1" {
 		t.Fatalf("list opportunities: %#v err=%v", items, err)
+	}
+
+	got, err := repo.Get(ctx, "opp-1")
+	if err != nil {
+		t.Fatalf("get opportunity: %v", err)
+	}
+	if got.ID != "opp-1" || got.BlockNumber != 100 {
+		t.Fatalf("unexpected opportunity: %#v", got)
+	}
+	if _, err := repo.Get(ctx, "missing"); !errors.Is(err, arbitrage.ErrOpportunityNotFound) {
+		t.Fatalf("expected not found, got %v", err)
 	}
 }
 

@@ -134,6 +134,24 @@ func TestFlashLoanOptionsForRouteUsesV3PoolFee(t *testing.T) {
 	if v3Option.PoolRef.Key() != PoolRefFromV3(poolAddress).Key() {
 		t.Fatalf("expected v3 pool ref, got %s", v3Option.PoolRef.Key())
 	}
+	if !v3Option.BorrowToken0 {
+		t.Fatal("expected borrowToken0=true when route.TokenIn is pool token0")
+	}
+
+	routeToken1 := quoteunified.NewDirectV3Route(poolAddress, tokenB, tokenA)
+	optionsToken1 := FlashLoanOptionsForRoute(routeToken1, quoteunified.RoutePools{
+		V3: map[common.Address]*marketv3.Pool{poolAddress: pool},
+	}, nil)
+	var v3OptionToken1 FlashLoanOption
+	for _, option := range optionsToken1 {
+		if option.Protocol == FlashLoanProtocolUniv3 {
+			v3OptionToken1 = option
+			break
+		}
+	}
+	if v3OptionToken1.BorrowToken0 {
+		t.Fatal("expected borrowToken0=false when route.TokenIn is pool token1")
+	}
 }
 
 type linearQuoter struct {

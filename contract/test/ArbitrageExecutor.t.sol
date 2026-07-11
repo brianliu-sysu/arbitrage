@@ -171,6 +171,11 @@ contract MockSwapTarget {
         tokenOut.mint(msg.sender, mintAmount);
     }
 
+    /// @dev Mimics WETH.deposit(): consumes msg.value only (no amount in calldata).
+    function deposit() external payable {
+        require(msg.value > 0, "zero deposit");
+    }
+
     function forcePoolManagerDelta(MockPoolManager manager, address target, address token, int256 delta) external {
         manager.forceDelta(target, Currency.wrap(token), delta);
     }
@@ -398,16 +403,11 @@ contract ArbitrageExecutorTest is Test {
         vm.deal(address(executor), ethAmount);
 
         // spendETHAndMint(amount, tokenOut, mintAmount): selector(4) + amount@4.
-        bytes memory callData =
-            abi.encodeCall(MockSwapTarget.spendETHAndMint, (uint256(0), token, profit));
+        bytes memory callData = abi.encodeCall(MockSwapTarget.spendETHAndMint, (uint256(0), token, profit));
 
         ArbitrageExecutor.RouterCall[] memory routers = new ArbitrageExecutor.RouterCall[](1);
         routers[0] = ArbitrageExecutor.RouterCall({
-            routerAddress: address(swapTarget),
-            value: ethAmount,
-            data: callData,
-            fillToken: nativeToken,
-            fillOffset: 4
+            routerAddress: address(swapTarget), value: ethAmount, data: callData, fillToken: nativeToken, fillOffset: 4
         });
 
         ArbitrageExecutor.ExecutionPlan memory plan = ArbitrageExecutor.ExecutionPlan({
@@ -432,6 +432,98 @@ contract ArbitrageExecutorTest is Test {
         assertEq(token.balanceOf(recipient), profit);
         assertEq(address(executor).balance, 0);
         assertEq(address(swapTarget).balance, ethAmount);
+    }
+
+    function testExecuteFillsNativeValueForSelectorOnlyCall() external {
+        uint256 ethAmount = 3 ether;
+        uint256 profit = 25 ether;
+        address nativeToken = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+        _setProfitRecipient();
+        vm.deal(address(executor), ethAmount);
+
+        // deposit() is selector-only; fill must override msg.value without patching calldata.
+        bytes memory callData = abi.encodeCall(MockSwapTarget.deposit, ());
+
+        ArbitrageExecutor.RouterCall[] memory routers = new ArbitrageExecutor.RouterCall[](2);
+        routers[0] = ArbitrageExecutor.RouterCall({
+            routerAddress: address(swapTarget),
+            value: 0,
+            data: callData,
+            fillToken: nativeToken,
+            fillOffset: 0
+        });
+        routers[1] = ArbitrageExecutor.RouterCall({
+            routerAddress: address(swapTarget),
+            value: 0,
+            data: abi.encodeCall(MockSwapTarget.mintProfit, (token, address(executor), profit)),
+            fillToken: address(0),
+            fillOffset: 0
+        });
+
+        ArbitrageExecutor.ExecutionPlan memory plan = ArbitrageExecutor.ExecutionPlan({
+            loan: ArbitrageExecutor.FlashLoan({
+                protocol: ArbitrageExecutor.FlashLoanProtocol.Balancer,
+                lender: address(vault),
+                token: address(token),
+                amount: 100 ether,
+                borrowToken0: true
+            }),
+            routers: routers,
+            settleCurrencies: new address[](0),
+            profitToken: address(token),
+            minProfit: profit,
+            deadline: block.timestamp + 1
+        });
+
+        vm.prank(operator);
+        uint256 returnedProfit = executor.execute(plan);
+
+        assertEq(returnedProfit, profit);
+        assertEq(address(executor).balance, 0);
+        assertEq(address(swapTarget).balance, ethAmount);
+    }
+
+    function testExecuteFillsNativeValueWithoutPatchingRouterCalldata() external {
+        uint256 ethAmount = 3 ether;
+        uint256 profit = 25 ether;
+        address nativeToken = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+        _setProfitRecipient();
+        vm.deal(address(executor), ethAmount);
+
+        // fillOffset=0 for native means "override msg.value only"; calldata keeps its encoded amount.
+        bytes memory callData = abi.encodeCall(MockSwapTarget.spendETHAndMint, (ethAmount, token, profit));
+
+        ArbitrageExecutor.RouterCall[] memory routers = new ArbitrageExecutor.RouterCall[](1);
+        routers[0] = ArbitrageExecutor.RouterCall({
+            routerAddress: address(swapTarget),
+            value: 0,
+            data: callData,
+            fillToken: nativeToken,
+            fillOffset: 0
+        });
+
+        ArbitrageExecutor.ExecutionPlan memory plan = ArbitrageExecutor.ExecutionPlan({
+            loan: ArbitrageExecutor.FlashLoan({
+                protocol: ArbitrageExecutor.FlashLoanProtocol.Balancer,
+                lender: address(vault),
+                token: address(token),
+                amount: 100 ether,
+                borrowToken0: true
+            }),
+            routers: routers,
+            settleCurrencies: new address[](0),
+            profitToken: address(token),
+            minProfit: profit,
+            deadline: block.timestamp + 1
+        });
+
+        vm.prank(operator);
+        uint256 returnedProfit = executor.execute(plan);
+
+        assertEq(returnedProfit, profit);
+        assertEq(address(executor).balance, 0);
+        assertEq(address(swapTarget).balance, ethAmount);
+        assertEq(token.balanceOf(recipient), profit);
     }
 
     function testProfitExcludesRepaidFlashLoanPrincipalAndFee() external {

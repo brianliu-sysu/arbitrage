@@ -15,6 +15,7 @@ const (
 	OpportunityStatusDiscovered OpportunityStatus = "discovered"
 	OpportunityStatusAccepted   OpportunityStatus = "accepted"
 	OpportunityStatusRejected   OpportunityStatus = "rejected"
+	OpportunityStatusExecuted   OpportunityStatus = "executed"
 )
 
 // Opportunity is an arbitrage opportunity discovered by the scanner.
@@ -87,10 +88,11 @@ func cloneBigInt(v *big.Int) *big.Int {
 
 func cloneFlashLoanQuote(v FlashLoanQuote) FlashLoanQuote {
 	return FlashLoanQuote{
-		Protocol: v.Protocol,
-		PoolRef:  v.PoolRef,
-		Amount:   cloneBigInt(v.Amount),
-		Fee:      cloneBigInt(v.Fee),
-		FeePPM:   cloneBigInt(v.FeePPM),
+		Protocol:     v.Protocol,
+		PoolRef:      v.PoolRef,
+		Amount:       cloneBigInt(v.Amount),
+		Fee:          cloneBigInt(v.Fee),
+		FeePPM:       cloneBigInt(v.FeePPM),
+		BorrowToken0: v.BorrowToken0,
 	}
 }

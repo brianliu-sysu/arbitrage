@@ -27,11 +27,12 @@ type opportunityPayload struct {
 }
 
 type opportunityFlash struct {
-	Protocol string `json:"protocol,omitempty"`
-	PoolRef  string `json:"poolRef,omitempty"`
-	Amount   string `json:"amount,omitempty"`
-	Fee      string `json:"fee,omitempty"`
-	FeePPM   string `json:"feePpm,omitempty"`
+	Protocol     string `json:"protocol,omitempty"`
+	PoolRef      string `json:"poolRef,omitempty"`
+	Amount       string `json:"amount,omitempty"`
+	Fee          string `json:"fee,omitempty"`
+	FeePPM       string `json:"feePpm,omitempty"`
+	BorrowToken0 bool   `json:"borrowToken0,omitempty"`
 }
 
 type opportunityRoute struct {
@@ -50,19 +51,51 @@ type opportunityRouteHop struct {
 	TokenOut        string `json:"tokenOut"`
 }
 
-// EnsurePayload serializes the opportunity when payload is empty.
+// EnsurePayload serializes the opportunity when payload is empty, and keeps the
+// persisted status field aligned with Opportunity.Status when payload already exists.
+// Extra payload keys (for example execution) are preserved.
 func (o *Opportunity) EnsurePayload() error {
 	if o == nil {
 		return fmt.Errorf("opportunity is nil")
 	}
-	if len(o.Payload) > 0 {
+	if len(o.Payload) == 0 {
+		payload, err := encodeOpportunityPayload(o)
+		if err != nil {
+			return err
+		}
+		o.Payload = payload
 		return nil
 	}
-	payload, err := encodeOpportunityPayload(o)
-	if err != nil {
-		return err
+	return o.syncPayloadStatus()
+}
+
+// SetStatus updates the opportunity status and keeps the encoded payload in sync.
+func (o *Opportunity) SetStatus(status OpportunityStatus) error {
+	if o == nil {
+		return fmt.Errorf("opportunity is nil")
 	}
-	o.Payload = payload
+	o.Status = status
+	return o.EnsurePayload()
+}
+
+func (o *Opportunity) syncPayloadStatus() error {
+	var payload map[string]any
+	if err := json.Unmarshal(o.Payload, &payload); err != nil {
+		return fmt.Errorf("decode opportunity payload: %w", err)
+	}
+	if payload == nil {
+		payload = make(map[string]any)
+	}
+	current, _ := payload["status"].(string)
+	if current == string(o.Status) {
+		return nil
+	}
+	payload["status"] = string(o.Status)
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode opportunity payload: %w", err)
+	}
+	o.Payload = raw
 	return nil
 }
 
@@ -99,8 +132,9 @@ func encodeOpportunityFlash(flash FlashLoanQuote) *opportunityFlash {
 		return nil
 	}
 	payload := &opportunityFlash{
-		Protocol: string(flash.Protocol),
-		PoolRef:  flash.PoolRef.Key(),
+		Protocol:     string(flash.Protocol),
+		PoolRef:      flash.PoolRef.Key(),
+		BorrowToken0: flash.BorrowToken0,
 	}
 	if flash.Amount != nil {
 		payload.Amount = flash.Amount.String()
@@ -230,11 +264,12 @@ func decodeOpportunityRoute(route opportunityRoute) quoteunified.Route {
 
 func decodeOpportunityFlash(payload opportunityFlash) FlashLoanQuote {
 	return FlashLoanQuote{
-		Protocol: FlashLoanProtocol(payload.Protocol),
-		PoolRef:  decodeOptionalPoolRef(payload.PoolRef),
-		Amount:   parsePayloadBigInt(payload.Amount),
-		Fee:      parsePayloadBigInt(payload.Fee),
-		FeePPM:   parsePayloadBigInt(payload.FeePPM),
+		Protocol:     FlashLoanProtocol(payload.Protocol),
+		PoolRef:      decodeOptionalPoolRef(payload.PoolRef),
+		Amount:       parsePayloadBigInt(payload.Amount),
+		Fee:          parsePayloadBigInt(payload.Fee),
+		FeePPM:       parsePayloadBigInt(payload.FeePPM),
+		BorrowToken0: payload.BorrowToken0,
 	}
 }
 

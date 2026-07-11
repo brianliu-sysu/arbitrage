@@ -29,6 +29,20 @@ func (r *OpportunityRepository) Save(_ context.Context, opportunity *arbitrage.O
 	return nil
 }
 
+func (r *OpportunityRepository) Get(_ context.Context, id string) (*arbitrage.Opportunity, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	opportunity, ok := r.opportunities[id]
+	if !ok {
+		return nil, arbitrage.ErrOpportunityNotFound
+	}
+	copyOpportunity := *opportunity
+	payload := make([]byte, len(opportunity.Payload))
+	copy(payload, opportunity.Payload)
+	copyOpportunity.Payload = payload
+	return &copyOpportunity, nil
+}
+
 func (r *OpportunityRepository) List(_ context.Context, limit int) ([]*arbitrage.Opportunity, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

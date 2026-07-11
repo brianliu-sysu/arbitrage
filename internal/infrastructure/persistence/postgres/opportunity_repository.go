@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
@@ -38,6 +39,31 @@ func (r *OpportunityRepository) Save(ctx context.Context, opportunity *arbitrage
 		return fmt.Errorf("save opportunity: %w", err)
 	}
 	return nil
+}
+
+func (r *OpportunityRepository) Get(ctx context.Context, id string) (*arbitrage.Opportunity, error) {
+	var (
+		item        arbitrage.Opportunity
+		poolAddress []byte
+		payload     []byte
+	)
+	err := r.db.pool.QueryRow(ctx, `
+		SELECT id, pool_address, block_number, payload, created_at
+		FROM opportunities
+		WHERE id = $1
+	`, id).Scan(&item.ID, &poolAddress, &item.BlockNumber, &payload, &item.CreatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, arbitrage.ErrOpportunityNotFound
+		}
+		return nil, fmt.Errorf("get opportunity: %w", err)
+	}
+	item.PoolAddress = codec.BytesToAddress(poolAddress)
+	item.Payload = append([]byte(nil), payload...)
+	if err := item.ApplyPayload(); err != nil {
+		return nil, fmt.Errorf("apply opportunity payload for %s: %w", item.ID, err)
+	}
+	return &item, nil
 }
 
 func (r *OpportunityRepository) List(ctx context.Context, limit int) ([]*arbitrage.Opportunity, error) {

@@ -168,6 +168,28 @@ chains:
         # Flash-loan fee rates in ppm; Uniswap V3 uses the selected pool's fee tier.
         balancer_fee_ppm: "0"
         univ4_fee_ppm: "0"
+      execution:
+        # When enabled, accepted opportunities with an embedded execution payload are sent on-chain.
+        enabled: false
+        # Optional dedicated RPC for simulate/broadcast. Empty falls back to chains[].rpc.url.
+        rpc_url: ""
+        executor_address: "0x0000000000000000000000000000000000000000"
+        private_key: ""
+        broadcast_token: ""
+        flashbots_rpc_url: "https://relay.flashbots.net"
+        # 8000 bps = 80% of net profit, converted to gas price by gas_limit.
+        flashbots_payment_bps: 8000
+        gas_limit: 500000
+        gas_price_wei: ""
+        skip_estimate: false
+        max_opportunity_age_blocks: 3
+        # Optional live calldata encoder addresses. Empty WETH falls back to mainnet WETH.
+        weth_address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+        swap_router_v3: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"
+        swap_router_pancake_v3: ""
+        universal_router: "0x66a9893cc07d91d95644aedd05d03f95e1dba8af"
+        allowed_routers: []
+        allowed_approval_spenders: []
 
   - name: polygon
     enabled: false
@@ -303,3 +325,23 @@ chains:
       flash_loan:
         balancer_fee_ppm: "0"
         univ4_fee_ppm: "0"
+      execution:
+        enabled: false
+        # Optional dedicated RPC for simulate/broadcast. Empty falls back to chains[].rpc.url.
+        rpc_url: ""
+        executor_address: "0x0000000000000000000000000000000000000000"
+        private_key: ""
+        broadcast_token: ""
+        flashbots_rpc_url: ""
+        flashbots_payment_bps: 8000
+        gas_limit: 500000
+        gas_price_wei: ""
+        skip_estimate: false
+        max_opportunity_age_blocks: 3
+        # Optional live calldata encoder addresses. Empty WETH falls back to mainnet WETH.
+        weth_address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+        swap_router_v3: "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"
+        swap_router_pancake_v3: ""
+        universal_router: "0x66a9893cc07d91d95644aedd05d03f95e1dba8af"
+        allowed_routers: []
+        allowed_approval_spenders: []

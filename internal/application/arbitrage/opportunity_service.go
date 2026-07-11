@@ -263,7 +263,9 @@ func (s *OpportunityService) generateForRoute(
 
 	id := fmt.Sprintf("%s-%d-%d", routeRef.ID, blockNumber, s.now().UnixNano())
 	opp := domainarb.NewOpportunity(id, strategy, blockNumber, routeRef.Route, evaluation, gas, s.now().UTC())
-	opp.Status = domainarb.OpportunityStatusAccepted
+	if err := opp.SetStatus(domainarb.OpportunityStatusAccepted); err != nil {
+		return nil, fmt.Errorf("set opportunity status: %w", err)
+	}
 	s.logger.Debug("arbitrage route accepted",
 		zap.Uint64("block", blockNumber),
 		zap.String("route", routeRef.ID),

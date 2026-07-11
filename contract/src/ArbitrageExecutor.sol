@@ -70,6 +70,7 @@ contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallb
     error InvalidAddress();
     error InvalidCallback();
     error SwapFailed();
+    error SwapCallFailed(uint256 index, address router, bytes reason);
     error ProfitTooLow(uint256 profit, uint256 minProfit);
 
     event OperatorSet(address indexed operator, bool enabled);
@@ -103,6 +104,11 @@ contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallb
         if (recipient == address(0)) revert InvalidAddress();
         profitRecipient = recipient;
         emit ProfitRecipientSet(recipient);
+    }
+
+    function approveToken(address token, address spender, uint256 amount) external onlyOperator {
+        if (token == address(0) || spender == address(0)) revert InvalidAddress();
+        IERC20(token).forceApprove(spender, amount);
     }
 
     function execute(ExecutionPlan calldata plan) external onlyOperator returns (uint256 profit) {
@@ -186,34 +192,44 @@ contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallb
 
     function _executeSwaps(RouterCall[] memory routers) private {
         for (uint256 i = 0; i < routers.length; i++) {
-            _executeSwap(routers[i]);
+            _executeSwap(i, routers[i]);
         }
     }
 
-    function _executeSwap(RouterCall memory router) private {
+    function _executeSwap(uint256 index, RouterCall memory router) private {
         bytes memory midData = router.data;
+        uint256 callValue = router.value;
 
         // When fillToken is set, patch the amount placeholder with the live on-chain balance.
-        // address(0) disables fill; NATIVE_TOKEN (0xEeee...) fills with this contract's ETH balance.
+        // address(0) disables fill; NATIVE_TOKEN (0xEeee...) fills with this contract's ETH balance
+        // and also overrides call value (needed for WETH.deposit / native Universal Router hops).
         if (router.fillToken != address(0)) {
             uint256 actualBalance = router.fillToken == NATIVE_TOKEN
                 ? address(this).balance
                 : IERC20(router.fillToken).balanceOf(address(this));
-            uint256 offset = router.fillOffset;
-            assembly ("memory-safe") {
-                // midData layout: length at midData, payload starts at midData + 32.
-                mstore(add(add(midData, 32), offset), actualBalance)
+            if (router.fillToken == NATIVE_TOKEN) {
+                callValue = actualBalance;
+            }
+            // Native fillOffset=0 means "fill msg.value only" for selector-only calls and routers
+            // whose calldata uses an internal balance sentinel (e.g. Universal Router v4 OPEN_DELTA).
+            if (
+                !(router.fillToken == NATIVE_TOKEN && router.fillOffset == 0)
+                    && router.fillOffset + 32 <= midData.length
+            ) {
+                uint256 offset = router.fillOffset;
+                assembly ("memory-safe") {
+                    // midData layout: length at midData, payload starts at midData + 32.
+                    mstore(add(add(midData, 32), offset), actualBalance)
+                }
             }
         }
 
-        (bool ok,) = router.routerAddress.call{ value: router.value }(midData);
-        if (!ok) revert SwapFailed();
+        (bool ok, bytes memory reason) = router.routerAddress.call{ value: callValue }(midData);
+        if (!ok) revert SwapCallFailed(index, router.routerAddress, reason);
     }
 
     /// @dev Clears open deltas with CurrencySettler. Operator must list every currency that may be nonzero.
-    function _clearUniswapV4Deltas(IPoolManager manager, address loanToken, address[] memory settleCurrencies)
-        private
-    {
+    function _clearUniswapV4Deltas(IPoolManager manager, address loanToken, address[] memory settleCurrencies) private {
         if (settleCurrencies.length == 0) {
             _clearUniswapV4Delta(manager, Currency.wrap(loanToken));
             return;

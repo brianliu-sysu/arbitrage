@@ -68,11 +68,33 @@ type ArbitrageConfig struct {
 	Triangle  TriangleArbitrageConfig `yaml:"triangle"`
 	Spread    SpreadArbitrageConfig   `yaml:"spread"`
 	FlashLoan FlashLoanConfig         `yaml:"flash_loan"`
+	Execution ExecutionConfig         `yaml:"execution"`
 }
 
 type FlashLoanConfig struct {
 	BalancerFeePPM string `yaml:"balancer_fee_ppm"`
 	Univ4FeePPM    string `yaml:"univ4_fee_ppm"`
+}
+
+type ExecutionConfig struct {
+	Enabled             bool     `yaml:"enabled"`
+	RPCURL              string   `yaml:"rpc_url"`
+	ExecutorAddress     string   `yaml:"executor_address"`
+	PrivateKey          string   `yaml:"private_key"`
+	BroadcastToken      string   `yaml:"broadcast_token"`
+	FlashbotsRPCURL     string   `yaml:"flashbots_rpc_url"`
+	FlashbotsPaymentBPS uint64   `yaml:"flashbots_payment_bps"`
+	GasLimit            uint64   `yaml:"gas_limit"`
+	GasPriceWei         string   `yaml:"gas_price_wei"`
+	SkipEstimate        bool     `yaml:"skip_estimate"`
+	MaxOpportunityAge   uint64   `yaml:"max_opportunity_age_blocks"`
+	WETHAddress         string   `yaml:"weth_address"`
+	SwapRouterV3        string   `yaml:"swap_router_v3"`
+	SwapRouterPancakeV3 string   `yaml:"swap_router_pancake_v3"`
+	UniversalRouter     string   `yaml:"universal_router"`
+	BalancerRouterV3    string   `yaml:"balancer_router_v3"`
+	AllowedRouters      []string `yaml:"allowed_routers"`
+	AllowedSpenders     []string `yaml:"allowed_approval_spenders"`
 }
 
 type SpreadArbitrageConfig struct {
@@ -417,6 +439,10 @@ func Default() Config {
 				BalancerFeePPM: "0",
 				Univ4FeePPM:    "0",
 			},
+			Execution: ExecutionConfig{
+				Enabled:             false,
+				FlashbotsPaymentBPS: 8000,
+			},
 		},
 		Log: LogConfig{
 			Level:  "info",
@@ -538,6 +564,30 @@ func validateChainConfig(c ChainConfig) error {
 		}
 		if !isStrictHexAddress(c.Blockchain.BalancerVaultAddress) {
 			return fmt.Errorf("%sblockchain.balancer_vault_address must be a 20-byte hex address", prefix)
+		}
+	}
+	if c.Arbitrage.Execution.Enabled {
+		if !isStrictHexAddress(c.Arbitrage.Execution.ExecutorAddress) {
+			return fmt.Errorf("%sarbitrage.execution.executor_address must be a 20-byte hex address", prefix)
+		}
+		if strings.TrimSpace(c.Arbitrage.Execution.PrivateKey) == "" {
+			return fmt.Errorf("%sarbitrage.execution.private_key is required when execution is enabled", prefix)
+		}
+		if strings.TrimSpace(c.Arbitrage.Execution.BroadcastToken) == "" {
+			return fmt.Errorf("%sarbitrage.execution.broadcast_token is required when execution is enabled", prefix)
+		}
+		if c.Arbitrage.Execution.FlashbotsPaymentBPS > 10_000 {
+			return fmt.Errorf("%sarbitrage.execution.flashbots_payment_bps must be <= 10000", prefix)
+		}
+		for i, address := range c.Arbitrage.Execution.AllowedRouters {
+			if !isStrictHexAddress(address) {
+				return fmt.Errorf("%sarbitrage.execution.allowed_routers[%d] must be a 20-byte hex address", prefix, i)
+			}
+		}
+		for i, address := range c.Arbitrage.Execution.AllowedSpenders {
+			if !isStrictHexAddress(address) {
+				return fmt.Errorf("%sarbitrage.execution.allowed_approval_spenders[%d] must be a 20-byte hex address", prefix, i)
+			}
 		}
 	}
 	return nil
@@ -705,6 +755,7 @@ func mergeQuoteConfig(base, override QuoteConfig) QuoteConfig {
 
 func mergeArbitrageConfig(base, override ArbitrageConfig) ArbitrageConfig {
 	override.FlashLoan = mergeFlashLoanConfig(base.FlashLoan, override.FlashLoan)
+	override.Execution = mergeExecutionConfig(base.Execution, override.Execution)
 	return override
 }
 
@@ -714,6 +765,46 @@ func mergeFlashLoanConfig(base, override FlashLoanConfig) FlashLoanConfig {
 	}
 	if override.Univ4FeePPM == "" {
 		override.Univ4FeePPM = base.Univ4FeePPM
+	}
+	return override
+}
+
+func mergeExecutionConfig(base, override ExecutionConfig) ExecutionConfig {
+	if override.RPCURL == "" {
+		override.RPCURL = base.RPCURL
+	}
+	if override.ExecutorAddress == "" {
+		override.ExecutorAddress = base.ExecutorAddress
+	}
+	if override.PrivateKey == "" {
+		override.PrivateKey = base.PrivateKey
+	}
+	if override.FlashbotsRPCURL == "" {
+		override.FlashbotsRPCURL = base.FlashbotsRPCURL
+	}
+	if override.FlashbotsPaymentBPS == 0 {
+		override.FlashbotsPaymentBPS = base.FlashbotsPaymentBPS
+	}
+	if override.GasLimit == 0 {
+		override.GasLimit = base.GasLimit
+	}
+	if override.GasPriceWei == "" {
+		override.GasPriceWei = base.GasPriceWei
+	}
+	if override.WETHAddress == "" {
+		override.WETHAddress = base.WETHAddress
+	}
+	if override.SwapRouterV3 == "" {
+		override.SwapRouterV3 = base.SwapRouterV3
+	}
+	if override.SwapRouterPancakeV3 == "" {
+		override.SwapRouterPancakeV3 = base.SwapRouterPancakeV3
+	}
+	if override.UniversalRouter == "" {
+		override.UniversalRouter = base.UniversalRouter
+	}
+	if override.BalancerRouterV3 == "" {
+		override.BalancerRouterV3 = base.BalancerRouterV3
 	}
 	return override
 }
@@ -863,6 +954,77 @@ func (c Config) ArbitrageEnabled() bool {
 	return c.TriangleArbitrageEnabled() || c.SpreadArbitrageEnabled()
 }
 
+func (c ExecutionConfig) Executor() common.Address {
+	return common.HexToAddress(c.ExecutorAddress)
+}
+
+func (c ExecutionConfig) WETH() common.Address {
+	if strings.TrimSpace(c.WETHAddress) == "" {
+		return common.Address{}
+	}
+	return common.HexToAddress(c.WETHAddress)
+}
+
+func (c ExecutionConfig) SwapRouterV3Address() common.Address {
+	if strings.TrimSpace(c.SwapRouterV3) == "" {
+		return common.Address{}
+	}
+	return common.HexToAddress(c.SwapRouterV3)
+}
+
+func (c ExecutionConfig) SwapRouterPancakeV3Address() common.Address {
+	if strings.TrimSpace(c.SwapRouterPancakeV3) == "" {
+		return common.Address{}
+	}
+	return common.HexToAddress(c.SwapRouterPancakeV3)
+}
+
+func (c ExecutionConfig) UniversalRouterAddress() common.Address {
+	if strings.TrimSpace(c.UniversalRouter) == "" {
+		return common.Address{}
+	}
+	return common.HexToAddress(c.UniversalRouter)
+}
+
+func (c ExecutionConfig) BalancerRouterV3Address() common.Address {
+	if strings.TrimSpace(c.BalancerRouterV3) == "" {
+		return common.Address{}
+	}
+	return common.HexToAddress(c.BalancerRouterV3)
+}
+
+// ResolveRPCURL returns the dedicated execution RPC when set, otherwise fallback.
+func (c ExecutionConfig) ResolveRPCURL(fallback string) string {
+	if url := strings.TrimSpace(c.RPCURL); url != "" {
+		return url
+	}
+	return strings.TrimSpace(fallback)
+}
+
+func (c ExecutionConfig) GasPrice() *big.Int {
+	return parseConfigBigInt(c.GasPriceWei, nil)
+}
+
+func (c ExecutionConfig) AllowedRouterAddresses() []common.Address {
+	return hexAddresses(c.AllowedRouters)
+}
+
+func (c ExecutionConfig) AllowedSpenderAddresses() []common.Address {
+	return hexAddresses(c.AllowedSpenders)
+}
+
+func hexAddresses(values []string) []common.Address {
+	addresses := make([]common.Address, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		addresses = append(addresses, common.HexToAddress(value))
+	}
+	return addresses
+}
+
 func (c FlashLoanConfig) BalancerFee() *big.Int {
 	return parseConfigBigInt(c.BalancerFeePPM, big.NewInt(0))
 }
@@ -908,10 +1070,16 @@ func (c TriangleArbitrageConfig) StartTokenAddresses() []common.Address {
 func parseConfigBigInt(value string, fallback *big.Int) *big.Int {
 	value = strings.TrimSpace(value)
 	if value == "" {
+		if fallback == nil {
+			return nil
+		}
 		return new(big.Int).Set(fallback)
 	}
 	parsed, ok := new(big.Int).SetString(value, 10)
 	if !ok {
+		if fallback == nil {
+			return nil
+		}
 		return new(big.Int).Set(fallback)
 	}
 	return parsed

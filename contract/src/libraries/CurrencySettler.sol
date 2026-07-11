@@ -11,9 +11,7 @@ library CurrencySettler {
     using SafeERC20 for IERC20;
 
     /// @notice Pay a negative delta (debt) to the PoolManager.
-    function settle(Currency currency, IPoolManager poolManager, address payer, uint256 amount, bool burn)
-        internal
-    {
+    function settle(Currency currency, IPoolManager poolManager, address payer, uint256 amount, bool burn) internal {
         if (amount == 0) return;
 
         if (burn) {

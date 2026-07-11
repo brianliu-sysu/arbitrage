@@ -41,6 +41,11 @@ type ServiceDeps struct {
 	SpreadMinNetProfitWei *big.Int
 	Readiness             ReadinessChecker
 	Repository            domainarb.OpportunityRepository
+	Executor              ContractExecutor
+	ExecutionHead         ExecutionHeadReader
+	ExecutionBuilder      ExecutionPlanBuilder
+	Execution             ExecutionConfig
+	LivePlan              LivePlanConfig
 	FlashLoanOptions      []domainarb.FlashLoanOption
 	MinAmount             *big.Int
 	MaxAmount             *big.Int
@@ -67,6 +72,7 @@ type Services struct {
 	Scan          *ScanService
 	Opportunities *OpportunityService
 	Publish       *PublishService
+	Executor      *OpportunityExecutor
 
 	routeMu               sync.Mutex
 	mu                    sync.RWMutex
@@ -124,6 +130,20 @@ func NewServices(deps ServiceDeps) *Services {
 	publishers := []OpportunityPublisher{NewLogPublisher(logger)}
 	if deps.Repository != nil {
 		publishers = append(publishers, NewRepositoryPublisher(deps.Repository))
+	}
+	if deps.Execution.Enabled {
+		builder := deps.ExecutionBuilder
+		if builder == nil {
+			encoder := NewLiveCalldataEncoder(deps.LivePlan, NewRepositoryRoutePoolLoader(
+				deps.Pools,
+				deps.PancakePools,
+				deps.QuickSwapPools,
+				deps.V4Pools,
+				deps.BalancerPools,
+			))
+			builder = NewLiveExecutionPlanBuilder(deps.LivePlan, encoder)
+		}
+		publishers = append(publishers, NewExecutionPublisher(deps.Execution, builder, deps.Executor, deps.Repository, deps.ExecutionHead, logger))
 	}
 
 	return &Services{

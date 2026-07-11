@@ -124,6 +124,15 @@ func (r *memoryOpportunityRepo) Save(_ context.Context, opportunity *domainarb.O
 	return nil
 }
 
+func (r *memoryOpportunityRepo) Get(_ context.Context, id string) (*domainarb.Opportunity, error) {
+	item, ok := r.items[id]
+	if !ok || item == nil {
+		return nil, domainarb.ErrOpportunityNotFound
+	}
+	copyItem := *item
+	return &copyItem, nil
+}
+
 func (r *memoryOpportunityRepo) List(_ context.Context, limit int) ([]*domainarb.Opportunity, error) {
 	items := make([]*domainarb.Opportunity, 0, len(r.items))
 	for _, item := range r.items {

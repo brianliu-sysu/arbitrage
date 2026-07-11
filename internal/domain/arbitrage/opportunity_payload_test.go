@@ -64,6 +64,69 @@ func TestOpportunityEnsurePayloadIncludesWrapHop(t *testing.T) {
 	}
 }
 
+func TestOpportunitySetStatusSyncsPayload(t *testing.T) {
+	opportunity := NewOpportunity(
+		"opp-status",
+		NewTriangleStrategy("tri", testToken(1), big.NewInt(1)),
+		42,
+		quoteunified.NewDirectV3Route(testToken(9), testToken(1), testToken(2)),
+		EvaluationResult{
+			AmountIn:    big.NewInt(1_000),
+			AmountOut:   big.NewInt(1_100),
+			GrossProfit: big.NewInt(100),
+			NetProfit:   big.NewInt(80),
+			Profitable:  true,
+			Accepted:    true,
+		},
+		GasEstimate{CostWei: big.NewInt(20)},
+		time.Unix(0, 0).UTC(),
+	)
+
+	// Simulate an embedded execution blob that must survive status updates.
+	var payload map[string]any
+	if err := json.Unmarshal(opportunity.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	payload["execution"] = map[string]any{"profitToken": testToken(1).Hex()}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	opportunity.Payload = raw
+
+	if err := opportunity.SetStatus(OpportunityStatusAccepted); err != nil {
+		t.Fatalf("set status: %v", err)
+	}
+	if opportunity.Status != OpportunityStatusAccepted {
+		t.Fatalf("expected accepted status, got %q", opportunity.Status)
+	}
+
+	var updated map[string]any
+	if err := json.Unmarshal(opportunity.Payload, &updated); err != nil {
+		t.Fatalf("unmarshal updated payload: %v", err)
+	}
+	if updated["status"] != string(OpportunityStatusAccepted) {
+		t.Fatalf("expected payload status accepted, got %#v", updated["status"])
+	}
+	if _, ok := updated["execution"]; !ok {
+		t.Fatal("expected execution key to be preserved")
+	}
+
+	loaded := &Opportunity{
+		ID:          opportunity.ID,
+		PoolAddress: opportunity.PoolAddress,
+		BlockNumber: opportunity.BlockNumber,
+		Payload:     append([]byte(nil), opportunity.Payload...),
+		CreatedAt:   opportunity.CreatedAt,
+	}
+	if err := loaded.ApplyPayload(); err != nil {
+		t.Fatalf("apply payload: %v", err)
+	}
+	if loaded.Status != OpportunityStatusAccepted {
+		t.Fatalf("expected loaded status accepted, got %q", loaded.Status)
+	}
+}
+
 func TestOpportunityApplyPayloadRestoresFields(t *testing.T) {
 	original := NewOpportunity(
 		"opp-1",
@@ -75,11 +138,12 @@ func TestOpportunityApplyPayloadRestoresFields(t *testing.T) {
 			AmountOut:   big.NewInt(1_100),
 			GrossProfit: big.NewInt(100),
 			FlashLoan: FlashLoanQuote{
-				Protocol: FlashLoanProtocolUniv3,
-				PoolRef:  PoolRefFromV3(testToken(9)),
-				Amount:   big.NewInt(1_000),
-				Fee:      big.NewInt(1),
-				FeePPM:   big.NewInt(500),
+				Protocol:     FlashLoanProtocolUniv3,
+				PoolRef:      PoolRefFromV3(testToken(9)),
+				Amount:       big.NewInt(1_000),
+				Fee:          big.NewInt(1),
+				FeePPM:       big.NewInt(500),
+				BorrowToken0: true,
 			},
 			NetProfit:  big.NewInt(80),
 			Profitable: true,
@@ -110,5 +174,8 @@ func TestOpportunityApplyPayloadRestoresFields(t *testing.T) {
 	}
 	if loaded.FlashLoan.PoolRef.Key() != PoolRefFromV3(testToken(9)).Key() {
 		t.Fatalf("expected restored v3 flash loan pool, got %s", loaded.FlashLoan.PoolRef.Key())
+	}
+	if !loaded.FlashLoan.BorrowToken0 {
+		t.Fatal("expected restored borrowToken0")
 	}
 }
