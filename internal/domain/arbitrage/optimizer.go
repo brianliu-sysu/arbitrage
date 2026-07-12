@@ -1,6 +1,7 @@
 package arbitrage
 
 import (
+	"context"
 	"fmt"
 	"math/big"
 )
@@ -26,7 +27,7 @@ type Optimizer struct {
 
 func NewOptimizer(minAmount, maxAmount *big.Int, iterations int) *Optimizer {
 	if iterations <= 0 {
-		iterations = 16
+		iterations = 8
 	}
 	return &Optimizer{
 		MinAmount:  cloneBigInt(minAmount),
@@ -37,6 +38,11 @@ func NewOptimizer(minAmount, maxAmount *big.Int, iterations int) *Optimizer {
 
 // Optimize performs a bounded grid search over the input range.
 func (o *Optimizer) Optimize(quoter AmountOutQuoter) (OptimizationResult, error) {
+	return o.OptimizeContext(context.Background(), quoter)
+}
+
+// OptimizeContext performs a bounded grid search and stops when ctx is canceled.
+func (o *Optimizer) OptimizeContext(ctx context.Context, quoter AmountOutQuoter) (OptimizationResult, error) {
 	if quoter == nil {
 		return OptimizationResult{}, fmt.Errorf("quoter is nil")
 	}
@@ -62,6 +68,9 @@ func (o *Optimizer) Optimize(quoter AmountOutQuoter) (OptimizationResult, error)
 	current := new(big.Int).Set(o.MinAmount)
 	var lastQuoteErr error
 	for i := 0; i <= o.Iterations; i++ {
+		if err := ctx.Err(); err != nil {
+			return OptimizationResult{}, err
+		}
 		if current.Cmp(o.MaxAmount) > 0 {
 			current.Set(o.MaxAmount)
 		}
@@ -89,4 +98,47 @@ func (o *Optimizer) Optimize(quoter AmountOutQuoter) (OptimizationResult, error)
 	}
 
 	return best, nil
+}
+
+// ProbePositiveGrossProfit quotes min/mid/max amounts and reports whether any sample
+// yields a positive gross profit. Callers use this as a cheap pre-screen before Optimize.
+func (o *Optimizer) ProbePositiveGrossProfit(ctx context.Context, quoter AmountOutQuoter) (bool, error) {
+	if quoter == nil {
+		return false, fmt.Errorf("quoter is nil")
+	}
+	if o.MinAmount == nil || o.MaxAmount == nil {
+		return false, fmt.Errorf("optimizer bounds are required")
+	}
+	if o.MinAmount.Sign() <= 0 || o.MaxAmount.Cmp(o.MinAmount) <= 0 {
+		return false, fmt.Errorf("invalid optimizer bounds")
+	}
+
+	mid := new(big.Int).Add(o.MinAmount, o.MaxAmount)
+	mid.Div(mid, big.NewInt(2))
+	amounts := []*big.Int{
+		new(big.Int).Set(o.MinAmount),
+		mid,
+		new(big.Int).Set(o.MaxAmount),
+	}
+
+	var lastQuoteErr error
+	quoted := false
+	for _, amount := range amounts {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		amountOut, err := quoter.QuoteAmountOut(new(big.Int).Set(amount))
+		if err != nil {
+			lastQuoteErr = err
+			continue
+		}
+		quoted = true
+		if amountOut != nil && amountOut.Cmp(amount) > 0 {
+			return true, nil
+		}
+	}
+	if !quoted && lastQuoteErr != nil {
+		return false, fmt.Errorf("probe quote: %w", lastQuoteErr)
+	}
+	return false, nil
 }

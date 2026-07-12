@@ -2,6 +2,7 @@ package arbitrageapp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
+	domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
 	marketquick "github.com/brianliu-sysu/uniswapv3/internal/domain/market/quickswapv3"
@@ -46,11 +48,17 @@ type OpportunityService struct {
 	readiness      ReadinessChecker
 	logger         *zap.Logger
 	now            func() time.Time
+	marketVersion  MarketVersionReader
+}
+
+type MarketVersionReader interface {
+	Version() domainchain.MarketVersion
 }
 
 // GenerateRequest is the input for opportunity generation.
 type GenerateRequest struct {
 	BlockNumber uint64
+	Version     domainchain.MarketVersion
 	Routes      []domainarb.RouteRef
 }
 
@@ -68,6 +76,7 @@ func NewOpportunityService(
 	optimizerIterations int,
 	flashLoans []domainarb.FlashLoanOption,
 	logger *zap.Logger,
+	marketVersion MarketVersionReader,
 ) *OpportunityService {
 	if logger == nil {
 		logger = zap.NewNop()
@@ -90,6 +99,7 @@ func NewOpportunityService(
 		readiness:      readiness,
 		logger:         logger,
 		now:            time.Now,
+		marketVersion:  marketVersion,
 	}
 }
 
@@ -102,6 +112,13 @@ func (s *OpportunityService) SetStrategies(strategies []domainarb.Strategy) {
 
 // Generate evaluates affected routes and returns accepted opportunities.
 func (s *OpportunityService) Generate(ctx context.Context, req GenerateRequest) ([]*domainarb.Opportunity, error) {
+	started := time.Now()
+	if s.marketVersion != nil && !req.Version.IsZero() {
+		current := s.marketVersion.Version()
+		if current.Generation != req.Version.Generation || !current.SameBlock(req.Version) {
+			return nil, fmt.Errorf("committed market version changed: got %+v, want %+v", current, req.Version)
+		}
+	}
 	strategies := s.strategiesSnapshot()
 	if s.readiness != nil && !s.readiness.IsSystemReady() {
 		s.logger.Debug("arbitrage scan skipped",
@@ -109,6 +126,7 @@ func (s *OpportunityService) Generate(ctx context.Context, req GenerateRequest) 
 			zap.String("reason", "system_not_ready"),
 			zap.Int("routes", len(req.Routes)),
 			zap.Int("strategies", len(strategies)),
+			zap.Int64("duration_ms", time.Since(started).Milliseconds()),
 		)
 		return nil, nil
 	}
@@ -117,6 +135,7 @@ func (s *OpportunityService) Generate(ctx context.Context, req GenerateRequest) 
 			zap.Uint64("block", req.BlockNumber),
 			zap.String("reason", "no_affected_routes"),
 			zap.Int("strategies", len(strategies)),
+			zap.Int64("duration_ms", time.Since(started).Milliseconds()),
 		)
 		return nil, nil
 	}
@@ -125,16 +144,21 @@ func (s *OpportunityService) Generate(ctx context.Context, req GenerateRequest) 
 			zap.Uint64("block", req.BlockNumber),
 			zap.String("reason", "no_strategies"),
 			zap.Int("routes", len(req.Routes)),
+			zap.Int64("duration_ms", time.Since(started).Milliseconds()),
 		)
 		return nil, nil
 	}
 
+	strategiesByStart := indexStrategiesByStartToken(strategies)
 	opportunities := make([]*domainarb.Opportunity, 0)
 	routeNotReady := 0
 	strategyMismatches := 0
 	quoteErrors := 0
 	nonProfitable := 0
 	for _, routeRef := range req.Routes {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if err := s.ensureRouteReady(routeRef); err != nil {
 			routeNotReady++
 			s.logger.Debug("arbitrage route skipped",
@@ -146,7 +170,11 @@ func (s *OpportunityService) Generate(ctx context.Context, req GenerateRequest) 
 			continue
 		}
 
-		for _, strategy := range strategies {
+		candidates := strategiesByStart[routeRef.Route.TokenIn]
+		for _, strategy := range candidates {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			if !matchesStrategy(strategy, routeRef) {
 				strategyMismatches++
 				continue
@@ -181,8 +209,17 @@ func (s *OpportunityService) Generate(ctx context.Context, req GenerateRequest) 
 		zap.Int("generate_errors", quoteErrors),
 		zap.Int("rejected", nonProfitable),
 		zap.Int("opportunities", len(opportunities)),
+		zap.Int64("duration_ms", time.Since(started).Milliseconds()),
 	)
 	return opportunities, nil
+}
+
+func indexStrategiesByStartToken(strategies []domainarb.Strategy) map[common.Address][]domainarb.Strategy {
+	out := make(map[common.Address][]domainarb.Strategy, len(strategies))
+	for _, strategy := range strategies {
+		out[strategy.StartToken] = append(out[strategy.StartToken], strategy)
+	}
+	return out
 }
 
 func (s *OpportunityService) strategiesSnapshot() []domainarb.Strategy {
@@ -201,28 +238,25 @@ func (s *OpportunityService) generateForRoute(
 	if err != nil {
 		return nil, err
 	}
-	if err := ensureRoutePoolsSyncedAtBlock(routeRef.Route, pools, blockNumber); err != nil {
-		return nil, err
-	}
 
 	quoter := routeQuoter{
 		quotes: s.quotes,
 		pools:  pools,
 		route:  routeRef.Route,
 	}
-	optimized, err := s.optimizer.Optimize(quoter)
+	promising, err := s.optimizer.ProbePositiveGrossProfit(ctx, quoter)
+	if err != nil {
+		return nil, err
+	}
+	if !promising {
+		return nil, nil
+	}
+	optimized, err := s.optimizer.OptimizeContext(ctx, quoter)
 	if err != nil {
 		return nil, err
 	}
 	quoteSteps, quoteStepsErr := s.quotes.QuoteRouteSteps(pools, routeRef.Route, optimized.AmountIn)
 	if optimized.AmountIn.Sign() <= 0 {
-		s.logger.Debug("arbitrage route rejected",
-			zap.Uint64("block", blockNumber),
-			zap.String("route", routeRef.ID),
-			zap.String("strategy", strategy.ID),
-			zap.String("reason", "no_positive_gross_profit"),
-			zap.String("best_gross_profit", optimized.GrossProfit.String()),
-		)
 		return nil, nil
 	}
 
@@ -376,58 +410,6 @@ func (s *OpportunityService) ensureRouteReady(routeRef domainarb.RouteRef) error
 	return nil
 }
 
-func ensureRoutePoolsSyncedAtBlock(route quoteunified.Route, pools quoteunified.RoutePools, blockNumber uint64) error {
-	for _, hop := range route.Hops {
-		switch hop.Version {
-		case quoteunified.PoolVersionV3:
-			pool := pools.V3[hop.PoolV3]
-			if pool == nil {
-				return fmt.Errorf("univ3 pool %s not loaded", hop.PoolV3.Hex())
-			}
-			if pool.LastBlockNumber < blockNumber {
-				return fmt.Errorf("univ3 pool %s synced at block %d before opportunity block %d", hop.PoolV3.Hex(), pool.LastBlockNumber, blockNumber)
-			}
-		case quoteunified.PoolVersionPancakeV3:
-			pool := pools.PancakeV3[hop.PoolPancakeV3]
-			if pool == nil {
-				return fmt.Errorf("pancakev3 pool %s not loaded", hop.PoolPancakeV3.Hex())
-			}
-			if pool.LastBlockNumber < blockNumber {
-				return fmt.Errorf("pancakev3 pool %s synced at block %d before opportunity block %d", hop.PoolPancakeV3.Hex(), pool.LastBlockNumber, blockNumber)
-			}
-		case quoteunified.PoolVersionQuickSwapV3:
-			pool := pools.QuickSwapV3[hop.PoolQuickSwapV3]
-			if pool == nil {
-				return fmt.Errorf("quickswapv3 pool %s not loaded", hop.PoolQuickSwapV3.Hex())
-			}
-			if pool.LastBlockNumber < blockNumber {
-				return fmt.Errorf("quickswapv3 pool %s synced at block %d before opportunity block %d", hop.PoolQuickSwapV3.Hex(), pool.LastBlockNumber, blockNumber)
-			}
-		case quoteunified.PoolVersionV4:
-			pool := pools.V4[hop.PoolV4]
-			if pool == nil {
-				return fmt.Errorf("v4 pool %s not loaded", hop.PoolV4.String())
-			}
-			if pool.LastBlockNumber < blockNumber {
-				return fmt.Errorf("v4 pool %s synced at block %d before opportunity block %d", hop.PoolV4.String(), pool.LastBlockNumber, blockNumber)
-			}
-		case quoteunified.PoolVersionBalancer:
-			pool := pools.Balancer[hop.PoolBalancer]
-			if pool == nil {
-				return fmt.Errorf("balancer pool %s not loaded", hop.PoolBalancer.String())
-			}
-			if pool.LastBlockNumber < blockNumber {
-				return fmt.Errorf("balancer pool %s synced at block %d before opportunity block %d", hop.PoolBalancer.String(), pool.LastBlockNumber, blockNumber)
-			}
-		case quoteunified.PoolVersionWrapWETH, quoteunified.PoolVersionUnwrapWETH:
-			continue
-		default:
-			return fmt.Errorf("unsupported pool version %d", hop.Version)
-		}
-	}
-	return nil
-}
-
 func (s *OpportunityService) loadRoutePools(ctx context.Context, route quoteunified.Route) (quoteunified.RoutePools, error) {
 	pools := quoteunified.RoutePools{
 		V3:          make(map[common.Address]*marketuniv3.Pool),
@@ -533,7 +515,22 @@ type routeQuoter struct {
 func (q routeQuoter) QuoteAmountOut(amountIn *big.Int) (*big.Int, error) {
 	result, err := q.quotes.QuoteRoute(q.pools, q.route, amountIn)
 	if err != nil {
+		if isSoftQuoteFailure(err) {
+			return big.NewInt(0), nil
+		}
 		return nil, err
 	}
 	return result.AmountOut, nil
+}
+
+func isSoftQuoteFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, quoteunified.ErrNonPositiveAmount) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "amountIn must be positive") ||
+		strings.Contains(msg, "amount must be positive")
 }

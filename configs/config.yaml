@@ -152,7 +152,7 @@ chains:
         # Optimizer input amount search bounds (wei).
         min_amount: "1000000"
         max_amount: "100000000000000"
-        optimizer_iterations: 16
+        optimizer_iterations: 8
       spread:
         # Enable A->B->A cross-pool spread arbitrage for the same token pair on different pools.
         enabled: false
@@ -163,7 +163,7 @@ chains:
         min_net_profit_wei: "1000000"
         min_amount: "1000000"
         max_amount: "100000000000000"
-        optimizer_iterations: 16
+        optimizer_iterations: 8
       flash_loan:
         # Flash-loan fee rates in ppm; Uniswap V3 uses the selected pool's fee tier.
         balancer_fee_ppm: "0"
@@ -312,7 +312,7 @@ chains:
         min_net_profit_wei: "1000000"
         min_amount: "1000000"
         max_amount: "100000000000000"
-        optimizer_iterations: 16
+        optimizer_iterations: 8
       spread:
         enabled: false
         start_tokens:
@@ -321,7 +321,7 @@ chains:
         min_net_profit_wei: "1000000"
         min_amount: "1000000"
         max_amount: "100000000000000"
-        optimizer_iterations: 16
+        optimizer_iterations: 8
       flash_loan:
         balancer_fee_ppm: "0"
         univ4_fee_ppm: "0"

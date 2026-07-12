@@ -104,6 +104,18 @@ func (s *BlockApplyService[PoolID, Event, Pool, Checkpoint]) SetListener(listene
 	s.hooks.NotifyPoolsChanged = listener.OnPoolsChanged
 }
 
+// NotifyPoolsChanged reports one completed protocol-level block application.
+func (s *BlockApplyService[PoolID, Event, Pool, Checkpoint]) NotifyPoolsChanged(
+	ctx context.Context,
+	blockNumber uint64,
+	poolIDs []PoolID,
+) error {
+	if s == nil || s.hooks.NotifyPoolsChanged == nil {
+		return nil
+	}
+	return s.hooks.NotifyPoolsChanged(ctx, blockNumber, poolIDs)
+}
+
 // ApplyBlock applies events and advances sync progress for tracked pools.
 func (s *BlockApplyService[PoolID, Event, Pool, Checkpoint]) ApplyBlock(
 	ctx context.Context,
@@ -229,6 +241,7 @@ func (s *BlockApplyService[PoolID, Event, Pool, Checkpoint]) ApplyBlock(
 	}
 
 	idlePools := make([]PoolID, 0, len(req.TrackedPools))
+	notifiedPools := append([]PoolID(nil), changed...)
 	for _, poolID := range req.TrackedPools {
 		if _, ok := changedSet[poolID]; ok {
 			continue
@@ -254,9 +267,12 @@ func (s *BlockApplyService[PoolID, Event, Pool, Checkpoint]) ApplyBlock(
 	sort.Slice(changed, func(i, j int) bool {
 		return s.hooks.LessPoolID(changed[i], changed[j])
 	})
+	sort.Slice(notifiedPools, func(i, j int) bool {
+		return s.hooks.LessPoolID(notifiedPools[i], notifiedPools[j])
+	})
 
-	if len(changed) > 0 && !req.SuppressListener && s.hooks.NotifyPoolsChanged != nil {
-		if err := s.hooks.NotifyPoolsChanged(ctx, req.BlockNumber, changed); err != nil {
+	if !req.SuppressListener && s.hooks.NotifyPoolsChanged != nil {
+		if err := s.hooks.NotifyPoolsChanged(ctx, req.BlockNumber, notifiedPools); err != nil {
 			return zero, fmt.Errorf("notify changed pools: %w", err)
 		}
 	}

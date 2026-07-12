@@ -342,6 +342,17 @@ func TestBlockApplyServiceSuppressListener(t *testing.T) {
 	if listener.calls != 1 {
 		t.Fatalf("expected listener called once, got %d calls", listener.calls)
 	}
+
+	_, err = blockApply.ApplyBlock(ctx, clv3sync.ApplyBlockRequest{
+		BlockNumber: 4,
+		BlockHash:   common.HexToHash("0x4"),
+	})
+	if err != nil {
+		t.Fatalf("apply empty tracked block: %v", err)
+	}
+	if listener.calls != 2 {
+		t.Fatalf("expected listener called for empty changed set, got %d calls", listener.calls)
+	}
 }
 
 func TestBlockApplyServiceMarkPoolsReady(t *testing.T) {

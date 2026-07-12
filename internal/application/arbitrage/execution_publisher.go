@@ -141,6 +141,7 @@ func (p *ExecutionPublisher) Publish(ctx context.Context, opportunity *domainarb
 		}
 		return fmt.Errorf("build execution plan: %w", err)
 	}
+	approvals = domaincontract.MergeTokenApprovals(approvals, domaincontract.RequiredTokenApprovals(plan))
 	if plan.MinProfit == nil {
 		plan.MinProfit = cloneBigIntOrZero(opportunity.NetProfit)
 	}
@@ -176,6 +177,9 @@ func (p *ExecutionPublisher) Publish(ctx context.Context, opportunity *domainarb
 		)
 		return nil
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	broadcastReq := domaincontract.BroadcastRequest{
 		RPCURL:       strings.TrimSpace(p.cfg.RPCURL),
@@ -189,6 +193,9 @@ func (p *ExecutionPublisher) Publish(ctx context.Context, opportunity *domainarb
 	}
 	if err := p.executor.Simulate(ctx, broadcastReq); err != nil {
 		return fmt.Errorf("simulate arbitrage: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	resp, err := p.executor.Execute(ctx, broadcastReq)
 	if err != nil {

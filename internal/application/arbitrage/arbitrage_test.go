@@ -398,6 +398,7 @@ func TestServicesOnPoolsChangedRunsPipeline(t *testing.T) {
 
 	repo := newMemoryPoolRepo()
 	pool := setupQuotedPool(poolAB, tokenA, tokenB, 100_000_000_000_000_000)
+	pool.LastBlockNumber = 100
 	if err := repo.Save(context.Background(), pool); err != nil {
 		t.Fatalf("save pool: %v", err)
 	}
@@ -415,6 +416,7 @@ func TestServicesOnPoolsChangedRunsPipeline(t *testing.T) {
 		MinAmount:           big.NewInt(1_000_000),
 		MaxAmount:           big.NewInt(10_000_000_000),
 		OptimizerIterations: 8,
+		EnabledProtocols:    []arbitrageapp.SyncProtocol{arbitrageapp.SyncProtocolUniv3},
 		Routes: []domainarb.RouteRef{
 			{
 				ID: "cycle-ab",

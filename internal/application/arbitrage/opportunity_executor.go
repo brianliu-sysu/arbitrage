@@ -128,6 +128,7 @@ func (e *OpportunityExecutor) Execute(ctx context.Context, req OpportunityExecut
 	if err != nil {
 		return OpportunityExecuteResult{}, err
 	}
+	approvals = domaincontract.MergeTokenApprovals(approvals, domaincontract.RequiredTokenApprovals(plan))
 	if plan.MinProfit == nil {
 		plan.MinProfit = cloneBigIntOrZero(opportunity.NetProfit)
 	}
@@ -183,6 +184,9 @@ func (e *OpportunityExecutor) Execute(ctx context.Context, req OpportunityExecut
 		)
 		return result, nil
 	}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
 
 	broadcastReq := domaincontract.BroadcastRequest{
 		RPCURL:       strings.TrimSpace(e.cfg.RPCURL),
@@ -196,6 +200,9 @@ func (e *OpportunityExecutor) Execute(ctx context.Context, req OpportunityExecut
 	}
 	if err := e.executor.Simulate(ctx, broadcastReq); err != nil {
 		return result, fmt.Errorf("simulate arbitrage: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return result, err
 	}
 	resp, err := e.executor.Execute(ctx, broadcastReq)
 	if err != nil {

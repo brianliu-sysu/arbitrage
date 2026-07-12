@@ -46,6 +46,9 @@ func RunStartup(ctx context.Context, blocks BlockReader, phases SyncPhases) erro
 		}()
 	}
 
+	if phases.RunHeadSync == nil {
+		return nil
+	}
 	return phases.RunHeadSync(ctx)
 }
 
@@ -117,6 +120,27 @@ func (o *SyncOrchestrator[PoolID]) Start(ctx context.Context) error {
 		SetLocalHead:   o.headSync.SetLocalHead,
 		SetSystemReady: o.readiness.SetSystemReady,
 		RunHeadSync:    o.headSync.Run,
+		RunScheduler:   schedulerRun,
+	})
+}
+
+// StartBootstrap cold-starts pools and catchup, then returns without subscribing to new heads.
+// Use SharedHeadRunner when multiple protocols must apply the same head together.
+func (o *SyncOrchestrator[PoolID]) StartBootstrap(ctx context.Context) error {
+	var schedulerRun func(context.Context) error
+	if o.scheduler != nil {
+		schedulerRun = o.scheduler.Run
+	}
+
+	return RunStartup(ctx, o.blocks, SyncPhases{
+		StartAll:   o.lifecycle.StartAll,
+		CatchUpAll: o.catchup.CatchUpAll,
+		MarkPoolsReady: func(ctx context.Context) error {
+			return o.blockApply.MarkPoolsReady(ctx, o.lifecycle.ListActive())
+		},
+		SetLocalHead:   o.headSync.SetLocalHead,
+		SetSystemReady: o.readiness.SetSystemReady,
+		RunHeadSync:    nil,
 		RunScheduler:   schedulerRun,
 	})
 }

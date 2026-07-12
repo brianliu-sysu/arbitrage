@@ -187,6 +187,10 @@ func (s *HeadSyncService[PoolID, Event]) handleHeadLocked(ctx context.Context, h
 
 	pools := s.lifecycle.ListActive()
 	if len(pools) == 0 {
+		// Still apply an empty block so listeners can advance the cross-protocol barrier.
+		if err := s.hooks.ApplyBlock(ctx, head.Number, head.Hash, nil, nil, false); err != nil {
+			return fmt.Errorf("apply head block %d: %w", head.Number, err)
+		}
 		s.SetLocalHead(head)
 		return nil
 	}

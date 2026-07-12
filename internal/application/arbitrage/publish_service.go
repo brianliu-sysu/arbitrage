@@ -27,6 +27,9 @@ func NewPublishService(publishers ...OpportunityPublisher) *PublishService {
 // Publish sends all opportunities to every configured publisher.
 func (s *PublishService) Publish(ctx context.Context, opportunities []*domainarb.Opportunity) error {
 	for _, opportunity := range opportunities {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if opportunity == nil {
 			continue
 		}
@@ -43,6 +46,9 @@ func (s *PublishService) PublishOne(ctx context.Context, opportunity *domainarb.
 		return nil
 	}
 	for _, publisher := range s.publishers {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if publisher == nil {
 			continue
 		}

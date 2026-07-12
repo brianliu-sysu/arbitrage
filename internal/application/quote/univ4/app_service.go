@@ -6,9 +6,9 @@ import (
 	"math/big"
 
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/asset"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
 	quoteuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ4"
-	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -51,6 +51,19 @@ func (s *AppService) Quote(ctx context.Context, req Request) (Response, error) {
 	if err := validateQuoteRequest(req); err != nil {
 		return Response{}, err
 	}
+	for {
+		blockBefore := quoteViewBlock(s.readiness)
+		response, err := s.quoteCurrentView(ctx, req)
+		if blockBefore == quoteViewBlock(s.readiness) {
+			return response, err
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return Response{}, ctxErr
+		}
+	}
+}
+
+func (s *AppService) quoteCurrentView(ctx context.Context, req Request) (Response, error) {
 	if s.readiness != nil && !s.readiness.IsSystemReady() {
 		return Response{}, fmt.Errorf("system is not ready for quoting")
 	}
@@ -62,6 +75,16 @@ func (s *AppService) Quote(ctx context.Context, req Request) (Response, error) {
 		return Response{}, fmt.Errorf("multi-hop exact-output quotes are not supported")
 	}
 	return s.quoteBestRoute(ctx, req)
+}
+
+func quoteViewBlock(readiness ReadinessChecker) uint64 {
+	if versioned, ok := readiness.(interface{ Generation() uint64 }); ok {
+		return versioned.Generation()
+	}
+	if versioned, ok := readiness.(interface{ BlockNumber() uint64 }); ok {
+		return versioned.BlockNumber()
+	}
+	return 0
 }
 
 func validateQuoteRequest(req Request) error {

@@ -16,10 +16,12 @@ import (
 	poolmanager "github.com/brianliu-sysu/uniswapv3/internal/application/poolmanager"
 	poolsapp "github.com/brianliu-sysu/uniswapv3/internal/application/pools"
 	quotecombined "github.com/brianliu-sysu/uniswapv3/internal/application/quote/combined"
+	quotecommitted "github.com/brianliu-sysu/uniswapv3/internal/application/quote/committed"
 	quotepancakev3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/pancakev3"
 	quotequickswapv3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/quickswapv3"
 	quoteuniv3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/univ3"
 	quoteuniv4 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/univ4"
+	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
 	syncbalancer "github.com/brianliu-sysu/uniswapv3/internal/application/sync/balancer"
 	syncpancakev3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/pancakev3"
 	syncquickswapv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/quickswapv3"
@@ -27,6 +29,7 @@ import (
 	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ4"
 	"github.com/brianliu-sysu/uniswapv3/internal/config"
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
+	domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
@@ -188,6 +191,7 @@ type runtimeBundle struct {
 	SyncV4        *syncv4.Services
 	SyncBalancer  *syncbalancer.Services
 	Arbitrage     *arbitrageapp.Services
+	MarketView    *quotecommitted.View
 	PoolManagers  runtimePoolManagers
 }
 
@@ -394,6 +398,19 @@ func newRuntimeBundle(
 	if syncBalancerServices != nil {
 		readiness.Balancer = syncBalancerServices.Readiness
 	}
+	marketView := quotecommitted.NewView(quotecommitted.Sources{
+		Univ3Pools:        store.Pools,
+		PancakePools:      store.PancakePools,
+		QuickSwapPools:    store.QuickSwapPools,
+		Univ4Pools:        store.V4Pools,
+		BalancerPools:     store.BalancerPools,
+		Univ3Registry:     poolRegistry,
+		PancakeRegistry:   pancakePoolRegistry.AsPoolRegistry(),
+		QuickSwapRegistry: quickSwapPoolRegistry.AsPoolRegistry(),
+		Univ4Registry:     v4PoolRegistry.AsPoolRegistry(),
+		BalancerRegistry:  balancerPoolRegistry.AsPoolRegistry(),
+	})
+	marketView.SetLogger(logger.Named("market-view"))
 
 	arbitrageServices := arbitrageapp.NewServices(arbitrageapp.ServiceDeps{
 		Logger:            logger,
@@ -429,9 +446,17 @@ func newRuntimeBundle(
 			{Protocol: domainarb.FlashLoanProtocolBalancer, FeePPM: cfg.Arbitrage.FlashLoan.BalancerFee()},
 			{Protocol: domainarb.FlashLoanProtocolUniv4, FeePPM: cfg.Arbitrage.FlashLoan.Univ4Fee()},
 		},
-		MinAmount:           optimizerMinAmount,
-		MaxAmount:           optimizerMaxAmount,
-		OptimizerIterations: optimizerIterations,
+		MinAmount:                 optimizerMinAmount,
+		MaxAmount:                 optimizerMaxAmount,
+		OptimizerIterations:       optimizerIterations,
+		EnabledProtocols:          enabledSyncProtocols(cfg),
+		MarketView:                marketView,
+		MarketVersion:             marketView,
+		OpportunityPools:          marketView.Univ3Repository(),
+		OpportunityPancakePools:   marketView.PancakeRepository(),
+		OpportunityQuickSwapPools: marketView.QuickSwapRepository(),
+		OpportunityV4Pools:        marketView.Univ4Repository(),
+		OpportunityBalancerPools:  marketView.BalancerRepository(),
 	})
 
 	if syncServices != nil {
@@ -471,6 +496,7 @@ func newRuntimeBundle(
 		SyncV4:        syncV4Services,
 		SyncBalancer:  syncBalancerServices,
 		Arbitrage:     arbitrageServices,
+		MarketView:    marketView,
 		PoolManagers:  newRuntimePoolManagers(chain, syncServices, syncPancakeServices, syncQuickSwapServices, syncV4Services, syncBalancerServices, arbitrageServices),
 	}, nil
 }
@@ -504,6 +530,26 @@ func newRuntimePoolManagers(
 		managers.Balancer = poolmanager.NewPoolManager[marketbalancer.PoolID](syncBalancerServices.NewOrchestrator(chain.Client), arbitrageServices)
 	}
 	return managers
+}
+
+func enabledSyncProtocols(cfg config.Config) []arbitrageapp.SyncProtocol {
+	protocols := make([]arbitrageapp.SyncProtocol, 0, 5)
+	if cfg.Sync.Univ3.IsActive() {
+		protocols = append(protocols, arbitrageapp.SyncProtocolUniv3)
+	}
+	if cfg.Sync.PancakeV3.IsActive() {
+		protocols = append(protocols, arbitrageapp.SyncProtocolPancakeV3)
+	}
+	if cfg.Sync.QuickSwapV3.IsActive() {
+		protocols = append(protocols, arbitrageapp.SyncProtocolQuickSwapV3)
+	}
+	if cfg.Sync.Univ4.IsActive() {
+		protocols = append(protocols, arbitrageapp.SyncProtocolUniv4)
+	}
+	if cfg.Sync.Balancer.IsActive() {
+		protocols = append(protocols, arbitrageapp.SyncProtocolBalancer)
+	}
+	return protocols
 }
 
 func executionConfigFromRuntime(cfg config.Config) arbitrageapp.ExecutionConfig {
@@ -669,10 +715,10 @@ func newQuoteV3AppService(
 		maxHops = 3
 	}
 	return quoteuniv3.NewAppService(
-		store.Pools,
+		bundle.MarketView.Univ3Repository(),
 		poolRegistry,
 		quoteuniv3domain.NewQuoteService(),
-		bundle.Sync.Readiness,
+		bundle.MarketView.Univ3Readiness(),
 		maxHops,
 	)
 }
@@ -692,10 +738,10 @@ func newQuotePancakeV3AppService(
 		maxHops = 3
 	}
 	return quotepancakev3.NewAppService(
-		store.PancakePools,
+		bundle.MarketView.PancakeRepository(),
 		pancakePoolRegistry,
 		quotepancakev3domain.NewQuoteService(),
-		bundle.SyncPancake.Readiness,
+		bundle.MarketView.PancakeReadiness(),
 		maxHops,
 	)
 }
@@ -715,10 +761,10 @@ func newQuoteQuickSwapV3AppService(
 		maxHops = 3
 	}
 	return quotequickswapv3.NewAppService(
-		store.QuickSwapPools,
+		bundle.MarketView.QuickSwapRepository(),
 		quickSwapPoolRegistry,
 		quotequickswapv3domain.NewQuoteService(),
-		bundle.SyncQuickSwap.Readiness,
+		bundle.MarketView.QuickSwapReadiness(),
 		maxHops,
 	)
 }
@@ -738,10 +784,10 @@ func newQuoteV4AppService(
 		maxHops = 3
 	}
 	return quoteuniv4.NewAppService(
-		store.V4Pools,
+		bundle.MarketView.Univ4Repository(),
 		v4PoolRegistry,
 		quoteuniv4domain.NewQuoteService(),
-		bundle.SyncV4.Readiness,
+		bundle.MarketView.Univ4Readiness(),
 		maxHops,
 	)
 }
@@ -762,29 +808,12 @@ func newQuoteCombinedAppService(
 		maxHops = 3
 	}
 
-	readiness := &quotecombined.SyncReadiness{}
-	if bundle.Sync != nil {
-		readiness.V3 = bundle.Sync.Readiness
-	}
-	if bundle.SyncPancake != nil {
-		readiness.Pancake = bundle.SyncPancake.Readiness
-	}
-	if bundle.SyncQuickSwap != nil {
-		readiness.QuickSwap = bundle.SyncQuickSwap.Readiness
-	}
-	if bundle.SyncV4 != nil {
-		readiness.V4 = bundle.SyncV4.Readiness
-	}
-	if bundle.SyncBalancer != nil {
-		readiness.Balancer = bundle.SyncBalancer.Readiness
-	}
-
 	return quotecombined.NewAppService(
-		store.Pools,
-		store.PancakePools,
-		store.QuickSwapPools,
-		store.V4Pools,
-		store.BalancerPools,
+		bundle.MarketView.Univ3Repository(),
+		bundle.MarketView.PancakeRepository(),
+		bundle.MarketView.QuickSwapRepository(),
+		bundle.MarketView.Univ4Repository(),
+		bundle.MarketView.BalancerRepository(),
 		poolRegistry,
 		pancakePoolRegistry.AsPoolRegistry(),
 		quickSwapPoolRegistry.AsPoolRegistry(),
@@ -796,7 +825,7 @@ func newQuoteCombinedAppService(
 			quoteuniv4domain.NewQuoteService(),
 			quotebalancerdomain.NewQuoteService(),
 		),
-		readiness,
+		bundle.MarketView,
 		maxHops,
 	)
 }
@@ -976,6 +1005,7 @@ type syncLifecycle struct {
 	orchestratorQuickSwap *syncquickswapv3.SyncOrchestrator
 	orchestratorV4        *syncv4.SyncOrchestrator
 	orchestratorBalancer  *syncbalancer.SyncOrchestrator
+	sharedHead            *syncapp.SharedHeadRunner
 	bundle                *runtimeBundle
 	chain                 *chaininfra.Services
 	store                 *persistence.Services
@@ -1021,20 +1051,35 @@ func newSyncLifecycle(runtime *chainRuntime, logger *zap.Logger) *syncLifecycle 
 		cfg:    runtime.cfg,
 		logger: logger,
 	}
+	handlers := make([]syncapp.NamedHeadHandler, 0, 5)
 	if runtime.bundle.Sync != nil {
 		runner.orchestrator = runtime.bundle.Sync.NewOrchestrator(runtime.chain.Client)
+		handlers = append(handlers, syncapp.NamedHeadHandler{Name: "univ3", Handler: runtime.bundle.Sync.HeadSync})
 	}
 	if runtime.bundle.SyncPancake != nil {
 		runner.orchestratorPancake = runtime.bundle.SyncPancake.NewOrchestrator(runtime.chain.Client)
+		handlers = append(handlers, syncapp.NamedHeadHandler{Name: "pancakev3", Handler: runtime.bundle.SyncPancake.HeadSync})
 	}
 	if runtime.bundle.SyncQuickSwap != nil {
 		runner.orchestratorQuickSwap = runtime.bundle.SyncQuickSwap.NewOrchestrator(runtime.chain.Client)
+		handlers = append(handlers, syncapp.NamedHeadHandler{Name: "quickswapv3", Handler: runtime.bundle.SyncQuickSwap.HeadSync})
 	}
 	if runtime.bundle.SyncV4 != nil {
 		runner.orchestratorV4 = runtime.bundle.SyncV4.NewOrchestrator(runtime.chain.Client)
+		handlers = append(handlers, syncapp.NamedHeadHandler{Name: "univ4", Handler: runtime.bundle.SyncV4.HeadSync})
 	}
 	if runtime.bundle.SyncBalancer != nil {
 		runner.orchestratorBalancer = runtime.bundle.SyncBalancer.NewOrchestrator(runtime.chain.Client)
+		handlers = append(handlers, syncapp.NamedHeadHandler{Name: "balancer", Handler: runtime.bundle.SyncBalancer.HeadSync})
+	}
+	if len(handlers) > 0 && runtime.chain != nil && runtime.chain.HeadSub != nil {
+		runner.sharedHead = syncapp.NewSharedHeadRunner(runtime.chain.HeadSub, handlers, logger.Named("shared-head"))
+		if runtime.bundle.Arbitrage != nil && runtime.bundle.Arbitrage.Coordinator != nil {
+			coordinator := runtime.bundle.Arbitrage.Coordinator
+			runner.sharedHead.SetBeforeHead(func(ctx context.Context, head domainchain.BlockHeader) error {
+				return coordinator.PrepareHead(ctx, head)
+			})
+		}
 	}
 	return runner
 }
@@ -1043,6 +1088,9 @@ func (r *syncLifecycle) start(_ context.Context) error {
 	runCtx, cancel := context.WithCancel(context.Background())
 	r.runCtx = runCtx
 	r.cancel = cancel
+	if r.bundle != nil && r.bundle.Arbitrage != nil && r.bundle.Arbitrage.Coordinator != nil {
+		r.bundle.Arbitrage.Coordinator.SetScanContext(runCtx)
+	}
 
 	r.logger.Info("starting pool sync",
 		zap.Uint64("chain_id", r.cfg.ChainID),
@@ -1066,40 +1114,90 @@ func (r *syncLifecycle) start(_ context.Context) error {
 		zap.Int("balancer_pools", len(r.cfg.Sync.Balancer.Pools)),
 	)
 
-	if r.orchestrator != nil {
-		r.runSync("univ3", func(ctx context.Context) error {
-			return r.orchestrator.Start(ctx)
-		})
-	}
-
-	if r.orchestratorPancake != nil {
-		r.runSync("pancakev3", func(ctx context.Context) error {
-			return r.orchestratorPancake.Start(ctx)
-		})
-	}
-
-	if r.orchestratorQuickSwap != nil {
-		r.runSync("quickswapv3", func(ctx context.Context) error {
-			return r.orchestratorQuickSwap.Start(ctx)
-		})
-	}
-
-	if r.orchestratorV4 != nil {
-		r.runSync("univ4", func(ctx context.Context) error {
-			return r.orchestratorV4.Start(ctx)
-		})
-	}
-
-	if r.orchestratorBalancer != nil {
-		r.runSync("balancer", func(ctx context.Context) error {
-			return r.orchestratorBalancer.Start(ctx)
-		})
+	if r.orchestrator != nil || r.orchestratorPancake != nil || r.orchestratorQuickSwap != nil || r.orchestratorV4 != nil || r.orchestratorBalancer != nil || r.sharedHead != nil {
+		r.runSync("shared-head", r.runSharedHeadLifecycle)
 	}
 
 	if r.bundle != nil && r.bundle.Arbitrage != nil && r.cfg.ArbitrageEnabled() {
 		r.runArbitrageRouteWatcher()
 	}
 	return nil
+}
+
+func (r *syncLifecycle) runSharedHeadLifecycle(ctx context.Context) error {
+	if err := r.bootstrapAll(ctx); err != nil {
+		return err
+	}
+	if r.sharedHead == nil {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if r.chain == nil || r.chain.Client == nil {
+		return errors.New("shared head bootstrap requires a blockchain client")
+	}
+	head, err := r.chain.Client.GetLatestBlockHeader(ctx)
+	if err != nil {
+		return fmt.Errorf("load initial shared head: %w", err)
+	}
+	if err := r.sharedHead.HandleHead(ctx, head); err != nil {
+		return fmt.Errorf("apply initial shared head: %w", err)
+	}
+	return r.sharedHead.Run(ctx)
+}
+
+type bootstrapTask struct {
+	name string
+	run  func(context.Context) error
+}
+
+func (r *syncLifecycle) bootstrapAll(ctx context.Context) error {
+	tasks := make([]bootstrapTask, 0, 5)
+	if r.orchestrator != nil {
+		tasks = append(tasks, bootstrapTask{name: "univ3", run: r.orchestrator.StartBootstrap})
+	}
+	if r.orchestratorPancake != nil {
+		tasks = append(tasks, bootstrapTask{name: "pancakev3", run: r.orchestratorPancake.StartBootstrap})
+	}
+	if r.orchestratorQuickSwap != nil {
+		tasks = append(tasks, bootstrapTask{name: "quickswapv3", run: r.orchestratorQuickSwap.StartBootstrap})
+	}
+	if r.orchestratorV4 != nil {
+		tasks = append(tasks, bootstrapTask{name: "univ4", run: r.orchestratorV4.StartBootstrap})
+	}
+	if r.orchestratorBalancer != nil {
+		tasks = append(tasks, bootstrapTask{name: "balancer", run: r.orchestratorBalancer.StartBootstrap})
+	}
+	if len(tasks) == 0 {
+		return nil
+	}
+	return runBootstrapTasks(ctx, tasks)
+}
+
+func runBootstrapTasks(ctx context.Context, tasks []bootstrapTask) error {
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(tasks))
+	for _, task := range tasks {
+		task := task
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					errCh <- fmt.Errorf("%s bootstrap panicked: %v", task.name, recovered)
+				}
+			}()
+			if err := task.run(ctx); err != nil {
+				errCh <- fmt.Errorf("%s bootstrap: %w", task.name, err)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	var bootstrapErrors []error
+	for err := range errCh {
+		bootstrapErrors = append(bootstrapErrors, err)
+	}
+	return errors.Join(bootstrapErrors...)
 }
 
 func (r *syncLifecycle) runSync(name string, run func(context.Context) error) {

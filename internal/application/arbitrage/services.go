@@ -19,39 +19,47 @@ import (
 
 // ServiceDeps contains dependencies for arbitrage application services.
 type ServiceDeps struct {
-	Logger                *zap.Logger
-	Pools                 marketuniv3.PoolRepository
-	PancakePools          marketpancake.PoolRepository
-	QuickSwapPools        marketquick.PoolRepository
-	V4Pools               marketuniv4.PoolRepository
-	BalancerPools         marketbalancer.PoolRepository
-	Registry              marketuniv3.PoolRegistry
-	PancakeRegistry       marketpancake.PoolRegistry
-	QuickSwapRegistry     marketquick.PoolRegistry
-	V4Registry            marketuniv4.PoolRegistry
-	BalancerRegistry      marketbalancer.PoolRegistry
-	Quotes                *quoteunified.QuoteService
-	Gas                   domainarb.GasEstimator
-	Strategies            []domainarb.Strategy
-	TriangleEnabled       bool
-	SpreadEnabled         bool
-	ConfiguredStartTokens []common.Address
-	SpreadStartTokens     []common.Address
-	MinNetProfitWei       *big.Int
-	SpreadMinNetProfitWei *big.Int
-	Readiness             ReadinessChecker
-	Repository            domainarb.OpportunityRepository
-	Executor              ContractExecutor
-	ExecutionHead         ExecutionHeadReader
-	ExecutionBuilder      ExecutionPlanBuilder
-	Execution             ExecutionConfig
-	LivePlan              LivePlanConfig
-	FlashLoanOptions      []domainarb.FlashLoanOption
-	MinAmount             *big.Int
-	MaxAmount             *big.Int
-	OptimizerIterations   int
-	Routes                []domainarb.RouteRef
-	PoolGraph             quoteunified.PoolGraph
+	Logger                    *zap.Logger
+	Pools                     marketuniv3.PoolRepository
+	PancakePools              marketpancake.PoolRepository
+	QuickSwapPools            marketquick.PoolRepository
+	V4Pools                   marketuniv4.PoolRepository
+	BalancerPools             marketbalancer.PoolRepository
+	Registry                  marketuniv3.PoolRegistry
+	PancakeRegistry           marketpancake.PoolRegistry
+	QuickSwapRegistry         marketquick.PoolRegistry
+	V4Registry                marketuniv4.PoolRegistry
+	BalancerRegistry          marketbalancer.PoolRegistry
+	Quotes                    *quoteunified.QuoteService
+	Gas                       domainarb.GasEstimator
+	Strategies                []domainarb.Strategy
+	TriangleEnabled           bool
+	SpreadEnabled             bool
+	ConfiguredStartTokens     []common.Address
+	SpreadStartTokens         []common.Address
+	MinNetProfitWei           *big.Int
+	SpreadMinNetProfitWei     *big.Int
+	Readiness                 ReadinessChecker
+	Repository                domainarb.OpportunityRepository
+	Executor                  ContractExecutor
+	ExecutionHead             ExecutionHeadReader
+	ExecutionBuilder          ExecutionPlanBuilder
+	Execution                 ExecutionConfig
+	LivePlan                  LivePlanConfig
+	FlashLoanOptions          []domainarb.FlashLoanOption
+	MinAmount                 *big.Int
+	MaxAmount                 *big.Int
+	OptimizerIterations       int
+	Routes                    []domainarb.RouteRef
+	PoolGraph                 quoteunified.PoolGraph
+	EnabledProtocols          []SyncProtocol
+	MarketView                MarketViewCommitter
+	MarketVersion             MarketVersionReader
+	OpportunityPools          marketuniv3.PoolRepository
+	OpportunityPancakePools   marketpancake.PoolRepository
+	OpportunityQuickSwapPools marketquick.PoolRepository
+	OpportunityV4Pools        marketuniv4.PoolRepository
+	OpportunityBalancerPools  marketbalancer.PoolRepository
 }
 
 type routeRefreshDeps struct {
@@ -73,6 +81,7 @@ type Services struct {
 	Opportunities *OpportunityService
 	Publish       *PublishService
 	Executor      *OpportunityExecutor
+	Coordinator   *BlockCoordinator
 
 	routeMu               sync.Mutex
 	mu                    sync.RWMutex
@@ -89,6 +98,26 @@ type Services struct {
 }
 
 func NewServices(deps ServiceDeps) *Services {
+	opportunityPools := deps.OpportunityPools
+	if opportunityPools == nil {
+		opportunityPools = deps.Pools
+	}
+	opportunityPancakePools := deps.OpportunityPancakePools
+	if opportunityPancakePools == nil {
+		opportunityPancakePools = deps.PancakePools
+	}
+	opportunityQuickSwapPools := deps.OpportunityQuickSwapPools
+	if opportunityQuickSwapPools == nil {
+		opportunityQuickSwapPools = deps.QuickSwapPools
+	}
+	opportunityV4Pools := deps.OpportunityV4Pools
+	if opportunityV4Pools == nil {
+		opportunityV4Pools = deps.V4Pools
+	}
+	opportunityBalancerPools := deps.OpportunityBalancerPools
+	if opportunityBalancerPools == nil {
+		opportunityBalancerPools = deps.BalancerPools
+	}
 	minAmount := deps.MinAmount
 	if minAmount == nil {
 		minAmount = big.NewInt(1_000_000)
@@ -146,14 +175,14 @@ func NewServices(deps ServiceDeps) *Services {
 		publishers = append(publishers, NewExecutionPublisher(deps.Execution, builder, deps.Executor, deps.Repository, deps.ExecutionHead, logger))
 	}
 
-	return &Services{
+	services := &Services{
 		Scan: scan,
 		Opportunities: NewOpportunityService(
-			deps.Pools,
-			deps.PancakePools,
-			deps.QuickSwapPools,
-			deps.V4Pools,
-			deps.BalancerPools,
+			opportunityPools,
+			opportunityPancakePools,
+			opportunityQuickSwapPools,
+			opportunityV4Pools,
+			opportunityBalancerPools,
 			deps.Quotes,
 			gas,
 			strategies,
@@ -163,6 +192,7 @@ func NewServices(deps ServiceDeps) *Services {
 			deps.OptimizerIterations,
 			deps.FlashLoanOptions,
 			logger,
+			deps.MarketVersion,
 		),
 		Publish: NewPublishService(publishers...),
 		routeDeps: routeRefreshDeps{
@@ -187,6 +217,16 @@ func NewServices(deps ServiceDeps) *Services {
 		readiness:             deps.Readiness,
 		logger:                logger,
 	}
+	services.Coordinator = NewBlockCoordinator(
+		deps.EnabledProtocols,
+		&services.routeMu,
+		services.Scan,
+		services.Opportunities,
+		services.Publish,
+		deps.MarketView,
+		logger,
+	)
+	return services
 }
 
 func collectStrategyStartTokens(strategies []domainarb.Strategy) []common.Address {

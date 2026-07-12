@@ -205,6 +205,49 @@ func TestOptimizerSkipsFailedSampleAmounts(t *testing.T) {
 	}
 }
 
+func TestOptimizerStopsWhenContextIsCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	optimizer := NewOptimizer(big.NewInt(1), big.NewInt(100), 10)
+	if _, err := optimizer.OptimizeContext(ctx, linearQuoter{gain: big.NewInt(5)}); err != context.Canceled {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+}
+
+func TestProbePositiveGrossProfitAcceptsAnyPositiveSample(t *testing.T) {
+	optimizer := NewOptimizer(big.NewInt(10), big.NewInt(100), 8)
+	ok, err := optimizer.ProbePositiveGrossProfit(context.Background(), linearQuoter{gain: big.NewInt(1)})
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected probe to pass when quotes are profitable")
+	}
+}
+
+func TestProbePositiveGrossProfitRejectsNonPositiveSamples(t *testing.T) {
+	optimizer := NewOptimizer(big.NewInt(10), big.NewInt(100), 8)
+	ok, err := optimizer.ProbePositiveGrossProfit(context.Background(), lossQuoter{loss: big.NewInt(1)})
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	if ok {
+		t.Fatal("expected probe to reject non-positive gross profit")
+	}
+}
+
+type lossQuoter struct {
+	loss *big.Int
+}
+
+func (q lossQuoter) QuoteAmountOut(amountIn *big.Int) (*big.Int, error) {
+	out := new(big.Int).Sub(amountIn, q.loss)
+	if out.Sign() < 0 {
+		out = big.NewInt(0)
+	}
+	return out, nil
+}
+
 func TestDependencyGraphAffectedRoutes(t *testing.T) {
 	graph := NewDependencyGraph()
 	routeA := RouteRef{

@@ -1,6 +1,7 @@
 package unified
 
 import (
+	"errors"
 	"fmt"
 	"math/big"
 
@@ -17,6 +18,9 @@ import (
 	quoteuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
+
+// ErrNonPositiveAmount indicates a hop received or produced a non-positive amount.
+var ErrNonPositiveAmount = errors.New("amount must be positive")
 
 // RoutePools holds loaded pool state keyed by protocol-specific identifiers.
 type RoutePools struct {
@@ -130,7 +134,7 @@ func (s *QuoteService) QuoteRoute(pools RoutePools, route Route, amountIn *big.I
 
 func (s *QuoteService) QuoteRouteSteps(pools RoutePools, route Route, amountIn *big.Int) ([]RouteQuoteStep, error) {
 	if amountIn == nil || amountIn.Sign() <= 0 {
-		return nil, fmt.Errorf("amountIn must be positive")
+		return nil, fmt.Errorf("%w", ErrNonPositiveAmount)
 	}
 	if len(route.Hops) == 0 {
 		return nil, fmt.Errorf("route has no hops")
@@ -140,9 +144,15 @@ func (s *QuoteService) QuoteRouteSteps(pools RoutePools, route Route, amountIn *
 	steps := make([]RouteQuoteStep, 0, len(route.Hops))
 
 	for i, hop := range route.Hops {
+		if currentAmount == nil || currentAmount.Sign() <= 0 {
+			return nil, fmt.Errorf("hop %d: %w", i, ErrNonPositiveAmount)
+		}
 		step, err := s.quoteHop(pools, hop, currentAmount)
 		if err != nil {
 			return nil, fmt.Errorf("hop %d: %w", i, err)
+		}
+		if step.AmountOut == nil || step.AmountOut.Sign() <= 0 {
+			return nil, fmt.Errorf("hop %d: %w", i, ErrNonPositiveAmount)
 		}
 
 		steps = append(steps, RouteQuoteStep{

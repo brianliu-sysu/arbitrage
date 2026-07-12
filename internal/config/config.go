@@ -426,14 +426,14 @@ func Default() Config {
 				MinNetProfitWei:     "1",
 				MinAmount:           "1000000",
 				MaxAmount:           "100000000000000",
-				OptimizerIterations: 16,
+				OptimizerIterations: 8,
 			},
 			Spread: SpreadArbitrageConfig{
 				Enabled:             false,
 				MinNetProfitWei:     "1",
 				MinAmount:           "1000000",
 				MaxAmount:           "100000000000000",
-				OptimizerIterations: 16,
+				OptimizerIterations: 8,
 			},
 			FlashLoan: FlashLoanConfig{
 				BalancerFeePPM: "0",

@@ -57,18 +57,20 @@ func NewReorgRecoveryService(
 				return parser.ParsePoolEvents(logs)
 			},
 			EventBlockNumber: func(event marketbalancer.PoolEvent) uint64 { return event.Meta.BlockNumber },
-			ApplyBlock: func(ctx context.Context, blockNumber uint64, blockHash common.Hash, events []marketbalancer.PoolEvent, tracked []marketbalancer.PoolID) error {
+			ApplyBlock: func(ctx context.Context, blockNumber uint64, blockHash common.Hash, events []marketbalancer.PoolEvent, tracked []marketbalancer.PoolID, suppressListener bool) error {
 				if blockApply == nil {
 					return fmt.Errorf("block apply service is not configured")
 				}
 				_, err := blockApply.ApplyBlock(ctx, ApplyBlockRequest{
-					BlockNumber:  blockNumber,
-					BlockHash:    blockHash,
-					Events:       events,
-					TrackedPools: tracked,
+					BlockNumber:      blockNumber,
+					BlockHash:        blockHash,
+					Events:           events,
+					TrackedPools:     tracked,
+					SuppressListener: suppressListener,
 				})
 				return err
 			},
+			NotifyRecovered: blockApply.NotifyPoolsChanged,
 		},
 	)
 }

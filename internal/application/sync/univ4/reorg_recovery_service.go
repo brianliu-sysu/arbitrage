@@ -6,8 +6,8 @@ import (
 
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
-	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -59,18 +59,20 @@ func NewReorgRecoveryService(
 				return parser.ParsePoolEvents(logs)
 			},
 			EventBlockNumber: func(event marketv4.PoolEvent) uint64 { return event.Meta.BlockNumber },
-			ApplyBlock: func(ctx context.Context, blockNumber uint64, blockHash common.Hash, events []marketv4.PoolEvent, tracked []marketv4.PoolID) error {
+			ApplyBlock: func(ctx context.Context, blockNumber uint64, blockHash common.Hash, events []marketv4.PoolEvent, tracked []marketv4.PoolID, suppressListener bool) error {
 				if blockApply == nil {
 					return fmt.Errorf("block apply service is not configured")
 				}
 				_, err := blockApply.ApplyBlock(ctx, ApplyBlockRequest{
-					BlockNumber:  blockNumber,
-					BlockHash:    blockHash,
-					Events:       events,
-					TrackedPools: tracked,
+					BlockNumber:      blockNumber,
+					BlockHash:        blockHash,
+					Events:           events,
+					TrackedPools:     tracked,
+					SuppressListener: suppressListener,
 				})
 				return err
 			},
+			NotifyRecovered: blockApply.NotifyPoolsChanged,
 		},
 	)
 }

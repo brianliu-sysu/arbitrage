@@ -68,7 +68,7 @@ func TestBootstrapRefreshesStalePoolFromChain(t *testing.T) {
 	}
 }
 
-func TestBootstrapRefreshesPoolBehindHead(t *testing.T) {
+func TestBootstrapSkipsChainRefreshWhenSlightlyBehindHead(t *testing.T) {
 	ctx := context.Background()
 	address := common.HexToAddress("0x0000000000000000000000000000000000000001")
 	reader := &countingBootstrapReader{}
@@ -82,11 +82,11 @@ func TestBootstrapRefreshesPoolBehindHead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
-	if reader.calls != 1 {
-		t.Fatalf("expected one chain bootstrap read, got %d", reader.calls)
+	if reader.calls != 0 {
+		t.Fatalf("expected catchup to handle small head lag without chain rebootstrap, got %d reads", reader.calls)
 	}
-	if pool.LastBlockNumber != 10_005 {
-		t.Fatalf("expected last block 10005, got %d", pool.LastBlockNumber)
+	if pool.LastBlockNumber != 10_000 {
+		t.Fatalf("expected last block to remain 10000, got %d", pool.LastBlockNumber)
 	}
 }
 

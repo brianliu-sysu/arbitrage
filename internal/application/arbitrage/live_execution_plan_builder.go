@@ -63,6 +63,7 @@ func (b *LiveExecutionPlanBuilder) BuildExecutionPlan(
 			if err != nil {
 				return domaincontract.ExecutionPlan{}, nil, err
 			}
+			approvals = domaincontract.MergeTokenApprovals(approvals, domaincontract.RequiredTokenApprovals(refreshed))
 			return refreshed, approvals, nil
 		}
 		if !isExecutionUnavailable(err) {

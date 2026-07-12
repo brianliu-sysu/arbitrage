@@ -168,7 +168,7 @@ func TestBootstrapKeepsFreshChainStateForNewPool(t *testing.T) {
 	}
 }
 
-func TestBootstrapRefreshesPoolBehindHead(t *testing.T) {
+func TestBootstrapSkipsChainRefreshWhenSlightlyBehindHead(t *testing.T) {
 	ctx := context.Background()
 	key := marketv4.PoolKey{
 		Currency0:   common.Address{},
@@ -190,15 +190,15 @@ func TestBootstrapRefreshesPoolBehindHead(t *testing.T) {
 		blockNumber: 25_473_776,
 	}
 
-	staleSqrt, _ := new(big.Int).SetString("3305675705130113121188626", 10)
-	stalePool := marketv4.NewPool(poolID, key)
-	stalePool.State.SqrtPriceX96 = staleSqrt
-	stalePool.State.Tick = -201700
-	stalePool.State.Liquidity = big.NewInt(1)
-	stalePool.LastBlockNumber = 25_473_700
+	localSqrt, _ := new(big.Int).SetString("3305675705130113121188626", 10)
+	localPool := marketv4.NewPool(poolID, key)
+	localPool.State.SqrtPriceX96 = localSqrt
+	localPool.State.Tick = -201700
+	localPool.State.Liquidity = big.NewInt(1)
+	localPool.LastBlockNumber = 25_473_700
 
 	service := NewBootstrapService(
-		&bootstrapV4PoolRepo{pool: stalePool},
+		&bootstrapV4PoolRepo{pool: localPool},
 		&stubV4Registry{key: key},
 		reader,
 		nil,
@@ -209,13 +209,13 @@ func TestBootstrapRefreshesPoolBehindHead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
-	if pool.State.Tick != -201679 {
-		t.Fatalf("expected refreshed tick -201679, got %d", pool.State.Tick)
+	if pool.State.Tick != -201700 {
+		t.Fatalf("expected local tick retained for catchup, got %d", pool.State.Tick)
 	}
-	if pool.LastBlockNumber != 25_473_776 {
-		t.Fatalf("expected last block 25473776, got %d", pool.LastBlockNumber)
+	if pool.LastBlockNumber != 25_473_700 {
+		t.Fatalf("expected last block to remain 25473700, got %d", pool.LastBlockNumber)
 	}
-	if len(reader.requested) != 1 || reader.requested[0] != 25_473_776 {
-		t.Fatalf("expected bootstrap reader to use requested block 25473776, got %v", reader.requested)
+	if len(reader.requested) != 0 {
+		t.Fatalf("expected no chain rebootstrap for small head lag, got %v", reader.requested)
 	}
 }
