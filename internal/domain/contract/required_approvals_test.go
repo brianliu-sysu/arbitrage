@@ -42,6 +42,36 @@ func TestRequiredTokenApprovalsFromExactInputSingle(t *testing.T) {
 	}
 }
 
+func TestRequiredTokenApprovalsFromPancakeV3ExactInputSingle(t *testing.T) {
+	usdt := common.HexToAddress("0xdAC17F958D2ee523a2206206994597C13D831ec7")
+	weth := common.HexToAddress("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")
+	router := common.HexToAddress("0x1b81D678ffb9C0263b24A97847620C99d213eB14")
+	data, err := contract.PackPancakeV3ExactInputSingle(contract.ExactInputSingleParams{
+		TokenIn:          weth,
+		TokenOut:         usdt,
+		Fee:              big.NewInt(500),
+		Recipient:        common.HexToAddress("0x1"),
+		AmountIn:         big.NewInt(100),
+		AmountOutMinimum: big.NewInt(0),
+	})
+	if err != nil {
+		t.Fatalf("pack pancake: %v", err)
+	}
+
+	got := contract.RequiredTokenApprovals(contract.ExecutionPlan{
+		Routes: []contract.SwapRoute{{
+			RouterAddress: router,
+			Data:          data,
+		}},
+	})
+	if len(got) != 1 {
+		t.Fatalf("expected 1 approval, got %+v", got)
+	}
+	if got[0].Token != weth || got[0].Spender != router {
+		t.Fatalf("unexpected pancake approval %+v", got[0])
+	}
+}
+
 func TestMergeTokenApprovalsAddsMissingRouterAllowance(t *testing.T) {
 	usdc := common.HexToAddress("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")
 	weth := common.HexToAddress("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")

@@ -12,7 +12,7 @@ import (
 
 func NewAppService(
 	pools marketpancake.PoolRepository,
-	registry marketpancake.PoolRegistry,
+	registry quoteappclv3.PoolRegistry,
 	quotes *quotepancakev3domain.QuoteService,
 	readiness ReadinessChecker,
 	maxHops int,

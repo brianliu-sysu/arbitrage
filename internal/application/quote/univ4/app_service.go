@@ -18,10 +18,14 @@ type ReadinessChecker interface {
 	IsPoolReady(poolID marketv4.PoolID) bool
 }
 
+type PoolRegistry interface {
+	List(context.Context) ([]marketv4.PoolID, error)
+}
+
 // AppService orchestrates V4 route discovery and quoting.
 type AppService struct {
 	pools     marketv4.PoolRepository
-	registry  marketv4.PoolRegistry
+	registry  PoolRegistry
 	quotes    *quoteuniv4.QuoteService
 	readiness ReadinessChecker
 	maxHops   int
@@ -29,7 +33,7 @@ type AppService struct {
 
 func NewAppService(
 	pools marketv4.PoolRepository,
-	registry marketv4.PoolRegistry,
+	registry PoolRegistry,
 	quotes *quoteuniv4.QuoteService,
 	readiness ReadinessChecker,
 	maxHops int,

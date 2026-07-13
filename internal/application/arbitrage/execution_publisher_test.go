@@ -54,6 +54,9 @@ func TestExecutionPublisherPaysFlashbotsViaGasPrice(t *testing.T) {
 	if executor.executeReq.SubmitRPCURL != "https://relay.flashbots.net" {
 		t.Fatalf("unexpected submit rpc %q", executor.executeReq.SubmitRPCURL)
 	}
+	if executor.approvalReq.SubmitRPCURL != "" {
+		t.Fatalf("approval submit rpc should be empty, got %q", executor.approvalReq.SubmitRPCURL)
+	}
 }
 
 func TestExecutionPublisherDerivesMissingV3Approvals(t *testing.T) {

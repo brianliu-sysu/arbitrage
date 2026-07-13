@@ -398,17 +398,37 @@ func newRuntimeBundle(
 	if syncBalancerServices != nil {
 		readiness.Balancer = syncBalancerServices.Readiness
 	}
+	var univ3Active *syncapp.PoolLifecycleService[common.Address]
+	var pancakeActive *syncapp.PoolLifecycleService[common.Address]
+	var quickSwapActive *syncapp.PoolLifecycleService[common.Address]
+	var univ4Active *syncapp.PoolLifecycleService[marketv4.PoolID]
+	var balancerActive *syncapp.PoolLifecycleService[marketbalancer.PoolID]
+	if syncServices != nil {
+		univ3Active = syncServices.Lifecycle
+	}
+	if syncPancakeServices != nil {
+		pancakeActive = syncPancakeServices.Lifecycle
+	}
+	if syncQuickSwapServices != nil {
+		quickSwapActive = syncQuickSwapServices.Lifecycle
+	}
+	if syncV4Services != nil {
+		univ4Active = syncV4Services.Lifecycle
+	}
+	if syncBalancerServices != nil {
+		balancerActive = syncBalancerServices.Lifecycle
+	}
 	marketView := quotecommitted.NewView(quotecommitted.Sources{
 		Univ3Pools:        store.Pools,
 		PancakePools:      store.PancakePools,
 		QuickSwapPools:    store.QuickSwapPools,
 		Univ4Pools:        store.V4Pools,
 		BalancerPools:     store.BalancerPools,
-		Univ3Registry:     poolRegistry,
-		PancakeRegistry:   pancakePoolRegistry.AsPoolRegistry(),
-		QuickSwapRegistry: quickSwapPoolRegistry.AsPoolRegistry(),
-		Univ4Registry:     v4PoolRegistry.AsPoolRegistry(),
-		BalancerRegistry:  balancerPoolRegistry.AsPoolRegistry(),
+		Univ3Registry:     univ3Active,
+		PancakeRegistry:   pancakeActive,
+		QuickSwapRegistry: quickSwapActive,
+		Univ4Registry:     univ4Active,
+		BalancerRegistry:  balancerActive,
 	})
 	marketView.SetLogger(logger.Named("market-view"))
 
@@ -499,6 +519,25 @@ func newRuntimeBundle(
 		MarketView:    marketView,
 		PoolManagers:  newRuntimePoolManagers(chain, syncServices, syncPancakeServices, syncQuickSwapServices, syncV4Services, syncBalancerServices, arbitrageServices),
 	}, nil
+}
+
+type activeBalancerRegistry struct {
+	lifecycle *syncapp.PoolLifecycleService[marketbalancer.PoolID]
+	registry  marketbalancer.PoolRegistry
+}
+
+func (r activeBalancerRegistry) List(ctx context.Context) ([]marketbalancer.PoolID, error) {
+	if r.lifecycle == nil {
+		return nil, nil
+	}
+	return r.lifecycle.List(ctx)
+}
+
+func (r activeBalancerRegistry) GetSpec(ctx context.Context, id marketbalancer.PoolID) (marketbalancer.PoolSpec, error) {
+	if r.registry == nil {
+		return marketbalancer.PoolSpec{}, nil
+	}
+	return r.registry.GetSpec(ctx, id)
 }
 
 func newRuntimePoolManagers(
@@ -716,7 +755,7 @@ func newQuoteV3AppService(
 	}
 	return quoteuniv3.NewAppService(
 		bundle.MarketView.Univ3Repository(),
-		poolRegistry,
+		bundle.Sync.Lifecycle,
 		quoteuniv3domain.NewQuoteService(),
 		bundle.MarketView.Univ3Readiness(),
 		maxHops,
@@ -739,7 +778,7 @@ func newQuotePancakeV3AppService(
 	}
 	return quotepancakev3.NewAppService(
 		bundle.MarketView.PancakeRepository(),
-		pancakePoolRegistry,
+		bundle.SyncPancake.Lifecycle,
 		quotepancakev3domain.NewQuoteService(),
 		bundle.MarketView.PancakeReadiness(),
 		maxHops,
@@ -762,7 +801,7 @@ func newQuoteQuickSwapV3AppService(
 	}
 	return quotequickswapv3.NewAppService(
 		bundle.MarketView.QuickSwapRepository(),
-		quickSwapPoolRegistry,
+		bundle.SyncQuickSwap.Lifecycle,
 		quotequickswapv3domain.NewQuoteService(),
 		bundle.MarketView.QuickSwapReadiness(),
 		maxHops,
@@ -785,7 +824,7 @@ func newQuoteV4AppService(
 	}
 	return quoteuniv4.NewAppService(
 		bundle.MarketView.Univ4Repository(),
-		v4PoolRegistry,
+		bundle.SyncV4.Lifecycle,
 		quoteuniv4domain.NewQuoteService(),
 		bundle.MarketView.Univ4Readiness(),
 		maxHops,
@@ -807,6 +846,26 @@ func newQuoteCombinedAppService(
 	if maxHops <= 0 {
 		maxHops = 3
 	}
+	var univ3Active *syncapp.PoolLifecycleService[common.Address]
+	var pancakeActive *syncapp.PoolLifecycleService[common.Address]
+	var quickSwapActive *syncapp.PoolLifecycleService[common.Address]
+	var univ4Active *syncapp.PoolLifecycleService[marketv4.PoolID]
+	var balancerActive *syncapp.PoolLifecycleService[marketbalancer.PoolID]
+	if bundle.Sync != nil {
+		univ3Active = bundle.Sync.Lifecycle
+	}
+	if bundle.SyncPancake != nil {
+		pancakeActive = bundle.SyncPancake.Lifecycle
+	}
+	if bundle.SyncQuickSwap != nil {
+		quickSwapActive = bundle.SyncQuickSwap.Lifecycle
+	}
+	if bundle.SyncV4 != nil {
+		univ4Active = bundle.SyncV4.Lifecycle
+	}
+	if bundle.SyncBalancer != nil {
+		balancerActive = bundle.SyncBalancer.Lifecycle
+	}
 
 	return quotecombined.NewAppService(
 		bundle.MarketView.Univ3Repository(),
@@ -814,11 +873,11 @@ func newQuoteCombinedAppService(
 		bundle.MarketView.QuickSwapRepository(),
 		bundle.MarketView.Univ4Repository(),
 		bundle.MarketView.BalancerRepository(),
-		poolRegistry,
-		pancakePoolRegistry.AsPoolRegistry(),
-		quickSwapPoolRegistry.AsPoolRegistry(),
-		v4PoolRegistry.AsPoolRegistry(),
-		balancerPoolRegistry.AsPoolRegistry(),
+		univ3Active,
+		pancakeActive,
+		quickSwapActive,
+		univ4Active,
+		activeBalancerRegistry{lifecycle: balancerActive, registry: balancerPoolRegistry},
 		quoteunified.NewQuoteService(
 			quoteuniv3domain.NewQuoteService(),
 			quotepancakev3domain.NewQuoteService(),
@@ -1011,6 +1070,11 @@ type syncLifecycle struct {
 	store                 *persistence.Services
 	cfg                   config.Config
 	logger                *zap.Logger
+	poolRegistry          *registry.CompositeRegistry
+	pancakePoolRegistry   *registry.PancakeCompositeRegistry
+	quickSwapPoolRegistry *registry.QuickSwapCompositeRegistry
+	v4PoolRegistry        *registry.CompositeV4Registry
+	balancerPoolRegistry  *registry.CompositeBalancerRegistry
 }
 
 func registerSyncLifecycle(
@@ -1045,11 +1109,16 @@ func registerSyncLifecycle(
 
 func newSyncLifecycle(runtime *chainRuntime, logger *zap.Logger) *syncLifecycle {
 	runner := &syncLifecycle{
-		bundle: runtime.bundle,
-		chain:  runtime.chain,
-		store:  runtime.store,
-		cfg:    runtime.cfg,
-		logger: logger,
+		bundle:                runtime.bundle,
+		chain:                 runtime.chain,
+		store:                 runtime.store,
+		cfg:                   runtime.cfg,
+		logger:                logger,
+		poolRegistry:          runtime.poolRegistry,
+		pancakePoolRegistry:   runtime.pancakePoolRegistry,
+		quickSwapPoolRegistry: runtime.quickSwapPoolRegistry,
+		v4PoolRegistry:        runtime.v4PoolRegistry,
+		balancerPoolRegistry:  runtime.balancerPoolRegistry,
 	}
 	handlers := make([]syncapp.NamedHeadHandler, 0, 5)
 	if runtime.bundle.Sync != nil {
@@ -1121,7 +1190,93 @@ func (r *syncLifecycle) start(_ context.Context) error {
 	if r.bundle != nil && r.bundle.Arbitrage != nil && r.cfg.ArbitrageEnabled() {
 		r.runArbitrageRouteWatcher()
 	}
+	r.runSubgraphDiscoveryWatchers()
 	return nil
+}
+
+func (r *syncLifecycle) runSubgraphDiscoveryWatchers() {
+	if r.bundle.Sync != nil {
+		runSubgraphDiscovery(r, "univ3", r.cfg.Sync.Univ3.Subgraph.RefreshInterval, r.cfg.Sync.Univ3.Subgraph.IsEnabled(), r.poolRegistry, r.bundle.Sync.Lifecycle, r.orchestrator)
+	}
+	if r.bundle.SyncPancake != nil {
+		runSubgraphDiscovery(r, "pancakev3", r.cfg.Sync.PancakeV3.Subgraph.RefreshInterval, r.cfg.Sync.PancakeV3.Subgraph.IsEnabled(), r.pancakePoolRegistry, r.bundle.SyncPancake.Lifecycle, r.orchestratorPancake)
+	}
+	if r.bundle.SyncQuickSwap != nil {
+		runSubgraphDiscovery(r, "quickswapv3", r.cfg.Sync.QuickSwapV3.Subgraph.RefreshInterval, r.cfg.Sync.QuickSwapV3.Subgraph.IsEnabled(), r.quickSwapPoolRegistry, r.bundle.SyncQuickSwap.Lifecycle, r.orchestratorQuickSwap)
+	}
+	if r.bundle.SyncV4 != nil {
+		runSubgraphDiscovery(r, "univ4", r.cfg.Sync.Univ4.Subgraph.RefreshInterval, r.cfg.Sync.Univ4.Subgraph.IsEnabled(), r.v4PoolRegistry, r.bundle.SyncV4.Lifecycle, r.orchestratorV4)
+	}
+	if r.bundle.SyncBalancer != nil {
+		runSubgraphDiscovery(r, "balancer", r.cfg.Sync.Balancer.Subgraph.RefreshInterval, r.cfg.Sync.Balancer.Subgraph.IsEnabled(), r.balancerPoolRegistry, r.bundle.SyncBalancer.Lifecycle, r.orchestratorBalancer)
+	}
+}
+
+type poolLister[PoolID comparable] interface {
+	List(context.Context) ([]PoolID, error)
+}
+
+type poolOnboarder[PoolID comparable] interface {
+	AddPool(context.Context, PoolID) error
+}
+
+func runSubgraphDiscovery[PoolID comparable](r *syncLifecycle, name string, interval time.Duration, enabled bool, registry poolLister[PoolID], lifecycle *syncapp.PoolLifecycleService[PoolID], onboarder poolOnboarder[PoolID]) {
+	if !enabled || registry == nil || lifecycle == nil || onboarder == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = 10 * time.Minute
+	}
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.runCtx.Done():
+				return
+			case <-ticker.C:
+				reconcileSubgraphPools(r, name, interval, registry, lifecycle, onboarder)
+			}
+		}
+	}()
+}
+
+func reconcileSubgraphPools[PoolID comparable](r *syncLifecycle, name string, interval time.Duration, registry poolLister[PoolID], lifecycle *syncapp.PoolLifecycleService[PoolID], onboarder poolOnboarder[PoolID]) {
+	started := time.Now()
+	active := lifecycle.ListActive()
+	r.logger.Info("subgraph pool refresh started", zap.String("protocol", name), zap.Duration("refresh_interval", interval), zap.Int("active_pools", len(active)))
+	tracked, err := registry.List(r.runCtx)
+	if err != nil {
+		r.logger.Warn("subgraph pool refresh failed", zap.String("protocol", name), zap.Error(err), zap.Int64("duration_ms", time.Since(started).Milliseconds()))
+		return
+	}
+	activeSet := make(map[PoolID]struct{}, len(active))
+	for _, id := range active {
+		activeSet[id] = struct{}{}
+	}
+	added := 0
+	for _, id := range tracked {
+		if _, ok := activeSet[id]; ok {
+			continue
+		}
+		r.logger.Info("subgraph pool discovered", zap.String("protocol", name), zap.Any("pool", id))
+		if err := onboarder.AddPool(r.runCtx, id); err != nil {
+			r.logger.Warn("subgraph pool onboarding failed", zap.String("protocol", name), zap.Any("pool", id), zap.Error(err))
+			continue
+		}
+		added++
+		r.logger.Info("subgraph pool activated", zap.String("protocol", name), zap.Any("pool", id))
+	}
+	if added > 0 && r.bundle != nil && r.bundle.Arbitrage != nil {
+		if routes, err := r.bundle.Arbitrage.RefreshArbitrageRoutes(r.runCtx); err != nil {
+			r.logger.Warn("refresh arbitrage routes after subgraph update failed", zap.String("protocol", name), zap.Error(err))
+		} else {
+			r.logger.Info("arbitrage routes refreshed after subgraph update", zap.String("protocol", name), zap.Int("new_pools", added), zap.Int("routes", routes))
+		}
+	}
+	r.logger.Info("subgraph pool refresh completed", zap.String("protocol", name), zap.Int("tracked_pools", len(tracked)), zap.Int("new_pools", added), zap.Int64("duration_ms", time.Since(started).Milliseconds()))
 }
 
 func (r *syncLifecycle) runSharedHeadLifecycle(ctx context.Context) error {

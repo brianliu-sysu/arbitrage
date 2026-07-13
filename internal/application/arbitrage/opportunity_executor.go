@@ -169,7 +169,6 @@ func (e *OpportunityExecutor) Execute(ctx context.Context, req OpportunityExecut
 		GasLimit:     e.cfg.GasLimit,
 		GasPriceWei:  gasPriceWei,
 		SkipEstimate: e.cfg.SkipEstimate,
-		SubmitRPCURL: strings.TrimSpace(e.cfg.FlashbotsRPCURL),
 	})
 	if err != nil {
 		return result, fmt.Errorf("ensure approvals: %w", err)

@@ -36,6 +36,9 @@ func NewPoolLifecycleService[PoolID comparable](
 }
 
 func (s *PoolLifecycleService[PoolID]) ListActive() []PoolID {
+	if s == nil {
+		return nil
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -44,6 +47,14 @@ func (s *PoolLifecycleService[PoolID]) ListActive() []PoolID {
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+// List returns only pools admitted to live head sync.
+func (s *PoolLifecycleService[PoolID]) List(context.Context) ([]PoolID, error) {
+	if s == nil {
+		return nil, nil
+	}
+	return s.ListActive(), nil
 }
 
 func (s *PoolLifecycleService[PoolID]) StartAll(ctx context.Context, blockNumber uint64) error {

@@ -113,6 +113,12 @@ func TestOpportunityExecutorAcceptsLegacyDiscoveredStatus(t *testing.T) {
 	if contractExecutor.executeCalls != 1 {
 		t.Fatalf("expected one broadcast, got %d", contractExecutor.executeCalls)
 	}
+	if contractExecutor.approvalReq.SubmitRPCURL != "" {
+		t.Fatalf("approval submit rpc should be empty, got %q", contractExecutor.approvalReq.SubmitRPCURL)
+	}
+	if contractExecutor.executeReq.SubmitRPCURL != testSecureExecutionConfig().FlashbotsRPCURL {
+		t.Fatalf("unexpected execution submit rpc %q", contractExecutor.executeReq.SubmitRPCURL)
+	}
 }
 
 func TestOpportunityExecutorPreventsDuplicateBroadcast(t *testing.T) {

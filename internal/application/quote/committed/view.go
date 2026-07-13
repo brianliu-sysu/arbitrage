@@ -24,11 +24,16 @@ type Sources struct {
 	QuickSwapPools    marketquick.PoolRepository
 	Univ4Pools        marketuniv4.PoolRepository
 	BalancerPools     marketbalancer.PoolRepository
-	Univ3Registry     marketuniv3.PoolRegistry
-	PancakeRegistry   marketpancake.PoolRegistry
-	QuickSwapRegistry marketquick.PoolRegistry
-	Univ4Registry     marketuniv4.PoolRegistry
-	BalancerRegistry  marketbalancer.PoolRegistry
+	Univ3Registry     Registry[common.Address]
+	PancakeRegistry   Registry[common.Address]
+	QuickSwapRegistry Registry[common.Address]
+	Univ4Registry     Registry[marketuniv4.PoolID]
+	BalancerRegistry  Registry[marketbalancer.PoolID]
+}
+
+// Registry is the read-only pool membership required to build a committed view.
+type Registry[PoolID comparable] interface {
+	List(context.Context) ([]PoolID, error)
 }
 
 type snapshot struct {

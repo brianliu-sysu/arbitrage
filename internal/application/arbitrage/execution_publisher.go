@@ -164,7 +164,6 @@ func (p *ExecutionPublisher) Publish(ctx context.Context, opportunity *domainarb
 		GasLimit:     p.cfg.GasLimit,
 		GasPriceWei:  gasPriceWei,
 		SkipEstimate: p.cfg.SkipEstimate,
-		SubmitRPCURL: strings.TrimSpace(p.cfg.FlashbotsRPCURL),
 	})
 	if err != nil {
 		return fmt.Errorf("ensure approvals: %w", err)

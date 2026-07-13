@@ -5,10 +5,20 @@ import (
 	"strings"
 	"testing"
 
+	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
 	domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	marketuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	"github.com/ethereum/go-ethereum/common"
 )
+
+func TestViewCommitAcceptsTypedNilRegistry(t *testing.T) {
+	var registry *syncapp.PoolLifecycleService[common.Address]
+	view := NewView(Sources{Univ3Registry: registry})
+
+	if err := view.Commit(context.Background(), domainchain.MarketVersion{Number: 10, Generation: 1}, nil, nil, nil, nil, nil); err != nil {
+		t.Fatalf("commit with typed nil registry: %v", err)
+	}
+}
 
 type testUniv3Repository struct {
 	pools map[common.Address]*marketuniv3.Pool

@@ -26,6 +26,15 @@ type ReadinessChecker interface {
 	IsBalancerPoolReady(poolID marketbalancer.PoolID) bool
 }
 
+type poolRegistry[PoolID comparable] interface {
+	List(context.Context) ([]PoolID, error)
+}
+
+type balancerPoolRegistry interface {
+	poolRegistry[marketbalancer.PoolID]
+	GetSpec(context.Context, marketbalancer.PoolID) (marketbalancer.PoolSpec, error)
+}
+
 // AppService orchestrates unified V3/PancakeV3/V4 route discovery and quoting.
 type AppService struct {
 	univ3Pools        marketuniv3.PoolRepository
@@ -33,11 +42,11 @@ type AppService struct {
 	quickSwapPools    marketquick.PoolRepository
 	univ4Pools        marketuniv4.PoolRepository
 	balancerPools     marketbalancer.PoolRepository
-	v3Registry        marketuniv3.PoolRegistry
-	pancakeRegistry   marketpancake.PoolRegistry
-	quickSwapRegistry marketquick.PoolRegistry
-	v4Registry        marketuniv4.PoolRegistry
-	balancerRegistry  marketbalancer.PoolRegistry
+	v3Registry        poolRegistry[common.Address]
+	pancakeRegistry   poolRegistry[common.Address]
+	quickSwapRegistry poolRegistry[common.Address]
+	v4Registry        poolRegistry[marketuniv4.PoolID]
+	balancerRegistry  balancerPoolRegistry
 	quotes            *quoteunified.QuoteService
 	readiness         ReadinessChecker
 	maxHops           int
@@ -49,11 +58,11 @@ func NewAppService(
 	quickSwapPools marketquick.PoolRepository,
 	univ4Pools marketuniv4.PoolRepository,
 	balancerPools marketbalancer.PoolRepository,
-	v3Registry marketuniv3.PoolRegistry,
-	pancakeRegistry marketpancake.PoolRegistry,
-	quickSwapRegistry marketquick.PoolRegistry,
-	v4Registry marketuniv4.PoolRegistry,
-	balancerRegistry marketbalancer.PoolRegistry,
+	v3Registry poolRegistry[common.Address],
+	pancakeRegistry poolRegistry[common.Address],
+	quickSwapRegistry poolRegistry[common.Address],
+	v4Registry poolRegistry[marketuniv4.PoolID],
+	balancerRegistry balancerPoolRegistry,
 	quotes *quoteunified.QuoteService,
 	readiness ReadinessChecker,
 	maxHops int,

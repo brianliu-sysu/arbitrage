@@ -5,14 +5,14 @@ import (
 
 	quoteappclv3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/clv3"
 	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
-	quoteuniv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
 	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
+	quoteuniv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
 	"github.com/ethereum/go-ethereum/common"
 )
 
 func NewAppService(
 	pools marketv3.PoolRepository,
-	registry marketv3.PoolRegistry,
+	registry quoteappclv3.PoolRegistry,
 	quotes *quoteuniv3domain.QuoteService,
 	readiness ReadinessChecker,
 	maxHops int,

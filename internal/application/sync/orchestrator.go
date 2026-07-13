@@ -165,11 +165,11 @@ func (o *SyncOrchestrator[PoolID]) AddPool(ctx context.Context, poolID PoolID) e
 			_ = o.lifecycle.Remove(ctx, poolID)
 			return err
 		}
-		o.lifecycle.Activate(poolID)
 		if err := o.blockApply.MarkPoolsReady(ctx, []PoolID{poolID}); err != nil {
 			_ = o.lifecycle.Remove(ctx, poolID)
 			return fmt.Errorf("mark pool ready: %w", err)
 		}
+		o.lifecycle.Activate(poolID)
 		return nil
 	})
 }
