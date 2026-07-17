@@ -2,6 +2,7 @@ package balancersync
 
 import (
 	"context"
+	"fmt"
 	"math/big"
 	"testing"
 
@@ -157,7 +158,11 @@ func (r testBalancerRegistry) List(context.Context) ([]marketbalancer.PoolID, er
 }
 
 func (r testBalancerRegistry) GetSpec(_ context.Context, id marketbalancer.PoolID) (marketbalancer.PoolSpec, error) {
-	return r.specs[id], nil
+	spec, ok := r.specs[id]
+	if !ok {
+		return marketbalancer.PoolSpec{}, fmt.Errorf("balancer pool %s not found in registry", id)
+	}
+	return spec, nil
 }
 
 func (r testBalancerRegistry) Add(_ context.Context, id marketbalancer.PoolID, spec marketbalancer.PoolSpec) error {

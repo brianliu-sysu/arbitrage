@@ -62,6 +62,15 @@ func (s *PoolLifecycleService[PoolID]) StartAll(ctx context.Context, blockNumber
 	if err != nil {
 		return fmt.Errorf("list registry pools: %w", err)
 	}
+	// Pin listed pools into the mutable registry so later subgraph cache refreshes
+	// cannot drop specs for pools that are already admitted to live sync.
+	if s.hooks.Register != nil {
+		for _, id := range ids {
+			if err := s.hooks.Register(ctx, id); err != nil {
+				return fmt.Errorf("register pool %v: %w", id, err)
+			}
+		}
+	}
 	if s.hooks.BootstrapAll != nil {
 		if err := s.hooks.BootstrapAll(ctx, ids, blockNumber); err != nil {
 			return err

@@ -31,7 +31,10 @@ func bindBalancerPools(
 	for _, poolID := range poolIDs {
 		spec, err := registry.GetSpec(ctx, poolID)
 		if err != nil {
-			return PoolLogBinding{}, fmt.Errorf("resolve pool spec %s: %w", poolID.String(), err)
+			// Active pools can briefly lose subgraph-cache membership after a refresh
+			// if they were never pinned into the mutable registry. Skip them so one
+			// missing Balancer pool cannot stall shared-head catch-up for all protocols.
+			continue
 		}
 		if (spec.Address == common.Address{}) {
 			continue
