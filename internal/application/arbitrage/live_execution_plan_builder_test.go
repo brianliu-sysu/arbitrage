@@ -195,6 +195,20 @@ func TestLiveExecutionPlanBuilderReplacesSettlementGraph(t *testing.T) {
 	}
 }
 
+func TestLiveExecutionPlanBuilderFallsBackWithoutSettlementGraph(t *testing.T) {
+	token := common.HexToAddress("0x1")
+	plan := domaincontract.ExecutionPlan{ProfitToken: token, MinProfit: big.NewInt(10)}
+	builder := NewLiveExecutionPlanBuilder(LivePlanConfig{RequireWETHProfit: true}, nil)
+
+	got, _, err := builder.addWETHSettlement(context.Background(), &domainarb.Opportunity{}, plan, nil)
+	if err != nil {
+		t.Fatalf("expected zero-bribe fallback, got %v", err)
+	}
+	if len(got.SettlementRoutes) != 0 || got.ProfitToken != token {
+		t.Fatalf("unexpected fallback plan: %+v", got)
+	}
+}
+
 func TestLiveExecutionPlanBuilderEncodesBalancerV3ViaRouter(t *testing.T) {
 	weth := asset.MainnetWETH
 	usdc := common.HexToAddress("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")

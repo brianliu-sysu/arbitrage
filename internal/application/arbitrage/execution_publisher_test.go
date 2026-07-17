@@ -62,6 +62,19 @@ func TestExecutionPublisherPassesCoinbasePaymentPlan(t *testing.T) {
 	}
 }
 
+func TestApplyCoinbasePaymentConfigFallsBackForUnsettledERC20Profit(t *testing.T) {
+	plan := domaincontract.ExecutionPlan{ProfitToken: common.HexToAddress("0x1")}
+	cfg := testExecutionConfig()
+	applyCoinbasePaymentConfig(&plan, cfg)
+
+	if plan.CoinbasePaymentBPS != 0 {
+		t.Fatalf("expected zero coinbase payment without WETH settlement, got %d", plan.CoinbasePaymentBPS)
+	}
+	if plan.WrappedNativeToken != (common.Address{}) {
+		t.Fatalf("expected wrapped native token to remain unset, got %s", plan.WrappedNativeToken.Hex())
+	}
+}
+
 func TestExecutionPublisherDerivesMissingV3Approvals(t *testing.T) {
 	usdc := common.HexToAddress("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")
 	weth := common.HexToAddress("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")

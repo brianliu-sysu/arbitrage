@@ -133,6 +133,12 @@ func (e *OpportunityExecutor) Execute(ctx context.Context, req OpportunityExecut
 		plan.MinProfit = cloneBigIntOrZero(opportunity.NetProfit)
 	}
 	applyCoinbasePaymentConfig(&plan, e.cfg)
+	if strings.TrimSpace(e.cfg.FlashbotsRPCURL) != "" && e.cfg.FlashbotsPaymentBPS > 0 && plan.CoinbasePaymentBPS == 0 && plan.ProfitToken != (common.Address{}) && plan.ProfitToken != e.cfg.WrappedNativeToken {
+		e.logger.Info("opportunity execution falling back to zero-bribe flashbots bundle",
+			zap.String("opportunity_id", opportunity.ID),
+			zap.String("profit_token", plan.ProfitToken.Hex()),
+		)
+	}
 	if err := e.validatePlan(plan, approvals); err != nil {
 		return OpportunityExecuteResult{}, err
 	}
@@ -172,7 +178,7 @@ func (e *OpportunityExecutor) Execute(ctx context.Context, req OpportunityExecut
 	if approvalResp.Broadcast {
 		result.Interrupted = true
 		result.ApprovalTxHashes = append([]common.Hash(nil), approvalResp.TxHashes...)
-		e.logger.Info("opportunity execution interrupted for approvals",
+		e.logger.Info("opportunity execution interrupted after approvals confirmed",
 			zap.String("opportunity_id", opportunity.ID),
 			zap.Strings("approval_tx_hashes", hashesToHex(approvalResp.TxHashes)),
 			zap.ByteString("execution", executionJSON),
@@ -381,6 +387,11 @@ func validateExecutionPlanForConfig(plan domaincontract.ExecutionPlan, approvals
 
 func applyCoinbasePaymentConfig(plan *domaincontract.ExecutionPlan, cfg ExecutionConfig) {
 	if plan == nil || strings.TrimSpace(cfg.FlashbotsRPCURL) == "" || cfg.FlashbotsPaymentBPS == 0 {
+		return
+	}
+	if plan.ProfitToken != (common.Address{}) && plan.ProfitToken != cfg.WrappedNativeToken && len(plan.SettlementRoutes) == 0 {
+		plan.CoinbasePaymentBPS = 0
+		plan.WrappedNativeToken = common.Address{}
 		return
 	}
 	plan.CoinbasePaymentBPS = uint16(cfg.FlashbotsPaymentBPS)

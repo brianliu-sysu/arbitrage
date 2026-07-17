@@ -320,6 +320,17 @@ func (s *OpportunityService) generateForRoute(
 	s.mu.RUnlock()
 	if strategy.StartToken == (common.Address{}) || strategy.StartToken == wrappedNative {
 		settlementSlippageBPS = 0
+	} else if coinbasePaymentBPS > 0 {
+		settlementAmount := new(big.Int).Sub(optimized.AmountOut, optimized.AmountIn)
+		settlementAmount.Sub(settlementAmount, flashLoan.Fee)
+		canSettle, settleErr := s.canSettleToWrappedNative(ctx, strategy.StartToken, settlementAmount)
+		if settleErr != nil {
+			return nil, fmt.Errorf("quote wrapped-native settlement: %w", settleErr)
+		}
+		if !canSettle {
+			coinbasePaymentBPS = 0
+			settlementSlippageBPS = 0
+		}
 	}
 	evaluation := s.evaluator.Evaluate(domainarb.EvaluationInput{
 		Strategy:              strategy,
@@ -375,6 +386,41 @@ func (s *OpportunityService) generateForRoute(
 		zap.String("quote_steps", formatQuoteSteps(quoteSteps, quoteStepsErr)),
 	)
 	return opp, nil
+}
+
+func (s *OpportunityService) canSettleToWrappedNative(
+	ctx context.Context,
+	token common.Address,
+	amount *big.Int,
+) (bool, error) {
+	if amount == nil || amount.Sign() <= 0 {
+		return false, nil
+	}
+	s.mu.RLock()
+	graph := s.poolGraph
+	wrappedNative := s.wrappedNative
+	s.mu.RUnlock()
+	if graph == nil || wrappedNative == (common.Address{}) {
+		return false, nil
+	}
+	routes, err := quoteunified.NewRouteService(graph, 3).FindRoutes(token, wrappedNative)
+	if err != nil {
+		return false, err
+	}
+	for _, route := range routes {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		pools, loadErr := s.loadRoutePools(ctx, route)
+		if loadErr != nil {
+			continue
+		}
+		quote, quoteErr := s.quotes.QuoteRoute(pools, route, amount)
+		if quoteErr == nil && quote.AmountOut != nil && quote.AmountOut.Sign() > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *OpportunityService) gasCostInToken(ctx context.Context, costWei *big.Int, token common.Address) (*big.Int, error) {

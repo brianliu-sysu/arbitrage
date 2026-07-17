@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"regexp"
 	"strings"
+	"time"
 
 	domaincontract "github.com/brianliu-sysu/uniswapv3/internal/domain/contract"
 	"github.com/ethereum/go-ethereum"
@@ -185,6 +186,28 @@ func (b *ContractExecutorBroadcaster) BroadcastExecution(
 		return domaincontract.BroadcastResponse{}, err
 	}
 	return domaincontract.BroadcastResponse{TxHash: txHash}, nil
+}
+
+func waitForSuccessfulReceipt(ctx context.Context, client *ethclient.Client, txHash common.Hash) error {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		receipt, err := client.TransactionReceipt(ctx, txHash)
+		if err == nil {
+			if receipt.Status != types.ReceiptStatusSuccessful {
+				return fmt.Errorf("transaction reverted with status %d", receipt.Status)
+			}
+			return nil
+		}
+		if !errors.Is(err, ethereum.NotFound) {
+			return fmt.Errorf("transaction receipt: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func (b *ContractExecutorBroadcaster) SimulateExecution(
@@ -384,6 +407,11 @@ func (b *ContractExecutorBroadcaster) BroadcastApprove(
 	txHash, err := b.sendTransaction(ctx, client, req, from, privateKey, chainID, data)
 	if err != nil {
 		return domaincontract.BroadcastResponse{}, err
+	}
+	receiptCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+	defer cancel()
+	if err := waitForSuccessfulReceipt(receiptCtx, client, txHash); err != nil {
+		return domaincontract.BroadcastResponse{}, fmt.Errorf("confirm approve transaction %s: %w", txHash.Hex(), err)
 	}
 	return domaincontract.BroadcastResponse{TxHash: txHash}, nil
 }

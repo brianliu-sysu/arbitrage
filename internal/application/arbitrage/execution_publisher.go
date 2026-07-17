@@ -148,6 +148,12 @@ func (p *ExecutionPublisher) Publish(ctx context.Context, opportunity *domainarb
 		plan.MinProfit = cloneBigIntOrZero(opportunity.NetProfit)
 	}
 	applyCoinbasePaymentConfig(&plan, p.cfg)
+	if strings.TrimSpace(p.cfg.FlashbotsRPCURL) != "" && p.cfg.FlashbotsPaymentBPS > 0 && plan.CoinbasePaymentBPS == 0 && plan.ProfitToken != (common.Address{}) && plan.ProfitToken != p.cfg.WrappedNativeToken {
+		p.logger.Info("arbitrage execution falling back to zero-bribe flashbots bundle",
+			zap.String("opportunity", opportunity.ID),
+			zap.String("profit_token", plan.ProfitToken.Hex()),
+		)
+	}
 	if err := validateExecutionPlanForConfig(plan, approvals, p.cfg); err != nil {
 		return fmt.Errorf("validate execution plan: %w", err)
 	}
@@ -167,7 +173,7 @@ func (p *ExecutionPublisher) Publish(ctx context.Context, opportunity *domainarb
 		return fmt.Errorf("ensure approvals: %w", err)
 	}
 	if approvalResp.Broadcast {
-		p.logger.Info("arbitrage approval broadcast, execution interrupted",
+		p.logger.Info("arbitrage approvals confirmed, execution interrupted",
 			zap.String("opportunity", opportunity.ID),
 			zap.Int("approvals", len(approvalResp.TxHashes)),
 			zap.Strings("tx_hashes", hashesToHex(approvalResp.TxHashes)),

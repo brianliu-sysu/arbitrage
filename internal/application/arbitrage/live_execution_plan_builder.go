@@ -138,9 +138,7 @@ func (b *LiveExecutionPlanBuilder) addWETHSettlement(
 	}
 	graph := b.poolGraph()
 	if graph == nil || b.encoder == nil || b.encoder.loader == nil || plan.MinProfit == nil || plan.MinProfit.Sign() <= 0 {
-		return domaincontract.ExecutionPlan{}, nil, fmt.Errorf(
-			"%w: no WETH settlement planner for profit token %s", ErrExecutionPlanUnavailable, plan.ProfitToken.Hex(),
-		)
+		return plan, domaincontract.MergeTokenApprovals(approvals, domaincontract.RequiredTokenApprovals(plan)), nil
 	}
 
 	routes, err := quoteunified.NewRouteService(graph, 3).FindRoutes(plan.ProfitToken, b.cfg.WETH)
@@ -175,9 +173,7 @@ func (b *LiveExecutionPlanBuilder) addWETHSettlement(
 		}
 	}
 	if bestAmountOut == nil {
-		return domaincontract.ExecutionPlan{}, nil, fmt.Errorf(
-			"%w: no quotable WETH settlement route for profit token %s", ErrExecutionPlanUnavailable, plan.ProfitToken.Hex(),
-		)
+		return plan, domaincontract.MergeTokenApprovals(approvals, domaincontract.RequiredTokenApprovals(plan)), nil
 	}
 	plan.SettlementRoutes = bestRoutes
 	plan.SettlementMinProfit = applyBPSReduction(bestAmountOut, b.cfg.SettlementSlippageBPS)
