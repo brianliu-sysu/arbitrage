@@ -385,14 +385,6 @@ func applyCoinbasePaymentConfig(plan *domaincontract.ExecutionPlan, cfg Executio
 	}
 	plan.CoinbasePaymentBPS = uint16(cfg.FlashbotsPaymentBPS)
 	plan.WrappedNativeToken = cfg.WrappedNativeToken
-	minimumProfit := plan.MinProfit
-	if len(plan.SettlementRoutes) > 0 {
-		minimumProfit = plan.SettlementMinProfit
-	}
-	if minimumProfit != nil {
-		minimumProfit.Mul(minimumProfit, new(big.Int).SetUint64(10_000-cfg.FlashbotsPaymentBPS))
-		minimumProfit.Div(minimumProfit, big.NewInt(10_000))
-	}
 }
 
 func validateRouteFillSlot(index int, route domaincontract.SwapRoute) error {

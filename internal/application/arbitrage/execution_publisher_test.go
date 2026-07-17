@@ -51,6 +51,9 @@ func TestExecutionPublisherPassesCoinbasePaymentPlan(t *testing.T) {
 	if executor.executeReq.Plan.CoinbasePaymentBPS != 8000 {
 		t.Fatalf("expected coinbase payment bps 8000, got %d", executor.executeReq.Plan.CoinbasePaymentBPS)
 	}
+	if executor.executeReq.Plan.MinProfit.Cmp(big.NewInt(1)) != 0 {
+		t.Fatalf("expected pre-evaluated min profit to remain 1, got %s", executor.executeReq.Plan.MinProfit)
+	}
 	if executor.executeReq.SubmitRPCURL != "https://relay.flashbots.net" {
 		t.Fatalf("unexpected submit rpc %q", executor.executeReq.SubmitRPCURL)
 	}

@@ -33,20 +33,21 @@ type ExecutionHeadReader interface {
 }
 
 type ExecutionConfig struct {
-	Enabled             bool
-	RPCURL              string
-	PrivateKey          string
-	Executor            common.Address
-	FlashbotsRPCURL     string
-	FlashbotsPaymentBPS uint64
-	WrappedNativeToken  common.Address
-	GasLimit            uint64
-	GasPriceWei         *big.Int
-	SkipEstimate        bool
-	BroadcastToken      string
-	MaxOpportunityAge   uint64
-	AllowedRouters      []common.Address
-	AllowedSpenders     []common.Address
+	Enabled               bool
+	RPCURL                string
+	PrivateKey            string
+	Executor              common.Address
+	FlashbotsRPCURL       string
+	FlashbotsPaymentBPS   uint64
+	SettlementSlippageBPS uint64
+	WrappedNativeToken    common.Address
+	GasLimit              uint64
+	GasPriceWei           *big.Int
+	SkipEstimate          bool
+	BroadcastToken        string
+	MaxOpportunityAge     uint64
+	AllowedRouters        []common.Address
+	AllowedSpenders       []common.Address
 }
 
 type ExecutionPublisher struct {

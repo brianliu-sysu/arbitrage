@@ -89,6 +89,45 @@ func TestEvaluatorSubtractsFlashLoanFee(t *testing.T) {
 	}
 }
 
+func TestEvaluatorSubtractsCoinbasePaymentAfterFlashLoanFee(t *testing.T) {
+	strategy := NewCycleStrategy("cycle-usdc", testToken(1), 3, big.NewInt(1))
+	result := NewEvaluator().Evaluate(EvaluationInput{
+		Strategy:           strategy,
+		AmountIn:           big.NewInt(1_000),
+		AmountOut:          big.NewInt(1_200),
+		GasCost:            big.NewInt(30),
+		CoinbasePaymentBPS: 8_000,
+		FlashLoan:          FlashLoanQuote{Fee: big.NewInt(50)},
+	})
+
+	if result.CoinbasePayment.Cmp(big.NewInt(120)) != 0 {
+		t.Fatalf("expected coinbase payment 120, got %s", result.CoinbasePayment)
+	}
+	if result.NetProfit.Cmp(big.NewInt(0)) != 0 {
+		t.Fatalf("expected zero net profit, got %s", result.NetProfit)
+	}
+	if result.Profitable || result.Accepted {
+		t.Fatal("expected opportunity rejected after coinbase payment and gas")
+	}
+}
+
+func TestEvaluatorAppliesSettlementSlippageBeforeCoinbasePayment(t *testing.T) {
+	result := NewEvaluator().Evaluate(EvaluationInput{
+		Strategy:              NewCycleStrategy("cycle-usdc", testToken(1), 3, big.NewInt(1)),
+		AmountIn:              big.NewInt(1_000),
+		AmountOut:             big.NewInt(1_200),
+		SettlementSlippageBPS: 500,
+		CoinbasePaymentBPS:    8_000,
+	})
+
+	if result.CoinbasePayment.Cmp(big.NewInt(152)) != 0 {
+		t.Fatalf("expected coinbase payment 152, got %s", result.CoinbasePayment)
+	}
+	if result.NetProfit.Cmp(big.NewInt(38)) != 0 {
+		t.Fatalf("expected conservative net profit 38, got %s", result.NetProfit)
+	}
+}
+
 func TestSelectBestFlashLoanChoosesLowestFee(t *testing.T) {
 	quote, err := SelectBestFlashLoan(big.NewInt(1_000_001), []FlashLoanOption{
 		{Protocol: FlashLoanProtocolUniv3, FeePPM: big.NewInt(500)},

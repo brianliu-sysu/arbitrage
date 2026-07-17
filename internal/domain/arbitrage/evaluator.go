@@ -14,21 +14,24 @@ type EvaluationInput struct {
 	AmountIn    *big.Int
 	AmountOut   *big.Int
 	// GasCost is denominated in Route.TokenIn, not wei unless the route starts with native ETH or wrapped native ETH.
-	GasCost    *big.Int
-	FlashLoan  FlashLoanQuote
-	QuoteSteps []OpportunityQuoteStep
+	GasCost               *big.Int
+	CoinbasePaymentBPS    uint16
+	SettlementSlippageBPS uint16
+	FlashLoan             FlashLoanQuote
+	QuoteSteps            []OpportunityQuoteStep
 }
 
 // EvaluationResult is the profit outcome of a route evaluation.
 type EvaluationResult struct {
-	AmountIn    *big.Int
-	AmountOut   *big.Int
-	GrossProfit *big.Int
-	NetProfit   *big.Int
-	FlashLoan   FlashLoanQuote
-	QuoteSteps  []OpportunityQuoteStep
-	Profitable  bool
-	Accepted    bool
+	AmountIn        *big.Int
+	AmountOut       *big.Int
+	GrossProfit     *big.Int
+	NetProfit       *big.Int
+	CoinbasePayment *big.Int
+	FlashLoan       FlashLoanQuote
+	QuoteSteps      []OpportunityQuoteStep
+	Profitable      bool
+	Accepted        bool
 }
 
 // Evaluator computes gross and net profit and applies strategy filters.
@@ -46,20 +49,36 @@ func (e *Evaluator) Evaluate(input EvaluationInput) EvaluationResult {
 	flashLoanFee := cloneBigInt(input.FlashLoan.Fee)
 
 	grossProfit := new(big.Int).Sub(amountOut, amountIn)
-	netProfit := new(big.Int).Sub(grossProfit, gasCost)
-	netProfit.Sub(netProfit, flashLoanFee)
+	profitAfterFlashLoan := new(big.Int).Sub(grossProfit, flashLoanFee)
+	profitAfterSlippage := cloneBigInt(profitAfterFlashLoan)
+	settlementSlippageBPS := input.SettlementSlippageBPS
+	if settlementSlippageBPS > 10_000 {
+		settlementSlippageBPS = 10_000
+	}
+	if profitAfterSlippage.Sign() > 0 && settlementSlippageBPS > 0 {
+		profitAfterSlippage.Mul(profitAfterSlippage, new(big.Int).SetUint64(uint64(10_000-settlementSlippageBPS)))
+		profitAfterSlippage.Div(profitAfterSlippage, big.NewInt(10_000))
+	}
+	coinbasePayment := new(big.Int)
+	if profitAfterSlippage.Sign() > 0 && input.CoinbasePaymentBPS > 0 {
+		coinbasePayment.Mul(profitAfterSlippage, new(big.Int).SetUint64(uint64(input.CoinbasePaymentBPS)))
+		coinbasePayment.Div(coinbasePayment, big.NewInt(10_000))
+	}
+	netProfit := new(big.Int).Sub(profitAfterSlippage, coinbasePayment)
+	netProfit.Sub(netProfit, gasCost)
 
 	profitable := grossProfit.Sign() > 0 && netProfit.Sign() > 0
 	accepted := profitable && input.Strategy.MeetsMinimumProfit(netProfit)
 
 	return EvaluationResult{
-		AmountIn:    amountIn,
-		AmountOut:   amountOut,
-		GrossProfit: grossProfit,
-		NetProfit:   netProfit,
-		FlashLoan:   input.FlashLoan,
-		QuoteSteps:  cloneQuoteSteps(input.QuoteSteps),
-		Profitable:  profitable,
-		Accepted:    accepted,
+		AmountIn:        amountIn,
+		AmountOut:       amountOut,
+		GrossProfit:     grossProfit,
+		NetProfit:       netProfit,
+		CoinbasePayment: coinbasePayment,
+		FlashLoan:       input.FlashLoan,
+		QuoteSteps:      cloneQuoteSteps(input.QuoteSteps),
+		Profitable:      profitable,
+		Accepted:        accepted,
 	}
 }

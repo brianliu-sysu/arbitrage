@@ -80,24 +80,25 @@ type FlashLoanConfig struct {
 }
 
 type ExecutionConfig struct {
-	Enabled             bool     `yaml:"enabled"`
-	RPCURL              string   `yaml:"rpc_url"`
-	ExecutorAddress     string   `yaml:"executor_address"`
-	PrivateKey          string   `yaml:"private_key"`
-	BroadcastToken      string   `yaml:"broadcast_token"`
-	FlashbotsRPCURL     string   `yaml:"flashbots_rpc_url"`
-	FlashbotsPaymentBPS uint64   `yaml:"flashbots_payment_bps"`
-	GasLimit            uint64   `yaml:"gas_limit"`
-	GasPriceWei         string   `yaml:"gas_price_wei"`
-	SkipEstimate        bool     `yaml:"skip_estimate"`
-	MaxOpportunityAge   uint64   `yaml:"max_opportunity_age_blocks"`
-	WETHAddress         string   `yaml:"weth_address"`
-	SwapRouterV3        string   `yaml:"swap_router_v3"`
-	SwapRouterPancakeV3 string   `yaml:"swap_router_pancake_v3"`
-	UniversalRouter     string   `yaml:"universal_router"`
-	BalancerRouterV3    string   `yaml:"balancer_router_v3"`
-	AllowedRouters      []string `yaml:"allowed_routers"`
-	AllowedSpenders     []string `yaml:"allowed_approval_spenders"`
+	Enabled               bool     `yaml:"enabled"`
+	RPCURL                string   `yaml:"rpc_url"`
+	ExecutorAddress       string   `yaml:"executor_address"`
+	PrivateKey            string   `yaml:"private_key"`
+	BroadcastToken        string   `yaml:"broadcast_token"`
+	FlashbotsRPCURL       string   `yaml:"flashbots_rpc_url"`
+	FlashbotsPaymentBPS   uint64   `yaml:"flashbots_payment_bps"`
+	SettlementSlippageBPS uint64   `yaml:"settlement_slippage_bps"`
+	GasLimit              uint64   `yaml:"gas_limit"`
+	GasPriceWei           string   `yaml:"gas_price_wei"`
+	SkipEstimate          bool     `yaml:"skip_estimate"`
+	MaxOpportunityAge     uint64   `yaml:"max_opportunity_age_blocks"`
+	WETHAddress           string   `yaml:"weth_address"`
+	SwapRouterV3          string   `yaml:"swap_router_v3"`
+	SwapRouterPancakeV3   string   `yaml:"swap_router_pancake_v3"`
+	UniversalRouter       string   `yaml:"universal_router"`
+	BalancerRouterV3      string   `yaml:"balancer_router_v3"`
+	AllowedRouters        []string `yaml:"allowed_routers"`
+	AllowedSpenders       []string `yaml:"allowed_approval_spenders"`
 }
 
 type SpreadArbitrageConfig struct {
@@ -603,6 +604,9 @@ func validateChainConfig(c ChainConfig) error {
 		if c.Arbitrage.Execution.FlashbotsPaymentBPS > 10_000 {
 			return fmt.Errorf("%sarbitrage.execution.flashbots_payment_bps must be <= 10000", prefix)
 		}
+		if c.Arbitrage.Execution.SettlementSlippageBPS > 10_000 {
+			return fmt.Errorf("%sarbitrage.execution.settlement_slippage_bps must be <= 10000", prefix)
+		}
 		for i, address := range c.Arbitrage.Execution.AllowedRouters {
 			if !isStrictHexAddress(address) {
 				return fmt.Errorf("%sarbitrage.execution.allowed_routers[%d] must be a 20-byte hex address", prefix, i)
@@ -808,6 +812,9 @@ func mergeExecutionConfig(base, override ExecutionConfig) ExecutionConfig {
 	}
 	if override.FlashbotsPaymentBPS == 0 {
 		override.FlashbotsPaymentBPS = base.FlashbotsPaymentBPS
+	}
+	if override.SettlementSlippageBPS == 0 {
+		override.SettlementSlippageBPS = base.SettlementSlippageBPS
 	}
 	if override.GasLimit == 0 {
 		override.GasLimit = base.GasLimit

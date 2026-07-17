@@ -34,24 +34,44 @@ type ReadinessChecker interface {
 
 // OpportunityService generates opportunities from affected routes.
 type OpportunityService struct {
-	univ3Pools     marketuniv3.PoolRepository
-	pancakePools   marketpancake.PoolRepository
-	quickSwapPools marketquick.PoolRepository
-	univ4Pools     marketuniv4.PoolRepository
-	balancerPools  marketbalancer.PoolRepository
-	quotes         *quoteunified.QuoteService
-	evaluator      *domainarb.Evaluator
-	optimizer      *domainarb.Optimizer
-	gas            domainarb.GasEstimator
-	flashLoans     []domainarb.FlashLoanOption
-	mu             sync.RWMutex
-	strategies     []domainarb.Strategy
-	readiness      ReadinessChecker
-	logger         *zap.Logger
-	now            func() time.Time
-	marketVersion  MarketVersionReader
-	poolGraph      quoteunified.PoolGraph
-	wrappedNative  common.Address
+	univ3Pools            marketuniv3.PoolRepository
+	pancakePools          marketpancake.PoolRepository
+	quickSwapPools        marketquick.PoolRepository
+	univ4Pools            marketuniv4.PoolRepository
+	balancerPools         marketbalancer.PoolRepository
+	quotes                *quoteunified.QuoteService
+	evaluator             *domainarb.Evaluator
+	optimizer             *domainarb.Optimizer
+	gas                   domainarb.GasEstimator
+	flashLoans            []domainarb.FlashLoanOption
+	mu                    sync.RWMutex
+	strategies            []domainarb.Strategy
+	readiness             ReadinessChecker
+	logger                *zap.Logger
+	now                   func() time.Time
+	marketVersion         MarketVersionReader
+	poolGraph             quoteunified.PoolGraph
+	wrappedNative         common.Address
+	coinbasePaymentBPS    uint16
+	settlementSlippageBPS uint16
+}
+
+func (s *OpportunityService) SetCoinbasePaymentBPS(paymentBPS uint16) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.coinbasePaymentBPS = paymentBPS
+	s.mu.Unlock()
+}
+
+func (s *OpportunityService) SetSettlementSlippageBPS(slippageBPS uint16) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.settlementSlippageBPS = slippageBPS
+	s.mu.Unlock()
 }
 
 // SetGasCostConversion configures the routing graph used to value native gas in each strategy's profit token.
@@ -293,15 +313,25 @@ func (s *OpportunityService) generateForRoute(
 		return nil, fmt.Errorf("convert gas cost to profit token %s: %w", strategy.StartToken.Hex(), err)
 	}
 
+	s.mu.RLock()
+	coinbasePaymentBPS := s.coinbasePaymentBPS
+	settlementSlippageBPS := s.settlementSlippageBPS
+	wrappedNative := s.wrappedNative
+	s.mu.RUnlock()
+	if strategy.StartToken == (common.Address{}) || strategy.StartToken == wrappedNative {
+		settlementSlippageBPS = 0
+	}
 	evaluation := s.evaluator.Evaluate(domainarb.EvaluationInput{
-		Strategy:    strategy,
-		BlockNumber: blockNumber,
-		Route:       routeRef.Route,
-		AmountIn:    optimized.AmountIn,
-		AmountOut:   optimized.AmountOut,
-		GasCost:     gasCost,
-		FlashLoan:   flashLoan,
-		QuoteSteps:  opportunityQuoteSteps(quoteSteps),
+		Strategy:              strategy,
+		BlockNumber:           blockNumber,
+		Route:                 routeRef.Route,
+		AmountIn:              optimized.AmountIn,
+		AmountOut:             optimized.AmountOut,
+		GasCost:               gasCost,
+		CoinbasePaymentBPS:    coinbasePaymentBPS,
+		SettlementSlippageBPS: settlementSlippageBPS,
+		FlashLoan:             flashLoan,
+		QuoteSteps:            opportunityQuoteSteps(quoteSteps),
 	})
 	if !evaluation.Accepted {
 		s.logger.Debug("arbitrage route rejected",
@@ -317,6 +347,7 @@ func (s *OpportunityService) generateForRoute(
 			zap.String("flash_loan_protocol", string(flashLoan.Protocol)),
 			zap.String("flash_loan_pool", flashLoan.PoolRef.Key()),
 			zap.String("flash_loan_fee", flashLoan.Fee.String()),
+			zap.String("coinbase_payment", evaluation.CoinbasePayment.String()),
 			zap.String("net_profit", evaluation.NetProfit.String()),
 			zap.Bool("profitable", evaluation.Profitable),
 			zap.String("min_net_profit", bigIntString(strategy.MinNetProfitWei)),
@@ -337,6 +368,7 @@ func (s *OpportunityService) generateForRoute(
 		zap.String("flash_loan_protocol", string(flashLoan.Protocol)),
 		zap.String("flash_loan_pool", flashLoan.PoolRef.Key()),
 		zap.String("flash_loan_fee", flashLoan.Fee.String()),
+		zap.String("coinbase_payment", evaluation.CoinbasePayment.String()),
 		zap.String("amount_in", evaluation.AmountIn.String()),
 		zap.String("amount_out", evaluation.AmountOut.String()),
 		zap.String("net_profit", evaluation.NetProfit.String()),

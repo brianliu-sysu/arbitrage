@@ -594,20 +594,21 @@ func enabledSyncProtocols(cfg config.Config) []arbitrageapp.SyncProtocol {
 func executionConfigFromRuntime(cfg config.Config) arbitrageapp.ExecutionConfig {
 	execution := cfg.Arbitrage.Execution
 	return arbitrageapp.ExecutionConfig{
-		Enabled:             execution.Enabled,
-		RPCURL:              execution.ResolveRPCURL(cfg.RPC.URL),
-		PrivateKey:          execution.PrivateKey,
-		Executor:            execution.Executor(),
-		FlashbotsRPCURL:     execution.FlashbotsRPCURL,
-		FlashbotsPaymentBPS: execution.FlashbotsPaymentBPS,
-		WrappedNativeToken:  execution.WETH(),
-		GasLimit:            execution.GasLimit,
-		GasPriceWei:         execution.GasPrice(),
-		SkipEstimate:        execution.SkipEstimate,
-		BroadcastToken:      execution.BroadcastToken,
-		MaxOpportunityAge:   maxOpportunityAge(execution.MaxOpportunityAge),
-		AllowedRouters:      execution.AllowedRouterAddresses(),
-		AllowedSpenders:     execution.AllowedSpenderAddresses(),
+		Enabled:               execution.Enabled,
+		RPCURL:                execution.ResolveRPCURL(cfg.RPC.URL),
+		PrivateKey:            execution.PrivateKey,
+		Executor:              execution.Executor(),
+		FlashbotsRPCURL:       execution.FlashbotsRPCURL,
+		FlashbotsPaymentBPS:   execution.FlashbotsPaymentBPS,
+		SettlementSlippageBPS: execution.SettlementSlippageBPS,
+		WrappedNativeToken:    execution.WETH(),
+		GasLimit:              execution.GasLimit,
+		GasPriceWei:           execution.GasPrice(),
+		SkipEstimate:          execution.SkipEstimate,
+		BroadcastToken:        execution.BroadcastToken,
+		MaxOpportunityAge:     maxOpportunityAge(execution.MaxOpportunityAge),
+		AllowedRouters:        execution.AllowedRouterAddresses(),
+		AllowedSpenders:       execution.AllowedSpenderAddresses(),
 	}
 }
 
@@ -615,16 +616,18 @@ func livePlanConfigFromRuntime(cfg config.Config) arbitrageapp.LivePlanConfig {
 	blockchainCfg := cfg.BlockchainConfig()
 	execution := cfg.Arbitrage.Execution
 	return arbitrageapp.LivePlanConfig{
-		RequireWETHProfit:   strings.TrimSpace(execution.FlashbotsRPCURL) != "" && execution.FlashbotsPaymentBPS > 0,
-		WETH:                execution.WETH(),
-		BalancerVault:       blockchainCfg.BalancerVaultAddress,
-		BalancerVaultV3:     blockchainCfg.BalancerVaultV3Address,
-		BalancerRouterV3:    execution.BalancerRouterV3Address(),
-		PoolManager:         blockchainCfg.PoolManagerAddress,
-		SwapRouterV3:        execution.SwapRouterV3Address(),
-		SwapRouterPancakeV3: execution.SwapRouterPancakeV3Address(),
-		UniversalRouter:     execution.UniversalRouterAddress(),
-		Executor:            execution.Executor(),
+		RequireWETHProfit:     strings.TrimSpace(execution.FlashbotsRPCURL) != "" && execution.FlashbotsPaymentBPS > 0,
+		CoinbasePaymentBPS:    execution.FlashbotsPaymentBPS,
+		SettlementSlippageBPS: execution.SettlementSlippageBPS,
+		WETH:                  execution.WETH(),
+		BalancerVault:         blockchainCfg.BalancerVaultAddress,
+		BalancerVaultV3:       blockchainCfg.BalancerVaultV3Address,
+		BalancerRouterV3:      execution.BalancerRouterV3Address(),
+		PoolManager:           blockchainCfg.PoolManagerAddress,
+		SwapRouterV3:          execution.SwapRouterV3Address(),
+		SwapRouterPancakeV3:   execution.SwapRouterPancakeV3Address(),
+		UniversalRouter:       execution.UniversalRouterAddress(),
+		Executor:              execution.Executor(),
 	}
 }
 
@@ -1046,7 +1049,7 @@ func newOpportunityExecutor(
 		store.V4Pools,
 		store.BalancerPools,
 	))
-	graph, _ := arbitrageapp.BuildUnifiedPoolGraph(
+	graph, err := arbitrageapp.BuildUnifiedPoolGraph(
 		context.Background(),
 		runtime.poolRegistry,
 		store.Pools,
@@ -1059,6 +1062,9 @@ func newOpportunityExecutor(
 		runtime.balancerPoolRegistry,
 		store.BalancerPools,
 	)
+	if err != nil {
+		logger.Error("build opportunity executor pool graph failed", zap.Error(err))
+	}
 	builder := arbitrageapp.NewLiveExecutionPlanBuilder(livePlan, encoder, graph)
 	return arbitrageapp.NewOpportunityExecutor(
 		store.Opportunities,
@@ -1279,13 +1285,13 @@ func reconcileSubgraphPools[PoolID comparable](r *syncLifecycle, name string, in
 		if _, ok := activeSet[id]; ok {
 			continue
 		}
-		r.logger.Info("subgraph pool discovered", zap.String("protocol", name), zap.Any("pool", id))
+		r.logger.Debug("subgraph pool discovered", zap.String("protocol", name), zap.Any("pool", id))
 		if err := onboarder.AddPool(r.runCtx, id); err != nil {
 			r.logger.Warn("subgraph pool onboarding failed", zap.String("protocol", name), zap.Any("pool", id), zap.Error(err))
 			continue
 		}
 		added++
-		r.logger.Info("subgraph pool activated", zap.String("protocol", name), zap.Any("pool", id))
+		r.logger.Debug("subgraph pool activated", zap.String("protocol", name), zap.Any("pool", id))
 	}
 	if added > 0 && r.bundle != nil && r.bundle.Arbitrage != nil {
 		if routes, err := r.bundle.Arbitrage.RefreshArbitrageRoutes(r.runCtx); err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"strings"
 	"sync"
 
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
@@ -96,6 +97,7 @@ type Services struct {
 	readiness             ReadinessChecker
 	logger                *zap.Logger
 	gasWrappedNative      common.Address
+	settlementGraph       interface{ SetPoolGraph(quoteunified.PoolGraph) }
 }
 
 func NewServices(deps ServiceDeps) *Services {
@@ -144,6 +146,11 @@ func NewServices(deps ServiceDeps) *Services {
 		spreadMinNetProfitWei = minNetProfitWei
 	}
 
+	logger := deps.Logger
+	if logger == nil {
+		logger = zap.NewNop()
+	}
+
 	strategies := buildArbitrageStrategies(deps, configuredStartTokens, spreadStartTokens, minNetProfitWei, spreadMinNetProfitWei)
 
 	scan := NewScanService(domainarb.NewDependencyGraph())
@@ -152,17 +159,15 @@ func NewServices(deps ServiceDeps) *Services {
 	if graph, err := loadPoolGraph(context.Background(), deps); err == nil {
 		poolGraph = graph
 		registerMonitoredRoutes(scan, strategies, graph)
-	}
-
-	logger := deps.Logger
-	if logger == nil {
-		logger = zap.NewNop()
+	} else {
+		logger.Error("build initial arbitrage pool graph failed", zap.Error(err))
 	}
 
 	publishers := []OpportunityPublisher{NewLogPublisher(logger)}
 	if deps.Repository != nil {
 		publishers = append(publishers, NewRepositoryPublisher(deps.Repository))
 	}
+	var settlementGraph interface{ SetPoolGraph(quoteunified.PoolGraph) }
 	if deps.Execution.Enabled {
 		builder := deps.ExecutionBuilder
 		if builder == nil {
@@ -174,6 +179,9 @@ func NewServices(deps ServiceDeps) *Services {
 				deps.BalancerPools,
 			))
 			builder = NewLiveExecutionPlanBuilder(deps.LivePlan, encoder, poolGraph)
+		}
+		if updater, ok := builder.(interface{ SetPoolGraph(quoteunified.PoolGraph) }); ok {
+			settlementGraph = updater
 		}
 		publishers = append(publishers, NewExecutionPublisher(deps.Execution, builder, deps.Executor, deps.Repository, deps.ExecutionHead, logger))
 	}
@@ -196,6 +204,10 @@ func NewServices(deps ServiceDeps) *Services {
 		deps.MarketVersion,
 	)
 	opportunities.SetGasCostConversion(poolGraph, deps.LivePlan.WETH)
+	if strings.TrimSpace(deps.Execution.FlashbotsRPCURL) != "" && deps.Execution.FlashbotsPaymentBPS > 0 {
+		opportunities.SetCoinbasePaymentBPS(uint16(deps.Execution.FlashbotsPaymentBPS))
+		opportunities.SetSettlementSlippageBPS(uint16(deps.Execution.SettlementSlippageBPS))
+	}
 
 	services := &Services{
 		Scan:          scan,
@@ -223,6 +235,7 @@ func NewServices(deps ServiceDeps) *Services {
 		readiness:             deps.Readiness,
 		logger:                logger,
 		gasWrappedNative:      deps.LivePlan.WETH,
+		settlementGraph:       settlementGraph,
 	}
 	services.Coordinator = NewBlockCoordinator(
 		deps.EnabledProtocols,
@@ -271,6 +284,9 @@ func (s *Services) RefreshArbitrageRoutes(ctx context.Context) (int, error) {
 	}
 	if s.Opportunities != nil {
 		s.Opportunities.SetGasCostConversion(graph, s.gasWrappedNative)
+	}
+	if s.settlementGraph != nil {
+		s.settlementGraph.SetPoolGraph(graph)
 	}
 
 	triangleTokens := ResolveTriangleStartTokens(s.configuredStartTokens, graph.Edges(), autoStartTokenCount)

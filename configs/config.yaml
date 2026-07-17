@@ -179,6 +179,7 @@ chains:
         flashbots_rpc_url: "https://relay.flashbots.net"
         # 8000 bps = 80% of net profit, converted to gas price by gas_limit.
         flashbots_payment_bps: 8000
+        settlement_slippage_bps: 50
         gas_limit: 500000
         gas_price_wei: ""
         skip_estimate: false
@@ -334,6 +335,7 @@ chains:
         broadcast_token: ""
         flashbots_rpc_url: ""
         flashbots_payment_bps: 8000
+        settlement_slippage_bps: 50
         gas_limit: 500000
         gas_price_wei: ""
         skip_estimate: false

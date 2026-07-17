@@ -170,6 +170,31 @@ func TestLiveExecutionPlanBuilderEncodesBalancer(t *testing.T) {
 	}
 }
 
+func TestApplyBPSReduction(t *testing.T) {
+	if got := applyBPSReduction(big.NewInt(1_000), 50); got.Cmp(big.NewInt(995)) != 0 {
+		t.Fatalf("expected 995 after 0.5%% slippage, got %s", got)
+	}
+	if got := applyBPSReduction(big.NewInt(995), 8_000); got.Cmp(big.NewInt(199)) != 0 {
+		t.Fatalf("expected 199 after coinbase payment, got %s", got)
+	}
+}
+
+func TestLiveExecutionPlanBuilderReplacesSettlementGraph(t *testing.T) {
+	initial := quoteunified.NewStaticPoolGraph(nil)
+	replacement := quoteunified.NewStaticPoolGraph([]quoteunified.PoolEdge{{
+		Version: quoteunified.PoolVersionV3,
+		PoolV3:  common.HexToAddress("0x1"),
+		Token0:  common.HexToAddress("0x2"),
+		Token1:  common.HexToAddress("0x3"),
+	}})
+	builder := NewLiveExecutionPlanBuilder(LivePlanConfig{}, nil, initial)
+	builder.SetPoolGraph(replacement)
+
+	if builder.poolGraph() != replacement {
+		t.Fatal("expected settlement graph snapshot to be replaced")
+	}
+}
+
 func TestLiveExecutionPlanBuilderEncodesBalancerV3ViaRouter(t *testing.T) {
 	weth := asset.MainnetWETH
 	usdc := common.HexToAddress("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")

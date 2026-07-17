@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"sync"
 
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/asset"
@@ -15,16 +16,18 @@ import (
 
 // LivePlanConfig supplies chain addresses needed to rebuild an execution plan from an opportunity.
 type LivePlanConfig struct {
-	WETH                common.Address
-	BalancerVault       common.Address
-	BalancerVaultV3     common.Address
-	BalancerRouterV3    common.Address
-	PoolManager         common.Address
-	SwapRouterV3        common.Address
-	SwapRouterPancakeV3 common.Address
-	UniversalRouter     common.Address
-	Executor            common.Address
-	RequireWETHProfit   bool
+	WETH                  common.Address
+	BalancerVault         common.Address
+	BalancerVaultV3       common.Address
+	BalancerRouterV3      common.Address
+	PoolManager           common.Address
+	SwapRouterV3          common.Address
+	SwapRouterPancakeV3   common.Address
+	UniversalRouter       common.Address
+	Executor              common.Address
+	RequireWETHProfit     bool
+	CoinbasePaymentBPS    uint64
+	SettlementSlippageBPS uint64
 }
 
 // LiveExecutionPlanBuilder rebuilds an execution plan from the opportunity.
@@ -36,6 +39,26 @@ type LiveExecutionPlanBuilder struct {
 	cfg     LivePlanConfig
 	graph   quoteunified.PoolGraph
 	quotes  *quoteunified.QuoteService
+	graphMu sync.RWMutex
+}
+
+// SetPoolGraph atomically replaces the graph used for WETH settlement route discovery.
+func (b *LiveExecutionPlanBuilder) SetPoolGraph(graph quoteunified.PoolGraph) {
+	if b == nil {
+		return
+	}
+	b.graphMu.Lock()
+	b.graph = graph
+	b.graphMu.Unlock()
+}
+
+func (b *LiveExecutionPlanBuilder) poolGraph() quoteunified.PoolGraph {
+	if b == nil {
+		return nil
+	}
+	b.graphMu.RLock()
+	defer b.graphMu.RUnlock()
+	return b.graph
 }
 
 func NewLiveExecutionPlanBuilder(
@@ -76,7 +99,7 @@ func (b *LiveExecutionPlanBuilder) BuildExecutionPlan(
 			if err != nil {
 				return domaincontract.ExecutionPlan{}, nil, err
 			}
-			return b.addWETHSettlement(ctx, refreshed, approvals)
+			return b.addWETHSettlement(ctx, opportunity, refreshed, approvals)
 		}
 		if !isExecutionUnavailable(err) {
 			return domaincontract.ExecutionPlan{}, nil, err
@@ -98,11 +121,12 @@ func (b *LiveExecutionPlanBuilder) BuildExecutionPlan(
 	if err != nil {
 		return domaincontract.ExecutionPlan{}, nil, err
 	}
-	return b.addWETHSettlement(ctx, plan, approvals)
+	return b.addWETHSettlement(ctx, opportunity, plan, approvals)
 }
 
 func (b *LiveExecutionPlanBuilder) addWETHSettlement(
 	ctx context.Context,
+	opportunity *domainarb.Opportunity,
 	plan domaincontract.ExecutionPlan,
 	approvals []domaincontract.TokenApproval,
 ) (domaincontract.ExecutionPlan, []domaincontract.TokenApproval, error) {
@@ -112,13 +136,14 @@ func (b *LiveExecutionPlanBuilder) addWETHSettlement(
 	if !b.cfg.RequireWETHProfit {
 		return plan, domaincontract.MergeTokenApprovals(approvals, domaincontract.RequiredTokenApprovals(plan)), nil
 	}
-	if b.graph == nil || b.encoder == nil || b.encoder.loader == nil || plan.MinProfit == nil || plan.MinProfit.Sign() <= 0 {
+	graph := b.poolGraph()
+	if graph == nil || b.encoder == nil || b.encoder.loader == nil || plan.MinProfit == nil || plan.MinProfit.Sign() <= 0 {
 		return domaincontract.ExecutionPlan{}, nil, fmt.Errorf(
 			"%w: no WETH settlement planner for profit token %s", ErrExecutionPlanUnavailable, plan.ProfitToken.Hex(),
 		)
 	}
 
-	routes, err := quoteunified.NewRouteService(b.graph, 3).FindRoutes(plan.ProfitToken, b.cfg.WETH)
+	routes, err := quoteunified.NewRouteService(graph, 3).FindRoutes(plan.ProfitToken, b.cfg.WETH)
 	if err != nil {
 		return domaincontract.ExecutionPlan{}, nil, fmt.Errorf("find WETH settlement routes: %w", err)
 	}
@@ -130,7 +155,11 @@ func (b *LiveExecutionPlanBuilder) addWETHSettlement(
 		if err != nil {
 			continue
 		}
-		quote, err := b.quotes.QuoteRoute(pools, route, plan.MinProfit)
+		settlementInput := expectedProfitAfterFlashLoan(opportunity)
+		if settlementInput.Sign() <= 0 {
+			settlementInput = plan.MinProfit
+		}
+		quote, err := b.quotes.QuoteRoute(pools, route, settlementInput)
 		if err != nil || quote.AmountOut == nil || quote.AmountOut.Sign() <= 0 {
 			continue
 		}
@@ -151,10 +180,31 @@ func (b *LiveExecutionPlanBuilder) addWETHSettlement(
 		)
 	}
 	plan.SettlementRoutes = bestRoutes
-	plan.SettlementMinProfit = bestAmountOut
+	plan.SettlementMinProfit = applyBPSReduction(bestAmountOut, b.cfg.SettlementSlippageBPS)
+	plan.SettlementMinProfit = applyBPSReduction(plan.SettlementMinProfit, b.cfg.CoinbasePaymentBPS)
 	approvals = domaincontract.MergeTokenApprovals(approvals, bestApprovals)
 	approvals = domaincontract.MergeTokenApprovals(approvals, domaincontract.RequiredTokenApprovals(plan))
 	return plan, approvals, nil
+}
+
+func expectedProfitAfterFlashLoan(opportunity *domainarb.Opportunity) *big.Int {
+	if opportunity == nil {
+		return new(big.Int)
+	}
+	profit := new(big.Int).Sub(cloneBigIntOrZero(opportunity.AmountOut), cloneBigIntOrZero(opportunity.AmountIn))
+	profit.Sub(profit, cloneBigIntOrZero(opportunity.FlashLoan.Fee))
+	return profit
+}
+
+func applyBPSReduction(amount *big.Int, bps uint64) *big.Int {
+	if amount == nil || amount.Sign() <= 0 {
+		return new(big.Int)
+	}
+	if bps > 10_000 {
+		bps = 10_000
+	}
+	result := new(big.Int).Mul(amount, new(big.Int).SetUint64(10_000-bps))
+	return result.Div(result, big.NewInt(10_000))
 }
 
 func (b *LiveExecutionPlanBuilder) buildFlashLoanFromOpportunity(
