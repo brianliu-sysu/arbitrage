@@ -615,6 +615,7 @@ func livePlanConfigFromRuntime(cfg config.Config) arbitrageapp.LivePlanConfig {
 	blockchainCfg := cfg.BlockchainConfig()
 	execution := cfg.Arbitrage.Execution
 	return arbitrageapp.LivePlanConfig{
+		RequireWETHProfit:   strings.TrimSpace(execution.FlashbotsRPCURL) != "" && execution.FlashbotsPaymentBPS > 0,
 		WETH:                execution.WETH(),
 		BalancerVault:       blockchainCfg.BalancerVaultAddress,
 		BalancerVaultV3:     blockchainCfg.BalancerVaultV3Address,
@@ -1006,7 +1007,7 @@ func newHTTPChainServices(runtimes *runtimeSet, contractExecutor *contractapp.Ap
 		services.quoteQuickSwapV3[key] = newQuoteQuickSwapV3AppService(runtime.cfg, runtime.store, runtime.quickSwapPoolRegistry, runtime.bundle)
 		services.quoteV4[key] = newQuoteV4AppService(runtime.cfg, runtime.store, runtime.v4PoolRegistry, runtime.bundle)
 		services.opportunities[key] = runtime.store.Opportunities
-		services.opportunityExecutors[key] = newOpportunityExecutor(runtime.cfg, runtime.store, contractExecutor, runtime.chain, logger)
+		services.opportunityExecutors[key] = newOpportunityExecutor(runtime, contractExecutor, logger)
 		services.pools[key] = newPoolsAppService(
 			runtime.cfg,
 			runtime.store,
@@ -1021,12 +1022,16 @@ func newHTTPChainServices(runtimes *runtimeSet, contractExecutor *contractapp.Ap
 }
 
 func newOpportunityExecutor(
-	cfg config.Config,
-	store *persistence.Services,
+	runtime *chainRuntime,
 	contractExecutor *contractapp.AppService,
-	chain *chaininfra.Services,
 	logger *zap.Logger,
 ) *arbitrageapp.OpportunityExecutor {
+	if runtime == nil {
+		return nil
+	}
+	cfg := runtime.cfg
+	store := runtime.store
+	chain := runtime.chain
 	if store == nil || store.Opportunities == nil || contractExecutor == nil || chain == nil {
 		return nil
 	}
@@ -1041,7 +1046,20 @@ func newOpportunityExecutor(
 		store.V4Pools,
 		store.BalancerPools,
 	))
-	builder := arbitrageapp.NewLiveExecutionPlanBuilder(livePlan, encoder)
+	graph, _ := arbitrageapp.BuildUnifiedPoolGraph(
+		context.Background(),
+		runtime.poolRegistry,
+		store.Pools,
+		runtime.pancakePoolRegistry,
+		store.PancakePools,
+		runtime.quickSwapPoolRegistry,
+		store.QuickSwapPools,
+		runtime.v4PoolRegistry,
+		store.V4Pools,
+		runtime.balancerPoolRegistry,
+		store.BalancerPools,
+	)
+	builder := arbitrageapp.NewLiveExecutionPlanBuilder(livePlan, encoder, graph)
 	return arbitrageapp.NewOpportunityExecutor(
 		store.Opportunities,
 		builder,
@@ -1247,7 +1265,6 @@ func runSubgraphDiscovery[PoolID comparable](r *syncLifecycle, name string, inte
 func reconcileSubgraphPools[PoolID comparable](r *syncLifecycle, name string, interval time.Duration, registry poolLister[PoolID], lifecycle *syncapp.PoolLifecycleService[PoolID], onboarder poolOnboarder[PoolID]) {
 	started := time.Now()
 	active := lifecycle.ListActive()
-	r.logger.Info("subgraph pool refresh started", zap.String("protocol", name), zap.Duration("refresh_interval", interval), zap.Int("active_pools", len(active)))
 	tracked, err := registry.List(r.runCtx)
 	if err != nil {
 		r.logger.Warn("subgraph pool refresh failed", zap.String("protocol", name), zap.Error(err), zap.Int64("duration_ms", time.Since(started).Milliseconds()))
@@ -1277,7 +1294,6 @@ func reconcileSubgraphPools[PoolID comparable](r *syncLifecycle, name string, in
 			r.logger.Info("arbitrage routes refreshed after subgraph update", zap.String("protocol", name), zap.Int("new_pools", added), zap.Int("routes", routes))
 		}
 	}
-	r.logger.Info("subgraph pool refresh completed", zap.String("protocol", name), zap.Int("tracked_pools", len(tracked)), zap.Int("new_pools", added), zap.Int64("duration_ms", time.Since(started).Milliseconds()))
 }
 
 func (r *syncLifecycle) runSharedHeadLifecycle(ctx context.Context) error {

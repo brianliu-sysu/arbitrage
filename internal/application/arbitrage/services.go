@@ -95,6 +95,7 @@ type Services struct {
 	strategies            []domainarb.Strategy
 	readiness             ReadinessChecker
 	logger                *zap.Logger
+	gasWrappedNative      common.Address
 }
 
 func NewServices(deps ServiceDeps) *Services {
@@ -147,7 +148,9 @@ func NewServices(deps ServiceDeps) *Services {
 
 	scan := NewScanService(domainarb.NewDependencyGraph())
 	scan.RegisterRoutes(deps.Routes)
+	var poolGraph quoteunified.PoolGraph
 	if graph, err := loadPoolGraph(context.Background(), deps); err == nil {
+		poolGraph = graph
 		registerMonitoredRoutes(scan, strategies, graph)
 	}
 
@@ -170,31 +173,34 @@ func NewServices(deps ServiceDeps) *Services {
 				deps.V4Pools,
 				deps.BalancerPools,
 			))
-			builder = NewLiveExecutionPlanBuilder(deps.LivePlan, encoder)
+			builder = NewLiveExecutionPlanBuilder(deps.LivePlan, encoder, poolGraph)
 		}
 		publishers = append(publishers, NewExecutionPublisher(deps.Execution, builder, deps.Executor, deps.Repository, deps.ExecutionHead, logger))
 	}
 
+	opportunities := NewOpportunityService(
+		opportunityPools,
+		opportunityPancakePools,
+		opportunityQuickSwapPools,
+		opportunityV4Pools,
+		opportunityBalancerPools,
+		deps.Quotes,
+		gas,
+		strategies,
+		deps.Readiness,
+		minAmount,
+		maxAmount,
+		deps.OptimizerIterations,
+		deps.FlashLoanOptions,
+		logger,
+		deps.MarketVersion,
+	)
+	opportunities.SetGasCostConversion(poolGraph, deps.LivePlan.WETH)
+
 	services := &Services{
-		Scan: scan,
-		Opportunities: NewOpportunityService(
-			opportunityPools,
-			opportunityPancakePools,
-			opportunityQuickSwapPools,
-			opportunityV4Pools,
-			opportunityBalancerPools,
-			deps.Quotes,
-			gas,
-			strategies,
-			deps.Readiness,
-			minAmount,
-			maxAmount,
-			deps.OptimizerIterations,
-			deps.FlashLoanOptions,
-			logger,
-			deps.MarketVersion,
-		),
-		Publish: NewPublishService(publishers...),
+		Scan:          scan,
+		Opportunities: opportunities,
+		Publish:       NewPublishService(publishers...),
 		routeDeps: routeRefreshDeps{
 			Registry:          deps.Registry,
 			Pools:             deps.Pools,
@@ -216,6 +222,7 @@ func NewServices(deps ServiceDeps) *Services {
 		strategies:            append([]domainarb.Strategy(nil), strategies...),
 		readiness:             deps.Readiness,
 		logger:                logger,
+		gasWrappedNative:      deps.LivePlan.WETH,
 	}
 	services.Coordinator = NewBlockCoordinator(
 		deps.EnabledProtocols,
@@ -261,6 +268,9 @@ func (s *Services) RefreshArbitrageRoutes(ctx context.Context) (int, error) {
 		s.rebuildStrategiesOnGraphError()
 		s.Scan.ReplaceMonitoredRoutes(nil)
 		return 0, err
+	}
+	if s.Opportunities != nil {
+		s.Opportunities.SetGasCostConversion(graph, s.gasWrappedNative)
 	}
 
 	triangleTokens := ResolveTriangleStartTokens(s.configuredStartTokens, graph.Edges(), autoStartTokenCount)

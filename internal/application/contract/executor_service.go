@@ -166,7 +166,13 @@ func validatePlan(plan domaincontract.ExecutionPlan) error {
 	if plan.Deadline != nil && plan.Deadline.Sign() < 0 {
 		return errors.New("deadline must be non-negative")
 	}
-	for i, route := range plan.Routes {
+	if len(plan.SettlementRoutes) > 0 && (plan.SettlementMinProfit == nil || plan.SettlementMinProfit.Sign() <= 0) {
+		return errors.New("settlementMinProfit must be positive when settlement routes are configured")
+	}
+	routes := make([]domaincontract.SwapRoute, 0, len(plan.Routes)+len(plan.SettlementRoutes))
+	routes = append(routes, plan.Routes...)
+	routes = append(routes, plan.SettlementRoutes...)
+	for i, route := range routes {
 		if route.RouterAddress == (common.Address{}) {
 			return fmt.Errorf("routes[%d].routerAddress is required", i)
 		}
@@ -216,12 +222,17 @@ func validateRouteFillSlot(index int, route domaincontract.SwapRoute) error {
 func normalizeBroadcastRequest(req domaincontract.BroadcastRequest) domaincontract.BroadcastRequest {
 	req.Plan.Loan.Amount = zeroIfNil(req.Plan.Loan.Amount)
 	req.Plan.MinProfit = zeroIfNil(req.Plan.MinProfit)
+	req.Plan.SettlementMinProfit = zeroIfNil(req.Plan.SettlementMinProfit)
 	req.Plan.Deadline = zeroIfNil(req.Plan.Deadline)
 	req.GasPriceWei = cloneBigInt(req.GasPriceWei)
 	req.SubmitRPCURL = strings.TrimSpace(req.SubmitRPCURL)
 	for i := range req.Plan.Routes {
 		req.Plan.Routes[i].Value = zeroIfNil(req.Plan.Routes[i].Value)
 		req.Plan.Routes[i].Data = append([]byte(nil), req.Plan.Routes[i].Data...)
+	}
+	for i := range req.Plan.SettlementRoutes {
+		req.Plan.SettlementRoutes[i].Value = zeroIfNil(req.Plan.SettlementRoutes[i].Value)
+		req.Plan.SettlementRoutes[i].Data = append([]byte(nil), req.Plan.SettlementRoutes[i].Data...)
 	}
 	return req
 }

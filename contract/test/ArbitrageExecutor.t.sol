@@ -380,6 +380,42 @@ contract ArbitrageExecutorTest is Test {
         assertEq(weth.balanceOf(recipient), 0.4 ether);
     }
 
+    function testExecuteSettlesERC20ProfitToWETHBeforePayingCoinbase() external {
+        MockWETH weth = new MockWETH();
+        uint256 tokenProfit = 25 ether;
+        uint256 wethProfit = 2 ether;
+        address coinbase = address(0xB017D3A);
+        _setProfitRecipient();
+        vm.coinbase(coinbase);
+        vm.deal(address(weth), wethProfit);
+
+        vm.prank(owner);
+        executor.approveToken(address(token), address(swapTarget), type(uint256).max);
+        ArbitrageExecutor.ExecutionPlan memory plan = _balancerPlan(tokenProfit, tokenProfit);
+        ArbitrageExecutor.RouterCall[] memory settlementRouters = new ArbitrageExecutor.RouterCall[](1);
+        settlementRouters[0] = ArbitrageExecutor.RouterCall({
+            routerAddress: address(swapTarget),
+            value: 0,
+            data: abi.encodeCall(
+                MockSwapTarget.pullDynamicAndMint,
+                (token, MockERC20(address(weth)), uint256(0), wethProfit)
+            ),
+            fillSource: ArbitrageExecutor.FillSource.ERC20Balance,
+            fillToken: address(token),
+            patchAmount: true,
+            amountAsCallValue: false,
+            fillOffset: 68
+        });
+
+        vm.prank(operator);
+        uint256 returnedProfit = executor.execute(plan, settlementRouters, 0.4 ether, 8_000, address(weth));
+
+        assertEq(returnedProfit, 0.4 ether);
+        assertEq(coinbase.balance, 1.6 ether);
+        assertEq(weth.balanceOf(recipient), 0.4 ether);
+        assertEq(token.balanceOf(address(swapTarget)), tokenProfit);
+    }
+
     function testRejectsDirectBalancerCallbackWithoutActiveExecution() external {
         ArbitrageExecutor.ExecutionPlan memory plan = _balancerPlan(25 ether, 1 ether);
         uint256[] memory initialFillBalances = new uint256[](plan.routers.length);

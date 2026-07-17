@@ -71,6 +71,12 @@ contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallb
         uint256 deadline;
     }
 
+    struct SettlementResult {
+        address profitToken;
+        uint256 grossProfit;
+        uint256 minProfit;
+    }
+
     mapping(address => bool) public operators;
     address public profitRecipient;
     bool private executionActive;
@@ -132,7 +138,8 @@ contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallb
     }
 
     function execute(ExecutionPlan calldata plan) external onlyOperator returns (uint256 profit) {
-        return _execute(plan, 0, address(0));
+        RouterCall[] memory noSettlementRouters = new RouterCall[](0);
+        return _execute(plan, noSettlementRouters, 0, 0, address(0));
     }
 
     function execute(ExecutionPlan calldata plan, uint16 coinbasePaymentBps, address wrappedNativeToken)
@@ -140,10 +147,33 @@ contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallb
         onlyOperator
         returns (uint256 profit)
     {
-        return _execute(plan, coinbasePaymentBps, wrappedNativeToken);
+        RouterCall[] memory noSettlementRouters = new RouterCall[](0);
+        return _execute(plan, noSettlementRouters, 0, coinbasePaymentBps, wrappedNativeToken);
     }
 
-    function _execute(ExecutionPlan calldata plan, uint16 coinbasePaymentBps, address wrappedNativeToken)
+    function execute(
+        ExecutionPlan calldata plan,
+        RouterCall[] calldata settlementRouters,
+        uint256 settlementMinProfit,
+        uint16 coinbasePaymentBps,
+        address wrappedNativeToken
+    )
+        external
+        onlyOperator
+        returns (uint256 profit)
+    {
+        return _execute(
+            plan, settlementRouters, settlementMinProfit, coinbasePaymentBps, wrappedNativeToken
+        );
+    }
+
+    function _execute(
+        ExecutionPlan calldata plan,
+        RouterCall[] memory settlementRouters,
+        uint256 settlementMinProfit,
+        uint16 coinbasePaymentBps,
+        address wrappedNativeToken
+    )
         private
         returns (uint256 profit)
     {
@@ -171,7 +201,15 @@ contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallb
         }
 
         _clearActiveExecution();
-        profit = _settleProfit(msg.sender, plan, initialProfitBalance, coinbasePaymentBps, wrappedNativeToken);
+        profit = _settleProfit(
+            msg.sender,
+            plan,
+            initialProfitBalance,
+            settlementRouters,
+            settlementMinProfit,
+            coinbasePaymentBps,
+            wrappedNativeToken
+        );
     }
 
     function receiveFlashLoan(
@@ -338,6 +376,8 @@ contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallb
         address caller,
         ExecutionPlan memory plan,
         uint256 initialProfitBalance,
+        RouterCall[] memory settlementRouters,
+        uint256 settlementMinProfit,
         uint16 coinbasePaymentBps,
         address wrappedNativeToken
     )
@@ -347,16 +387,54 @@ contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallb
         uint256 finalBalance = _balanceOf(plan.profitToken, address(this));
         if (finalBalance < initialProfitBalance) revert ProfitTooLow(0, plan.minProfit);
         uint256 grossProfit = finalBalance - initialProfitBalance;
-        uint256 coinbasePayment = _payCoinbase(plan.profitToken, grossProfit, coinbasePaymentBps, wrappedNativeToken);
-        profit = grossProfit - coinbasePayment;
-        if (profit < plan.minProfit) revert ProfitTooLow(profit, plan.minProfit);
+        if (grossProfit < plan.minProfit) revert ProfitTooLow(grossProfit, plan.minProfit);
+        SettlementResult memory settled =
+            _settleToWrapped(plan.profitToken, grossProfit, settlementRouters, settlementMinProfit, wrappedNativeToken);
+        if (settlementRouters.length == 0) settled.minProfit = plan.minProfit;
+        uint256 coinbasePayment =
+            _payCoinbase(settled.profitToken, settled.grossProfit, coinbasePaymentBps, wrappedNativeToken);
+        profit = settled.grossProfit - coinbasePayment;
+        if (profit < settled.minProfit) revert ProfitTooLow(profit, settled.minProfit);
 
         address recipient = _profitRecipient();
         if (profit > 0) {
-            _transferAsset(plan.profitToken, recipient, profit);
+            _transferAsset(settled.profitToken, recipient, profit);
         }
 
-        emit ArbitrageExecuted(caller, plan.loan.protocol, plan.profitToken, profit, recipient);
+        emit ArbitrageExecuted(caller, plan.loan.protocol, settled.profitToken, profit, recipient);
+    }
+
+    function _settleToWrapped(
+        address profitToken,
+        uint256 grossProfit,
+        RouterCall[] memory settlementRouters,
+        uint256 settlementMinProfit,
+        address wrappedNativeToken
+    ) private returns (SettlementResult memory result) {
+        result = SettlementResult({ profitToken: profitToken, grossProfit: grossProfit, minProfit: 0 });
+        if (settlementRouters.length == 0) return result;
+
+        uint256 initialWrappedBalance = _balanceOf(wrappedNativeToken, address(this));
+        uint256[] memory settlementFillBalances = _snapshotMemoryFillBalances(settlementRouters);
+        if (
+            settlementRouters[0].fillSource != FillSource.ERC20Balance
+                || settlementRouters[0].fillToken != profitToken || settlementFillBalances[0] < grossProfit
+        ) revert InvalidCoinbasePayment();
+        settlementFillBalances[0] -= grossProfit;
+        _executeSwaps(settlementRouters, settlementFillBalances);
+        uint256 finalWrappedBalance = _balanceOf(wrappedNativeToken, address(this));
+        if (finalWrappedBalance < initialWrappedBalance) revert ProfitTooLow(0, settlementMinProfit);
+        result.profitToken = wrappedNativeToken;
+        result.grossProfit = finalWrappedBalance - initialWrappedBalance;
+        result.minProfit = settlementMinProfit;
+    }
+
+    function _snapshotMemoryFillBalances(RouterCall[] memory routers) private view returns (uint256[] memory balances) {
+        balances = new uint256[](routers.length);
+        for (uint256 i = 0; i < routers.length; i++) {
+            if (routers[i].fillSource == FillSource.None) continue;
+            balances[i] = _fillBalance(routers[i]);
+        }
     }
 
     function _payCoinbase(address profitToken, uint256 grossProfit, uint16 paymentBps, address wrappedNativeToken)

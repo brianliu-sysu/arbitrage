@@ -9,6 +9,7 @@ import (
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/asset"
 	domaincontract "github.com/brianliu-sysu/uniswapv3/internal/domain/contract"
+	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -23,6 +24,7 @@ type LivePlanConfig struct {
 	SwapRouterPancakeV3 common.Address
 	UniversalRouter     common.Address
 	Executor            common.Address
+	RequireWETHProfit   bool
 }
 
 // LiveExecutionPlanBuilder rebuilds an execution plan from the opportunity.
@@ -32,17 +34,28 @@ type LiveExecutionPlanBuilder struct {
 	payload *PayloadExecutionPlanBuilder
 	encoder *LiveCalldataEncoder
 	cfg     LivePlanConfig
+	graph   quoteunified.PoolGraph
+	quotes  *quoteunified.QuoteService
 }
 
-func NewLiveExecutionPlanBuilder(cfg LivePlanConfig, encoder *LiveCalldataEncoder) *LiveExecutionPlanBuilder {
+func NewLiveExecutionPlanBuilder(
+	cfg LivePlanConfig,
+	encoder *LiveCalldataEncoder,
+	graphs ...quoteunified.PoolGraph,
+) *LiveExecutionPlanBuilder {
 	if cfg.WETH == (common.Address{}) {
 		cfg.WETH = asset.MainnetWETH
 	}
-	return &LiveExecutionPlanBuilder{
+	builder := &LiveExecutionPlanBuilder{
 		payload: NewPayloadExecutionPlanBuilder(),
 		encoder: encoder,
 		cfg:     cfg,
+		quotes:  quoteunified.NewQuoteService(nil, nil, nil),
 	}
+	if len(graphs) > 0 {
+		builder.graph = graphs[0]
+	}
+	return builder
 }
 
 func (b *LiveExecutionPlanBuilder) BuildExecutionPlan(
@@ -63,8 +76,7 @@ func (b *LiveExecutionPlanBuilder) BuildExecutionPlan(
 			if err != nil {
 				return domaincontract.ExecutionPlan{}, nil, err
 			}
-			approvals = domaincontract.MergeTokenApprovals(approvals, domaincontract.RequiredTokenApprovals(refreshed))
-			return refreshed, approvals, nil
+			return b.addWETHSettlement(ctx, refreshed, approvals)
 		}
 		if !isExecutionUnavailable(err) {
 			return domaincontract.ExecutionPlan{}, nil, err
@@ -82,7 +94,67 @@ func (b *LiveExecutionPlanBuilder) BuildExecutionPlan(
 			opportunity.ID,
 		)
 	}
-	return b.encoder.Encode(ctx, opportunity, loan)
+	plan, approvals, err := b.encoder.Encode(ctx, opportunity, loan)
+	if err != nil {
+		return domaincontract.ExecutionPlan{}, nil, err
+	}
+	return b.addWETHSettlement(ctx, plan, approvals)
+}
+
+func (b *LiveExecutionPlanBuilder) addWETHSettlement(
+	ctx context.Context,
+	plan domaincontract.ExecutionPlan,
+	approvals []domaincontract.TokenApproval,
+) (domaincontract.ExecutionPlan, []domaincontract.TokenApproval, error) {
+	if plan.ProfitToken == (common.Address{}) || plan.ProfitToken == b.cfg.WETH {
+		return plan, domaincontract.MergeTokenApprovals(approvals, domaincontract.RequiredTokenApprovals(plan)), nil
+	}
+	if !b.cfg.RequireWETHProfit {
+		return plan, domaincontract.MergeTokenApprovals(approvals, domaincontract.RequiredTokenApprovals(plan)), nil
+	}
+	if b.graph == nil || b.encoder == nil || b.encoder.loader == nil || plan.MinProfit == nil || plan.MinProfit.Sign() <= 0 {
+		return domaincontract.ExecutionPlan{}, nil, fmt.Errorf(
+			"%w: no WETH settlement planner for profit token %s", ErrExecutionPlanUnavailable, plan.ProfitToken.Hex(),
+		)
+	}
+
+	routes, err := quoteunified.NewRouteService(b.graph, 3).FindRoutes(plan.ProfitToken, b.cfg.WETH)
+	if err != nil {
+		return domaincontract.ExecutionPlan{}, nil, fmt.Errorf("find WETH settlement routes: %w", err)
+	}
+	var bestRoutes []domaincontract.SwapRoute
+	var bestApprovals []domaincontract.TokenApproval
+	var bestAmountOut *big.Int
+	for _, route := range routes {
+		pools, err := b.encoder.loader.LoadRoutePools(ctx, route)
+		if err != nil {
+			continue
+		}
+		quote, err := b.quotes.QuoteRoute(pools, route, plan.MinProfit)
+		if err != nil || quote.AmountOut == nil || quote.AmountOut.Sign() <= 0 {
+			continue
+		}
+		synthetic := &domainarb.Opportunity{Route: route, NetProfit: quote.AmountOut}
+		encoded, settlementApprovals, err := b.encoder.Encode(ctx, synthetic, domaincontract.FlashLoan{})
+		if err != nil {
+			continue
+		}
+		if bestAmountOut == nil || quote.AmountOut.Cmp(bestAmountOut) > 0 {
+			bestAmountOut = new(big.Int).Set(quote.AmountOut)
+			bestRoutes = encoded.Routes
+			bestApprovals = settlementApprovals
+		}
+	}
+	if bestAmountOut == nil {
+		return domaincontract.ExecutionPlan{}, nil, fmt.Errorf(
+			"%w: no quotable WETH settlement route for profit token %s", ErrExecutionPlanUnavailable, plan.ProfitToken.Hex(),
+		)
+	}
+	plan.SettlementRoutes = bestRoutes
+	plan.SettlementMinProfit = bestAmountOut
+	approvals = domaincontract.MergeTokenApprovals(approvals, bestApprovals)
+	approvals = domaincontract.MergeTokenApprovals(approvals, domaincontract.RequiredTokenApprovals(plan))
+	return plan, approvals, nil
 }
 
 func (b *LiveExecutionPlanBuilder) buildFlashLoanFromOpportunity(

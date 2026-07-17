@@ -90,6 +90,21 @@ const arbitrageExecutorABI = `[
 					{"name":"deadline","type":"uint256"}
 				]
 			},
+			{
+				"name":"settlementRouters",
+				"type":"tuple[]",
+				"components":[
+					{"name":"routerAddress","type":"address"},
+					{"name":"value","type":"uint256"},
+					{"name":"data","type":"bytes"},
+					{"name":"fillSource","type":"uint8"},
+					{"name":"fillToken","type":"address"},
+					{"name":"patchAmount","type":"bool"},
+					{"name":"amountAsCallValue","type":"bool"},
+					{"name":"fillOffset","type":"uint256"}
+				]
+			},
+			{"name":"settlementMinProfit","type":"uint256"},
 			{"name":"coinbasePaymentBps","type":"uint16"},
 			{"name":"wrappedNativeToken","type":"address"}
 		],
@@ -152,7 +167,14 @@ func (b *ContractExecutorBroadcaster) BroadcastExecution(
 		return domaincontract.BroadcastResponse{}, fmt.Errorf("chain id: %w", err)
 	}
 
-	data, err := b.parsedABI.Pack("execute", toExecutionPlanABI(req.Plan), req.Plan.CoinbasePaymentBPS, req.Plan.WrappedNativeToken)
+	data, err := b.parsedABI.Pack(
+		"execute",
+		toExecutionPlanABI(req.Plan),
+		toSwapRoutesABI(req.Plan.SettlementRoutes),
+		zeroIfNilBigInt(req.Plan.SettlementMinProfit),
+		req.Plan.CoinbasePaymentBPS,
+		req.Plan.WrappedNativeToken,
+	)
 	if err != nil {
 		return domaincontract.BroadcastResponse{}, fmt.Errorf("pack execute calldata: %w", err)
 	}
@@ -185,7 +207,14 @@ func (b *ContractExecutorBroadcaster) SimulateExecution(
 	}
 	defer client.Close()
 
-	data, err := b.parsedABI.Pack("execute", toExecutionPlanABI(req.Plan), req.Plan.CoinbasePaymentBPS, req.Plan.WrappedNativeToken)
+	data, err := b.parsedABI.Pack(
+		"execute",
+		toExecutionPlanABI(req.Plan),
+		toSwapRoutesABI(req.Plan.SettlementRoutes),
+		zeroIfNilBigInt(req.Plan.SettlementMinProfit),
+		req.Plan.CoinbasePaymentBPS,
+		req.Plan.WrappedNativeToken,
+	)
 	if err != nil {
 		return fmt.Errorf("pack execute calldata: %w", err)
 	}
@@ -492,19 +521,7 @@ type executionPlanABI struct {
 }
 
 func toExecutionPlanABI(plan domaincontract.ExecutionPlan) executionPlanABI {
-	routers := make([]swapRouteABI, 0, len(plan.Routes))
-	for _, route := range plan.Routes {
-		routers = append(routers, swapRouteABI{
-			RouterAddress:     route.RouterAddress,
-			Value:             zeroIfNilBigInt(route.Value),
-			Data:              append([]byte(nil), route.Data...),
-			FillSource:        uint8(route.FillSource),
-			FillToken:         route.FillToken,
-			PatchAmount:       route.PatchAmount,
-			AmountAsCallValue: route.AmountAsCallValue,
-			FillOffset:        new(big.Int).SetUint64(route.FillOffset),
-		})
-	}
+	routers := toSwapRoutesABI(plan.Routes)
 
 	settleCurrencies := append([]common.Address(nil), plan.SettleCurrencies...)
 	if settleCurrencies == nil {
@@ -525,6 +542,23 @@ func toExecutionPlanABI(plan domaincontract.ExecutionPlan) executionPlanABI {
 		MinProfit:        zeroIfNilBigInt(plan.MinProfit),
 		Deadline:         zeroIfNilBigInt(plan.Deadline),
 	}
+}
+
+func toSwapRoutesABI(routes []domaincontract.SwapRoute) []swapRouteABI {
+	routers := make([]swapRouteABI, 0, len(routes))
+	for _, route := range routes {
+		routers = append(routers, swapRouteABI{
+			RouterAddress:     route.RouterAddress,
+			Value:             zeroIfNilBigInt(route.Value),
+			Data:              append([]byte(nil), route.Data...),
+			FillSource:        uint8(route.FillSource),
+			FillToken:         route.FillToken,
+			PatchAmount:       route.PatchAmount,
+			AmountAsCallValue: route.AmountAsCallValue,
+			FillOffset:        new(big.Int).SetUint64(route.FillOffset),
+		})
+	}
+	return routers
 }
 
 func flashLoanProtocolABI(protocol domaincontract.FlashLoanProtocol) uint8 {

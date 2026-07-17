@@ -12,7 +12,7 @@ import (
 // still cover later hops such as USDC -> SwapRouter02.
 func RequiredTokenApprovals(plan ExecutionPlan) []TokenApproval {
 	seen := make(map[string]struct{})
-	out := make([]TokenApproval, 0, len(plan.Routes))
+	out := make([]TokenApproval, 0, len(plan.Routes)+len(plan.SettlementRoutes))
 	add := func(token, spender common.Address) {
 		if token == (common.Address{}) || spender == (common.Address{}) {
 			return
@@ -32,7 +32,10 @@ func RequiredTokenApprovals(plan ExecutionPlan) []TokenApproval {
 		})
 	}
 
-	for _, route := range plan.Routes {
+	routes := make([]SwapRoute, 0, len(plan.Routes)+len(plan.SettlementRoutes))
+	routes = append(routes, plan.Routes...)
+	routes = append(routes, plan.SettlementRoutes...)
+	for _, route := range routes {
 		spender := route.RouterAddress
 		if spender == (common.Address{}) {
 			continue

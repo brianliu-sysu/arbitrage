@@ -10,6 +10,7 @@ import (
 	"time"
 
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
+	"github.com/brianliu-sysu/uniswapv3/internal/domain/asset"
 	domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
@@ -49,6 +50,22 @@ type OpportunityService struct {
 	logger         *zap.Logger
 	now            func() time.Time
 	marketVersion  MarketVersionReader
+	poolGraph      quoteunified.PoolGraph
+	wrappedNative  common.Address
+}
+
+// SetGasCostConversion configures the routing graph used to value native gas in each strategy's profit token.
+func (s *OpportunityService) SetGasCostConversion(graph quoteunified.PoolGraph, wrappedNative common.Address) {
+	if s == nil {
+		return
+	}
+	if wrappedNative == (common.Address{}) {
+		wrappedNative = asset.MainnetWETH
+	}
+	s.mu.Lock()
+	s.poolGraph = graph
+	s.wrappedNative = wrappedNative
+	s.mu.Unlock()
 }
 
 type MarketVersionReader interface {
@@ -271,13 +288,18 @@ func (s *OpportunityService) generateForRoute(
 		return nil, err
 	}
 
+	gasCost, err := s.gasCostInToken(ctx, gas.CostWei, strategy.StartToken)
+	if err != nil {
+		return nil, fmt.Errorf("convert gas cost to profit token %s: %w", strategy.StartToken.Hex(), err)
+	}
+
 	evaluation := s.evaluator.Evaluate(domainarb.EvaluationInput{
 		Strategy:    strategy,
 		BlockNumber: blockNumber,
 		Route:       routeRef.Route,
 		AmountIn:    optimized.AmountIn,
 		AmountOut:   optimized.AmountOut,
-		GasCost:     gas.CostWei,
+		GasCost:     gasCost,
 		FlashLoan:   flashLoan,
 		QuoteSteps:  opportunityQuoteSteps(quoteSteps),
 	})
@@ -290,7 +312,8 @@ func (s *OpportunityService) generateForRoute(
 			zap.String("amount_in", evaluation.AmountIn.String()),
 			zap.String("amount_out", evaluation.AmountOut.String()),
 			zap.String("gross_profit", evaluation.GrossProfit.String()),
-			zap.String("gas_cost", gas.CostWei.String()),
+			zap.String("gas_cost_wei", gas.CostWei.String()),
+			zap.String("gas_cost_profit_token", gasCost.String()),
 			zap.String("flash_loan_protocol", string(flashLoan.Protocol)),
 			zap.String("flash_loan_pool", flashLoan.PoolRef.Key()),
 			zap.String("flash_loan_fee", flashLoan.Fee.String()),
@@ -320,6 +343,47 @@ func (s *OpportunityService) generateForRoute(
 		zap.String("quote_steps", formatQuoteSteps(quoteSteps, quoteStepsErr)),
 	)
 	return opp, nil
+}
+
+func (s *OpportunityService) gasCostInToken(ctx context.Context, costWei *big.Int, token common.Address) (*big.Int, error) {
+	if costWei == nil || costWei.Sign() <= 0 {
+		return new(big.Int), nil
+	}
+	s.mu.RLock()
+	graph := s.poolGraph
+	wrappedNative := s.wrappedNative
+	s.mu.RUnlock()
+	if wrappedNative == (common.Address{}) {
+		wrappedNative = asset.MainnetWETH
+	}
+	if token == (common.Address{}) || token == wrappedNative {
+		return new(big.Int).Set(costWei), nil
+	}
+	if graph == nil {
+		return nil, errors.New("pool graph is not configured")
+	}
+	routes, err := quoteunified.NewRouteService(graph, 3).FindRoutes(wrappedNative, token)
+	if err != nil {
+		return nil, err
+	}
+	var bestAmountOut *big.Int
+	for _, route := range routes {
+		pools, loadErr := s.loadRoutePools(ctx, route)
+		if loadErr != nil {
+			continue
+		}
+		quote, quoteErr := s.quotes.QuoteRoute(pools, route, costWei)
+		if quoteErr != nil || quote.AmountOut == nil || quote.AmountOut.Sign() <= 0 {
+			continue
+		}
+		if bestAmountOut == nil || quote.AmountOut.Cmp(bestAmountOut) > 0 {
+			bestAmountOut = new(big.Int).Set(quote.AmountOut)
+		}
+	}
+	if bestAmountOut == nil {
+		return nil, errors.New("no quotable route from wrapped native token")
+	}
+	return bestAmountOut, nil
 }
 
 func matchesStrategy(strategy domainarb.Strategy, routeRef domainarb.RouteRef) bool {

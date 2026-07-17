@@ -13,9 +13,10 @@ type EvaluationInput struct {
 	Route       quoteunified.Route
 	AmountIn    *big.Int
 	AmountOut   *big.Int
-	GasCost     *big.Int
-	FlashLoan   FlashLoanQuote
-	QuoteSteps  []OpportunityQuoteStep
+	// GasCost is denominated in Route.TokenIn, not wei unless the route starts with native ETH or wrapped native ETH.
+	GasCost    *big.Int
+	FlashLoan  FlashLoanQuote
+	QuoteSteps []OpportunityQuoteStep
 }
 
 // EvaluationResult is the profit outcome of a route evaluation.

@@ -336,16 +336,19 @@ func (e *OpportunityExecutor) validatePlan(plan domaincontract.ExecutionPlan, ap
 
 func validateExecutionPlanForConfig(plan domaincontract.ExecutionPlan, approvals []domaincontract.TokenApproval, cfg ExecutionConfig) error {
 	if plan.CoinbasePaymentBPS > 0 {
-		if plan.ProfitToken != (common.Address{}) && plan.ProfitToken != plan.WrappedNativeToken {
+		if plan.ProfitToken != (common.Address{}) && plan.ProfitToken != plan.WrappedNativeToken && len(plan.SettlementRoutes) == 0 {
 			return fmt.Errorf("coinbase payment requires native or wrapped-native profit token")
 		}
 		if plan.ProfitToken != (common.Address{}) && plan.WrappedNativeToken == (common.Address{}) {
 			return fmt.Errorf("wrapped native token is required for coinbase payment")
 		}
 	}
+	routes := make([]domaincontract.SwapRoute, 0, len(plan.Routes)+len(plan.SettlementRoutes))
+	routes = append(routes, plan.Routes...)
+	routes = append(routes, plan.SettlementRoutes...)
 	allowedRouters := addressSet(cfg.AllowedRouters)
 	if len(allowedRouters) > 0 {
-		for i, route := range plan.Routes {
+		for i, route := range routes {
 			if !allowedRouters[route.RouterAddress] {
 				return fmt.Errorf("routes[%d].routerAddress %s is not allowed", i, route.RouterAddress.Hex())
 			}
@@ -354,14 +357,14 @@ func validateExecutionPlanForConfig(plan domaincontract.ExecutionPlan, approvals
 			}
 		}
 	} else {
-		for i, route := range plan.Routes {
+		for i, route := range routes {
 			if err := validateRouteFillSlot(i, route); err != nil {
 				return err
 			}
 		}
 	}
-	routeSpenders := make(map[common.Address]bool, len(plan.Routes))
-	for _, route := range plan.Routes {
+	routeSpenders := make(map[common.Address]bool, len(routes))
+	for _, route := range routes {
 		routeSpenders[route.RouterAddress] = true
 	}
 	allowedSpenders := addressSet(cfg.AllowedSpenders)
@@ -382,9 +385,13 @@ func applyCoinbasePaymentConfig(plan *domaincontract.ExecutionPlan, cfg Executio
 	}
 	plan.CoinbasePaymentBPS = uint16(cfg.FlashbotsPaymentBPS)
 	plan.WrappedNativeToken = cfg.WrappedNativeToken
-	if plan.MinProfit != nil {
-		plan.MinProfit.Mul(plan.MinProfit, new(big.Int).SetUint64(10_000-cfg.FlashbotsPaymentBPS))
-		plan.MinProfit.Div(plan.MinProfit, big.NewInt(10_000))
+	minimumProfit := plan.MinProfit
+	if len(plan.SettlementRoutes) > 0 {
+		minimumProfit = plan.SettlementMinProfit
+	}
+	if minimumProfit != nil {
+		minimumProfit.Mul(minimumProfit, new(big.Int).SetUint64(10_000-cfg.FlashbotsPaymentBPS))
+		minimumProfit.Div(minimumProfit, big.NewInt(10_000))
 	}
 }
 
