@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"gopkg.in/yaml.v3"
 )
+
+var environmentPlaceholderPattern = regexp.MustCompile(`\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}`)
 
 // Config is the root application configuration loaded from YAML.
 type Config struct {
@@ -465,6 +468,10 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("read config file: %w", err)
 	}
+	content, err = expandEnvironmentPlaceholders(content)
+	if err != nil {
+		return Config{}, err
+	}
 	if err := yaml.Unmarshal(content, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config file: %w", err)
 	}
@@ -472,6 +479,23 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func expandEnvironmentPlaceholders(content []byte) ([]byte, error) {
+	var missing string
+	expanded := environmentPlaceholderPattern.ReplaceAllStringFunc(string(content), func(placeholder string) string {
+		matches := environmentPlaceholderPattern.FindStringSubmatch(placeholder)
+		name := matches[1]
+		value, ok := os.LookupEnv(name)
+		if !ok && missing == "" {
+			missing = name
+		}
+		return value
+	})
+	if missing != "" {
+		return nil, fmt.Errorf("environment variable %s referenced by config is not set", missing)
+	}
+	return []byte(expanded), nil
 }
 
 func (c Config) Validate() error {

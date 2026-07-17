@@ -97,6 +97,49 @@ sync:
 	}
 }
 
+func TestLoadExpandsEnvironmentPlaceholders(t *testing.T) {
+	t.Setenv("ARBITRAGE_TEST_RPC_HOST", "rpc.example")
+	t.Setenv("ARBITRAGE_TEST_RPC_TOKEN", "secret-token")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+persistence:
+  memory: true
+rpc:
+  url: "https://{{ ARBITRAGE_TEST_RPC_HOST }}/{{ARBITRAGE_TEST_RPC_TOKEN}}"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.RPC.URL != "https://rpc.example/secret-token" {
+		t.Fatalf("unexpected expanded rpc url %q", cfg.RPC.URL)
+	}
+}
+
+func TestLoadRejectsMissingEnvironmentPlaceholder(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+persistence:
+  memory: true
+rpc:
+  url: "{{ARBITRAGE_TEST_MISSING_ENV}}"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := config.Load(path)
+	if err == nil || !strings.Contains(err.Error(), "ARBITRAGE_TEST_MISSING_ENV") {
+		t.Fatalf("expected missing environment variable error, got %v", err)
+	}
+}
+
 func TestLoadFlashLoanFeeConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -293,6 +336,7 @@ chains:
 }
 
 func TestExampleConfigFilesLoad(t *testing.T) {
+	t.Setenv("PRIVATE_KEY", "test-private-key")
 	for _, path := range []string{
 		filepath.Join("..", "..", "config.yaml"),
 		filepath.Join("..", "..", "configs", "config.yaml"),
