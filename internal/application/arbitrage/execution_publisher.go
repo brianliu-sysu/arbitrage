@@ -39,6 +39,7 @@ type ExecutionConfig struct {
 	Executor            common.Address
 	FlashbotsRPCURL     string
 	FlashbotsPaymentBPS uint64
+	WrappedNativeToken  common.Address
 	GasLimit            uint64
 	GasPriceWei         *big.Int
 	SkipEstimate        bool
@@ -145,16 +146,12 @@ func (p *ExecutionPublisher) Publish(ctx context.Context, opportunity *domainarb
 	if plan.MinProfit == nil {
 		plan.MinProfit = cloneBigIntOrZero(opportunity.NetProfit)
 	}
+	applyCoinbasePaymentConfig(&plan, p.cfg)
 	if err := validateExecutionPlanForConfig(plan, approvals, p.cfg); err != nil {
 		return fmt.Errorf("validate execution plan: %w", err)
 	}
 
 	gasPriceWei := cloneBigInt(p.cfg.GasPriceWei)
-	if bribeGasPrice := p.flashbotsGasPrice(opportunity); bribeGasPrice != nil {
-		if gasPriceWei == nil || bribeGasPrice.Cmp(gasPriceWei) > 0 {
-			gasPriceWei = bribeGasPrice
-		}
-	}
 
 	approvalResp, err := p.executor.EnsureApprovals(ctx, domaincontract.EnsureApprovalsRequest{
 		RPCURL:       strings.TrimSpace(p.cfg.RPCURL),
@@ -189,12 +186,6 @@ func (p *ExecutionPublisher) Publish(ctx context.Context, opportunity *domainarb
 		GasPriceWei:  gasPriceWei,
 		SkipEstimate: p.cfg.SkipEstimate,
 		SubmitRPCURL: strings.TrimSpace(p.cfg.FlashbotsRPCURL),
-	}
-	if err := p.executor.Simulate(ctx, broadcastReq); err != nil {
-		return fmt.Errorf("simulate arbitrage: %w", err)
-	}
-	if err := ctx.Err(); err != nil {
-		return err
 	}
 	resp, err := p.executor.Execute(ctx, broadcastReq)
 	if err != nil {
@@ -237,23 +228,6 @@ func (p *ExecutionPublisher) finish(opportunityID string, txHash common.Hash) {
 	if txHash != (common.Hash{}) {
 		p.executed[opportunityID] = txHash
 	}
-}
-
-func (p *ExecutionPublisher) flashbotsGasPrice(opportunity *domainarb.Opportunity) *big.Int {
-	if p.cfg.FlashbotsPaymentBPS == 0 || p.cfg.GasLimit == 0 || opportunity == nil || opportunity.NetProfit == nil {
-		return nil
-	}
-	payment := new(big.Int).Mul(opportunity.NetProfit, new(big.Int).SetUint64(p.cfg.FlashbotsPaymentBPS))
-	payment.Div(payment, big.NewInt(10_000))
-	if payment.Sign() <= 0 {
-		return nil
-	}
-	gasLimit := new(big.Int).SetUint64(p.cfg.GasLimit)
-	gasPrice := new(big.Int).Div(payment, gasLimit)
-	if new(big.Int).Mod(payment, gasLimit).Sign() > 0 {
-		gasPrice.Add(gasPrice, big.NewInt(1))
-	}
-	return gasPrice
 }
 
 type PayloadExecutionPlanBuilder struct{}

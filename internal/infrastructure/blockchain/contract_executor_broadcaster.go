@@ -89,7 +89,9 @@ const arbitrageExecutorABI = `[
 					{"name":"minProfit","type":"uint256"},
 					{"name":"deadline","type":"uint256"}
 				]
-			}
+			},
+			{"name":"coinbasePaymentBps","type":"uint16"},
+			{"name":"wrappedNativeToken","type":"address"}
 		],
 		"outputs":[{"name":"profit","type":"uint256"}]
 	}
@@ -150,7 +152,7 @@ func (b *ContractExecutorBroadcaster) BroadcastExecution(
 		return domaincontract.BroadcastResponse{}, fmt.Errorf("chain id: %w", err)
 	}
 
-	data, err := b.parsedABI.Pack("execute", toExecutionPlanABI(req.Plan))
+	data, err := b.parsedABI.Pack("execute", toExecutionPlanABI(req.Plan), req.Plan.CoinbasePaymentBPS, req.Plan.WrappedNativeToken)
 	if err != nil {
 		return domaincontract.BroadcastResponse{}, fmt.Errorf("pack execute calldata: %w", err)
 	}
@@ -183,7 +185,7 @@ func (b *ContractExecutorBroadcaster) SimulateExecution(
 	}
 	defer client.Close()
 
-	data, err := b.parsedABI.Pack("execute", toExecutionPlanABI(req.Plan))
+	data, err := b.parsedABI.Pack("execute", toExecutionPlanABI(req.Plan), req.Plan.CoinbasePaymentBPS, req.Plan.WrappedNativeToken)
 	if err != nil {
 		return fmt.Errorf("pack execute calldata: %w", err)
 	}
@@ -373,41 +375,69 @@ func (b *ContractExecutorBroadcaster) sendTransaction(
 
 	gasLimit := req.GasLimit
 	if gasLimit == 0 && !req.SkipEstimate {
-		gasLimit, err = client.EstimateGas(ctx, ethereum.CallMsg{
+		estimatedGas, estimateErr := client.EstimateGas(ctx, ethereum.CallMsg{
 			From: from,
 			To:   &req.Executor,
 			Data: data,
 		})
-		if err != nil {
-			return common.Hash{}, fmt.Errorf("estimate gas: %w", err)
+		if estimateErr != nil {
+			return common.Hash{}, fmt.Errorf("estimate gas: %w", estimateErr)
 		}
+		gasLimit = estimatedGas
 	}
 	if gasLimit == 0 {
 		return common.Hash{}, errors.New("gasLimit is required when gas estimation is skipped")
 	}
 
-	gasPrice := req.GasPriceWei
-	if gasPrice == nil {
-		gasPrice, err = client.SuggestGasPrice(ctx)
-		if err != nil {
-			return common.Hash{}, fmt.Errorf("suggest gas price: %w", err)
+	submitRPCURL := strings.TrimSpace(req.SubmitRPCURL)
+	var tx *types.Transaction
+	var targetBlock uint64
+	if submitRPCURL != "" {
+		header, headerErr := client.HeaderByNumber(ctx, nil)
+		if headerErr != nil {
+			return common.Hash{}, fmt.Errorf("latest header: %w", headerErr)
 		}
+		if header.BaseFee == nil {
+			return common.Hash{}, errors.New("latest block baseFee is required for flashbots bundle")
+		}
+		tipCap := req.GasPriceWei
+		if tipCap == nil {
+			tipCap, err = client.SuggestGasTipCap(ctx)
+			if err != nil {
+				return common.Hash{}, fmt.Errorf("suggest gas tip cap: %w", err)
+			}
+		}
+		feeCap := new(big.Int).Add(new(big.Int).Mul(header.BaseFee, big.NewInt(2)), tipCap)
+		targetBlock = header.Number.Uint64() + 1
+		tx = types.NewTx(&types.DynamicFeeTx{
+			ChainID:   chainID,
+			Nonce:     nonce,
+			GasTipCap: tipCap,
+			GasFeeCap: feeCap,
+			Gas:       gasLimit,
+			To:        &req.Executor,
+			Data:      data,
+		})
+	} else {
+		gasPrice := req.GasPriceWei
+		if gasPrice == nil {
+			gasPrice, err = client.SuggestGasPrice(ctx)
+			if err != nil {
+				return common.Hash{}, fmt.Errorf("suggest gas price: %w", err)
+			}
+		}
+		tx = types.NewTransaction(nonce, req.Executor, new(big.Int), gasLimit, new(big.Int).Set(gasPrice), data)
 	}
 
-	tx := types.NewTransaction(nonce, req.Executor, new(big.Int), gasLimit, new(big.Int).Set(gasPrice), data)
 	signedTx, err := types.SignTx(tx, types.LatestSignerForChainID(chainID), privateKey)
 	if err != nil {
 		return common.Hash{}, fmt.Errorf("sign tx: %w", err)
 	}
-	submitClient := client
-	if submitRPCURL := strings.TrimSpace(req.SubmitRPCURL); submitRPCURL != "" && submitRPCURL != req.RPCURL {
-		submitClient, err = ethclient.DialContext(ctx, submitRPCURL)
-		if err != nil {
-			return common.Hash{}, fmt.Errorf("dial submit rpc: %w", err)
+	if submitRPCURL != "" {
+		if err := submitFlashbotsBundles(ctx, submitRPCURL, privateKey, signedTx, targetBlock, 3); err != nil {
+			return common.Hash{}, err
 		}
-		defer submitClient.Close()
-	}
-	if err := submitClient.SendTransaction(ctx, signedTx); err != nil {
+	} else if err := client.SendTransaction(ctx, signedTx); err != nil {
 		return common.Hash{}, fmt.Errorf("send tx: %w", err)
 	}
 

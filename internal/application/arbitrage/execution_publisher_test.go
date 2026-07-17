@@ -32,7 +32,7 @@ func TestExecutionPublisherBroadcastsApprovalAndInterrupts(t *testing.T) {
 	}
 }
 
-func TestExecutionPublisherPaysFlashbotsViaGasPrice(t *testing.T) {
+func TestExecutionPublisherPassesCoinbasePaymentPlan(t *testing.T) {
 	executor := &fakeExecutionExecutor{}
 	cfg := testExecutionConfig()
 	cfg.FlashbotsPaymentBPS = 8000
@@ -45,11 +45,11 @@ func TestExecutionPublisherPaysFlashbotsViaGasPrice(t *testing.T) {
 	if executor.executeCalls != 1 {
 		t.Fatalf("expected execution call, got %d", executor.executeCalls)
 	}
-	if executor.simulateCalls != 1 {
-		t.Fatalf("expected simulate call, got %d", executor.simulateCalls)
+	if executor.simulateCalls != 0 {
+		t.Fatalf("expected bundle broadcaster to own simulation, got %d application simulations", executor.simulateCalls)
 	}
-	if executor.executeReq.GasPriceWei.Cmp(big.NewInt(800)) != 0 {
-		t.Fatalf("expected flashbots gas price 800, got %s", executor.executeReq.GasPriceWei)
+	if executor.executeReq.Plan.CoinbasePaymentBPS != 8000 {
+		t.Fatalf("expected coinbase payment bps 8000, got %d", executor.executeReq.Plan.CoinbasePaymentBPS)
 	}
 	if executor.executeReq.SubmitRPCURL != "https://relay.flashbots.net" {
 		t.Fatalf("unexpected submit rpc %q", executor.executeReq.SubmitRPCURL)
@@ -75,8 +75,10 @@ func TestExecutionPublisherDerivesMissingV3Approvals(t *testing.T) {
 		t.Fatalf("pack: %v", err)
 	}
 	executor := &fakeExecutionExecutor{}
+	cfg := testExecutionConfig()
+	cfg.WrappedNativeToken = weth
 	publisher := NewExecutionPublisher(
-		testExecutionConfig(),
+		cfg,
 		fakeExecutionBuilder{plan: domaincontract.ExecutionPlan{
 			Loan: domaincontract.FlashLoan{
 				Protocol: domaincontract.FlashLoanProtocolBalancer,
@@ -117,6 +119,7 @@ func testExecutionConfig() ExecutionConfig {
 		Executor:            common.HexToAddress("0x00000000000000000000000000000000000000aa"),
 		FlashbotsRPCURL:     "https://relay.flashbots.net",
 		FlashbotsPaymentBPS: 8000,
+		WrappedNativeToken:  common.HexToAddress("0x00000000000000000000000000000000000000cc"),
 		GasLimit:            100,
 		SkipEstimate:        true,
 	}

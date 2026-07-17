@@ -44,12 +44,14 @@ type SwapRoute struct {
 }
 
 type ExecutionPlan struct {
-	Loan             FlashLoan
-	Routes           []SwapRoute
-	SettleCurrencies []common.Address // currencies that may hold open V4 PoolManager deltas
-	ProfitToken      common.Address
-	MinProfit        *big.Int
-	Deadline         *big.Int
+	Loan               FlashLoan
+	Routes             []SwapRoute
+	SettleCurrencies   []common.Address // currencies that may hold open V4 PoolManager deltas
+	ProfitToken        common.Address
+	MinProfit          *big.Int
+	Deadline           *big.Int
+	CoinbasePaymentBPS uint16
+	WrappedNativeToken common.Address
 }
 
 type BroadcastRequest struct {

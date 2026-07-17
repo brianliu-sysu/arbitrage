@@ -600,6 +600,7 @@ func executionConfigFromRuntime(cfg config.Config) arbitrageapp.ExecutionConfig 
 		Executor:            execution.Executor(),
 		FlashbotsRPCURL:     execution.FlashbotsRPCURL,
 		FlashbotsPaymentBPS: execution.FlashbotsPaymentBPS,
+		WrappedNativeToken:  execution.WETH(),
 		GasLimit:            execution.GasLimit,
 		GasPriceWei:         execution.GasPrice(),
 		SkipEstimate:        execution.SkipEstimate,

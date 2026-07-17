@@ -17,6 +17,10 @@ import { TransientStateLibrary } from "v4-core/src/libraries/TransientStateLibra
 import { Currency, CurrencyLibrary } from "v4-core/src/types/Currency.sol";
 import { CurrencySettler } from "./libraries/CurrencySettler.sol";
 
+interface IWrappedNative {
+    function withdraw(uint256 amount) external;
+}
+
 /// @notice Executes a discovered arbitrage atomically with flash liquidity.
 /// @dev Swap calls are intentionally generic so the off-chain searcher can route through V3/V4/Balancer routers.
 contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallback, IUnlockCallback {
@@ -86,6 +90,7 @@ contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallb
     error SwapFailed();
     error SwapCallFailed(uint256 index, address router, bytes reason);
     error ProfitTooLow(uint256 profit, uint256 minProfit);
+    error InvalidCoinbasePayment();
 
     event OperatorSet(address indexed operator, bool enabled);
     event ProfitRecipientSet(address indexed recipient);
@@ -96,6 +101,7 @@ contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallb
         uint256 profit,
         address recipient
     );
+    event CoinbasePaid(address indexed coinbase, uint256 amount);
 
     modifier onlyOperator() {
         if (msg.sender != owner() && !operators[msg.sender]) revert NotOperator();
@@ -126,6 +132,21 @@ contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallb
     }
 
     function execute(ExecutionPlan calldata plan) external onlyOperator returns (uint256 profit) {
+        return _execute(plan, 0, address(0));
+    }
+
+    function execute(ExecutionPlan calldata plan, uint16 coinbasePaymentBps, address wrappedNativeToken)
+        external
+        onlyOperator
+        returns (uint256 profit)
+    {
+        return _execute(plan, coinbasePaymentBps, wrappedNativeToken);
+    }
+
+    function _execute(ExecutionPlan calldata plan, uint16 coinbasePaymentBps, address wrappedNativeToken)
+        private
+        returns (uint256 profit)
+    {
         // Only on-chain freshness; operator is trusted to supply a well-formed plan.
         if (plan.deadline != 0 && block.timestamp > plan.deadline) revert DeadlineExpired();
 
@@ -150,7 +171,7 @@ contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallb
         }
 
         _clearActiveExecution();
-        profit = _settleProfit(msg.sender, plan, initialProfitBalance);
+        profit = _settleProfit(msg.sender, plan, initialProfitBalance, coinbasePaymentBps, wrappedNativeToken);
     }
 
     function receiveFlashLoan(
@@ -313,13 +334,21 @@ contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallb
         }
     }
 
-    function _settleProfit(address caller, ExecutionPlan memory plan, uint256 initialProfitBalance)
+    function _settleProfit(
+        address caller,
+        ExecutionPlan memory plan,
+        uint256 initialProfitBalance,
+        uint16 coinbasePaymentBps,
+        address wrappedNativeToken
+    )
         private
         returns (uint256 profit)
     {
         uint256 finalBalance = _balanceOf(plan.profitToken, address(this));
         if (finalBalance < initialProfitBalance) revert ProfitTooLow(0, plan.minProfit);
-        profit = finalBalance - initialProfitBalance;
+        uint256 grossProfit = finalBalance - initialProfitBalance;
+        uint256 coinbasePayment = _payCoinbase(plan.profitToken, grossProfit, coinbasePaymentBps, wrappedNativeToken);
+        profit = grossProfit - coinbasePayment;
         if (profit < plan.minProfit) revert ProfitTooLow(profit, plan.minProfit);
 
         address recipient = _profitRecipient();
@@ -328,6 +357,24 @@ contract ArbitrageExecutor is Ownable, IFlashLoanRecipient, IUniswapV3FlashCallb
         }
 
         emit ArbitrageExecuted(caller, plan.loan.protocol, plan.profitToken, profit, recipient);
+    }
+
+    function _payCoinbase(address profitToken, uint256 grossProfit, uint16 paymentBps, address wrappedNativeToken)
+        private
+        returns (uint256 payment)
+    {
+        if (paymentBps == 0 || grossProfit == 0) return 0;
+        if (paymentBps > 10_000) revert InvalidCoinbasePayment();
+        if (profitToken != address(0) && profitToken != wrappedNativeToken) {
+            revert InvalidCoinbasePayment();
+        }
+
+        payment = grossProfit * paymentBps / 10_000;
+        if (payment == 0) return 0;
+        if (profitToken != address(0)) IWrappedNative(wrappedNativeToken).withdraw(payment);
+        (bool success,) = payable(block.coinbase).call{ value: payment }("");
+        if (!success) revert NativeTransferFailed();
+        emit CoinbasePaid(block.coinbase, payment);
     }
 
     function _balanceOf(address token, address account) private view returns (uint256) {

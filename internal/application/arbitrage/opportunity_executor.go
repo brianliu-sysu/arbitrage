@@ -132,6 +132,7 @@ func (e *OpportunityExecutor) Execute(ctx context.Context, req OpportunityExecut
 	if plan.MinProfit == nil {
 		plan.MinProfit = cloneBigIntOrZero(opportunity.NetProfit)
 	}
+	applyCoinbasePaymentConfig(&plan, e.cfg)
 	if err := e.validatePlan(plan, approvals); err != nil {
 		return OpportunityExecuteResult{}, err
 	}
@@ -155,11 +156,6 @@ func (e *OpportunityExecutor) Execute(ctx context.Context, req OpportunityExecut
 	}
 
 	gasPriceWei := cloneBigInt(e.cfg.GasPriceWei)
-	if bribe := flashbotsGasPriceFromConfig(e.cfg, opportunity); bribe != nil {
-		if gasPriceWei == nil || bribe.Cmp(gasPriceWei) > 0 {
-			gasPriceWei = bribe
-		}
-	}
 
 	approvalResp, err := e.executor.EnsureApprovals(ctx, domaincontract.EnsureApprovalsRequest{
 		RPCURL:       strings.TrimSpace(e.cfg.RPCURL),
@@ -196,12 +192,6 @@ func (e *OpportunityExecutor) Execute(ctx context.Context, req OpportunityExecut
 		GasPriceWei:  gasPriceWei,
 		SkipEstimate: e.cfg.SkipEstimate,
 		SubmitRPCURL: strings.TrimSpace(e.cfg.FlashbotsRPCURL),
-	}
-	if err := e.executor.Simulate(ctx, broadcastReq); err != nil {
-		return result, fmt.Errorf("simulate arbitrage: %w", err)
-	}
-	if err := ctx.Err(); err != nil {
-		return result, err
 	}
 	resp, err := e.executor.Execute(ctx, broadcastReq)
 	if err != nil {
@@ -345,6 +335,14 @@ func (e *OpportunityExecutor) validatePlan(plan domaincontract.ExecutionPlan, ap
 }
 
 func validateExecutionPlanForConfig(plan domaincontract.ExecutionPlan, approvals []domaincontract.TokenApproval, cfg ExecutionConfig) error {
+	if plan.CoinbasePaymentBPS > 0 {
+		if plan.ProfitToken != (common.Address{}) && plan.ProfitToken != plan.WrappedNativeToken {
+			return fmt.Errorf("coinbase payment requires native or wrapped-native profit token")
+		}
+		if plan.ProfitToken != (common.Address{}) && plan.WrappedNativeToken == (common.Address{}) {
+			return fmt.Errorf("wrapped native token is required for coinbase payment")
+		}
+	}
 	allowedRouters := addressSet(cfg.AllowedRouters)
 	if len(allowedRouters) > 0 {
 		for i, route := range plan.Routes {
@@ -376,6 +374,18 @@ func validateExecutionPlanForConfig(plan domaincontract.ExecutionPlan, approvals
 		}
 	}
 	return nil
+}
+
+func applyCoinbasePaymentConfig(plan *domaincontract.ExecutionPlan, cfg ExecutionConfig) {
+	if plan == nil || strings.TrimSpace(cfg.FlashbotsRPCURL) == "" || cfg.FlashbotsPaymentBPS == 0 {
+		return
+	}
+	plan.CoinbasePaymentBPS = uint16(cfg.FlashbotsPaymentBPS)
+	plan.WrappedNativeToken = cfg.WrappedNativeToken
+	if plan.MinProfit != nil {
+		plan.MinProfit.Mul(plan.MinProfit, new(big.Int).SetUint64(10_000-cfg.FlashbotsPaymentBPS))
+		plan.MinProfit.Div(plan.MinProfit, big.NewInt(10_000))
+	}
 }
 
 func validateRouteFillSlot(index int, route domaincontract.SwapRoute) error {
@@ -419,23 +429,6 @@ func addressSet(values []common.Address) map[common.Address]bool {
 		}
 	}
 	return out
-}
-
-func flashbotsGasPriceFromConfig(cfg ExecutionConfig, opportunity *domainarb.Opportunity) *big.Int {
-	if cfg.FlashbotsPaymentBPS == 0 || cfg.GasLimit == 0 || opportunity == nil || opportunity.NetProfit == nil {
-		return nil
-	}
-	payment := new(big.Int).Mul(opportunity.NetProfit, new(big.Int).SetUint64(cfg.FlashbotsPaymentBPS))
-	payment.Div(payment, big.NewInt(10_000))
-	if payment.Sign() <= 0 {
-		return nil
-	}
-	gasLimit := new(big.Int).SetUint64(cfg.GasLimit)
-	gasPrice := new(big.Int).Div(payment, gasLimit)
-	if new(big.Int).Mod(payment, gasLimit).Sign() > 0 {
-		gasPrice.Add(gasPrice, big.NewInt(1))
-	}
-	return gasPrice
 }
 
 func marshalExecutionPlan(plan domaincontract.ExecutionPlan, approvals []domaincontract.TokenApproval) (json.RawMessage, error) {

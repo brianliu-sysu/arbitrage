@@ -18,6 +18,18 @@ contract MockERC20 is ERC20 {
     }
 }
 
+contract MockWETH is MockERC20 {
+    constructor() MockERC20("Wrapped Ether", "WETH") { }
+
+    receive() external payable { }
+
+    function withdraw(uint256 amount) external {
+        _burn(msg.sender, amount);
+        (bool success,) = payable(msg.sender).call{ value: amount }("");
+        require(success, "withdraw failed");
+    }
+}
+
 contract MockBalancerVault {
     uint256 public feeAmount;
 
@@ -283,6 +295,89 @@ contract ArbitrageExecutorTest is Test {
         assertEq(returnedProfit, nativeProfit);
         assertEq(recipient.balance, nativeProfit);
         assertEq(address(executor).balance, 0);
+    }
+
+    function testExecutePaysCoinbaseFromActualNativeProfit() external {
+        uint256 nativeProfit = 2 ether;
+        address coinbase = address(0xB017D3A);
+        _setProfitRecipient();
+        vm.coinbase(coinbase);
+        vm.deal(address(swapTarget), nativeProfit);
+
+        ArbitrageExecutor.RouterCall[] memory routers = new ArbitrageExecutor.RouterCall[](1);
+        routers[0] = ArbitrageExecutor.RouterCall({
+            routerAddress: address(swapTarget),
+            value: 0,
+            data: abi.encodeCall(MockSwapTarget.sendETH, (payable(address(executor)), nativeProfit)),
+            fillSource: ArbitrageExecutor.FillSource.None,
+            fillToken: address(0),
+            patchAmount: false,
+            amountAsCallValue: false,
+            fillOffset: 0
+        });
+        ArbitrageExecutor.ExecutionPlan memory plan = ArbitrageExecutor.ExecutionPlan({
+            loan: ArbitrageExecutor.FlashLoan({
+                protocol: ArbitrageExecutor.FlashLoanProtocol.Balancer,
+                lender: address(vault),
+                token: address(token),
+                amount: 100 ether,
+                borrowToken0: true
+            }),
+            routers: routers,
+            settleCurrencies: new address[](0),
+            profitToken: address(0),
+            minProfit: 0.4 ether,
+            deadline: block.timestamp + 1
+        });
+
+        vm.prank(operator);
+        uint256 returnedProfit = executor.execute(plan, 8_000, address(0));
+
+        assertEq(returnedProfit, 0.4 ether);
+        assertEq(coinbase.balance, 1.6 ether);
+        assertEq(recipient.balance, 0.4 ether);
+    }
+
+    function testExecutePaysCoinbaseFromActualWETHProfit() external {
+        MockWETH weth = new MockWETH();
+        uint256 grossProfit = 2 ether;
+        address coinbase = address(0xB017D3A);
+        _setProfitRecipient();
+        vm.coinbase(coinbase);
+        vm.deal(address(weth), grossProfit);
+
+        ArbitrageExecutor.RouterCall[] memory routers = new ArbitrageExecutor.RouterCall[](1);
+        routers[0] = ArbitrageExecutor.RouterCall({
+            routerAddress: address(swapTarget),
+            value: 0,
+            data: abi.encodeCall(MockSwapTarget.mintProfit, (MockERC20(address(weth)), address(executor), grossProfit)),
+            fillSource: ArbitrageExecutor.FillSource.None,
+            fillToken: address(0),
+            patchAmount: false,
+            amountAsCallValue: false,
+            fillOffset: 0
+        });
+        ArbitrageExecutor.ExecutionPlan memory plan = ArbitrageExecutor.ExecutionPlan({
+            loan: ArbitrageExecutor.FlashLoan({
+                protocol: ArbitrageExecutor.FlashLoanProtocol.Balancer,
+                lender: address(vault),
+                token: address(token),
+                amount: 100 ether,
+                borrowToken0: true
+            }),
+            routers: routers,
+            settleCurrencies: new address[](0),
+            profitToken: address(weth),
+            minProfit: 0.4 ether,
+            deadline: block.timestamp + 1
+        });
+
+        vm.prank(operator);
+        uint256 returnedProfit = executor.execute(plan, 8_000, address(weth));
+
+        assertEq(returnedProfit, 0.4 ether);
+        assertEq(coinbase.balance, 1.6 ether);
+        assertEq(weth.balanceOf(recipient), 0.4 ether);
     }
 
     function testRejectsDirectBalancerCallbackWithoutActiveExecution() external {
