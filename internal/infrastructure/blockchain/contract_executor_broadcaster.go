@@ -127,11 +127,12 @@ const erc20AllowanceABI = `[
 ]`
 
 type ContractExecutorBroadcaster struct {
-	parsedABI abi.ABI
-	erc20ABI  abi.ABI
+	parsedABI        abi.ABI
+	erc20ABI         abi.ABI
+	multicallAddress common.Address
 }
 
-func NewContractExecutorBroadcaster() (*ContractExecutorBroadcaster, error) {
+func NewContractExecutorBroadcaster(multicallAddresses ...common.Address) (*ContractExecutorBroadcaster, error) {
 	parsedABI, err := abi.JSON(strings.NewReader(arbitrageExecutorABI))
 	if err != nil {
 		return nil, fmt.Errorf("parse arbitrage executor abi: %w", err)
@@ -140,7 +141,15 @@ func NewContractExecutorBroadcaster() (*ContractExecutorBroadcaster, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse erc20 abi: %w", err)
 	}
-	return &ContractExecutorBroadcaster{parsedABI: parsedABI, erc20ABI: erc20ABI}, nil
+	multicallAddress := DefaultConfig("").MulticallAddress
+	if len(multicallAddresses) > 0 && multicallAddresses[0] != (common.Address{}) {
+		multicallAddress = multicallAddresses[0]
+	}
+	return &ContractExecutorBroadcaster{
+		parsedABI:        parsedABI,
+		erc20ABI:         erc20ABI,
+		multicallAddress: multicallAddress,
+	}, nil
 }
 
 func (b *ContractExecutorBroadcaster) BroadcastExecution(
@@ -332,15 +341,17 @@ func formatABIError(name string, values []any) string {
 	return fmt.Sprintf("%s(%s)", name, strings.Join(parts, ", "))
 }
 
-func (b *ContractExecutorBroadcaster) Allowance(
+func (b *ContractExecutorBroadcaster) Allowances(
 	ctx context.Context,
 	rpcURL string,
-	token common.Address,
 	owner common.Address,
-	spender common.Address,
-) (*big.Int, error) {
+	approvals []domaincontract.TokenApproval,
+) ([]*big.Int, error) {
 	if b == nil {
 		return nil, errors.New("contract executor broadcaster is nil")
+	}
+	if len(approvals) == 0 {
+		return nil, nil
 	}
 	client, err := ethclient.DialContext(ctx, rpcURL)
 	if err != nil {
@@ -348,29 +359,41 @@ func (b *ContractExecutorBroadcaster) Allowance(
 	}
 	defer client.Close()
 
-	data, err := b.erc20ABI.Pack("allowance", owner, spender)
+	requests := make([]MulticallRequest, len(approvals))
+	for index, approval := range approvals {
+		data, packErr := b.erc20ABI.Pack("allowance", owner, approval.Spender)
+		if packErr != nil {
+			return nil, fmt.Errorf("pack allowance[%d] calldata: %w", index, packErr)
+		}
+		requests[index] = MulticallRequest{Target: approval.Token, Data: data}
+	}
+	multicall, err := NewMulticall(&EthClient{client: client}, b.multicallAddress)
 	if err != nil {
-		return nil, fmt.Errorf("pack allowance calldata: %w", err)
+		return nil, err
 	}
-	output, err := client.CallContract(ctx, ethereum.CallMsg{
-		To:   &token,
-		Data: data,
-	}, nil)
+	results, err := multicall.Aggregate3(ctx, requests, 0)
 	if err != nil {
-		return nil, fmt.Errorf("call allowance: %w", err)
+		return nil, fmt.Errorf("multicall allowances: %w", err)
 	}
-	values, err := b.erc20ABI.Unpack("allowance", output)
-	if err != nil {
-		return nil, fmt.Errorf("unpack allowance: %w", err)
+	allowances := make([]*big.Int, len(results))
+	for index, result := range results {
+		if !result.Success {
+			return nil, fmt.Errorf("allowance[%d] multicall failed for token %s", index, approvals[index].Token.Hex())
+		}
+		values, unpackErr := b.erc20ABI.Unpack("allowance", result.ReturnData)
+		if unpackErr != nil {
+			return nil, fmt.Errorf("unpack allowance[%d]: %w", index, unpackErr)
+		}
+		if len(values) != 1 {
+			return nil, fmt.Errorf("unexpected allowance[%d] output count %d", index, len(values))
+		}
+		allowance, ok := values[0].(*big.Int)
+		if !ok {
+			return nil, fmt.Errorf("unexpected allowance[%d] output type %T", index, values[0])
+		}
+		allowances[index] = new(big.Int).Set(allowance)
 	}
-	if len(values) != 1 {
-		return nil, fmt.Errorf("unexpected allowance output count %d", len(values))
-	}
-	allowance, ok := values[0].(*big.Int)
-	if !ok {
-		return nil, fmt.Errorf("unexpected allowance output type %T", values[0])
-	}
-	return new(big.Int).Set(allowance), nil
+	return allowances, nil
 }
 
 func (b *ContractExecutorBroadcaster) BroadcastApprove(
@@ -491,7 +514,7 @@ func (b *ContractExecutorBroadcaster) sendTransaction(
 		return common.Hash{}, fmt.Errorf("sign tx: %w", err)
 	}
 	if submitRPCURL != "" {
-		if err := submitFlashbotsBundles(ctx, submitRPCURL, privateKey, signedTx, targetBlock, 3); err != nil {
+		if err := submitFlashbotsBundles(ctx, submitRPCURL, privateKey, signedTx, targetBlock, 3, b.decodeABIError); err != nil {
 			return common.Hash{}, err
 		}
 	} else if err := client.SendTransaction(ctx, signedTx); err != nil {

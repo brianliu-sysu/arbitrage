@@ -220,17 +220,21 @@ func (f *fakeContractBroadcaster) SimulateExecution(context.Context, domaincontr
 	return nil
 }
 
-func (f *fakeContractBroadcaster) Allowance(
-	context.Context,
-	string,
-	common.Address,
-	common.Address,
-	common.Address,
-) (*big.Int, error) {
-	if f.allowance != nil {
-		return new(big.Int).Set(f.allowance), nil
+func (f *fakeContractBroadcaster) Allowances(
+	_ context.Context,
+	_ string,
+	_ common.Address,
+	approvals []domaincontract.TokenApproval,
+) ([]*big.Int, error) {
+	allowances := make([]*big.Int, len(approvals))
+	for index := range allowances {
+		if f.allowance != nil {
+			allowances[index] = new(big.Int).Set(f.allowance)
+		} else {
+			allowances[index] = new(big.Int).Lsh(big.NewInt(1), 255)
+		}
 	}
-	return new(big.Int).Lsh(big.NewInt(1), 255), nil
+	return allowances, nil
 }
 
 func (f *fakeContractBroadcaster) BroadcastApprove(

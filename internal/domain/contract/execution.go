@@ -1,10 +1,13 @@
 package contract
 
 import (
+	"errors"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 )
+
+var ErrExecutionSimulationReverted = errors.New("execution simulation reverted")
 
 type FlashLoanProtocol string
 

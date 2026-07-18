@@ -136,8 +136,8 @@ func newBlockchain(cfg config.Config) (*chaininfra.Services, error) {
 	return chaininfra.NewServices(chainCfg.BlockchainConfig())
 }
 
-func newContractExecutorAppService() (*contractapp.AppService, error) {
-	broadcaster, err := chaininfra.NewContractExecutorBroadcaster()
+func newContractExecutorAppService(cfg config.Config) (*contractapp.AppService, error) {
+	broadcaster, err := chaininfra.NewContractExecutorBroadcaster(cfg.PrimaryRuntimeConfig().BlockchainConfig().MulticallAddress)
 	if err != nil {
 		return nil, err
 	}

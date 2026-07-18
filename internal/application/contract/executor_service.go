@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
-	"sync"
 
 	domaincontract "github.com/brianliu-sysu/uniswapv3/internal/domain/contract"
 	"github.com/ethereum/go-ethereum/common"
@@ -15,28 +14,16 @@ import (
 type Broadcaster interface {
 	BroadcastExecution(ctx context.Context, req domaincontract.BroadcastRequest) (domaincontract.BroadcastResponse, error)
 	SimulateExecution(ctx context.Context, req domaincontract.BroadcastRequest) error
-	Allowance(ctx context.Context, rpcURL string, token, owner, spender common.Address) (*big.Int, error)
+	Allowances(ctx context.Context, rpcURL string, owner common.Address, approvals []domaincontract.TokenApproval) ([]*big.Int, error)
 	BroadcastApprove(ctx context.Context, req domaincontract.BroadcastRequest, approval domaincontract.TokenApproval) (domaincontract.BroadcastResponse, error)
 }
 
 type AppService struct {
 	broadcaster Broadcaster
-	mu          sync.Mutex
-	allowances  map[approvalKey]*big.Int
-}
-
-type approvalKey struct {
-	RPCURL   string
-	Executor common.Address
-	Token    common.Address
-	Spender  common.Address
 }
 
 func NewAppService(broadcaster Broadcaster) *AppService {
-	return &AppService{
-		broadcaster: broadcaster,
-		allowances:  make(map[approvalKey]*big.Int),
-	}
+	return &AppService{broadcaster: broadcaster}
 }
 
 func (s *AppService) Execute(ctx context.Context, req domaincontract.BroadcastRequest) (domaincontract.BroadcastResponse, error) {
@@ -83,7 +70,6 @@ func (s *AppService) EnsureApprovals(ctx context.Context, req domaincontract.Ens
 			return domaincontract.EnsureApprovalsResponse{}, err
 		}
 		txHashes = append(txHashes, resp.TxHash)
-		s.storeAllowance(normalized, approval, maxUint256())
 	}
 	return domaincontract.EnsureApprovalsResponse{TxHashes: txHashes, Broadcast: true}, nil
 }
@@ -265,47 +251,24 @@ func normalizeApprovals(approvals []domaincontract.TokenApproval) []domaincontra
 }
 
 func (s *AppService) missingApprovals(ctx context.Context, req domaincontract.EnsureApprovalsRequest) ([]domaincontract.TokenApproval, error) {
+	allowances, err := s.broadcaster.Allowances(ctx, req.RPCURL, req.Executor, req.Approvals)
+	if err != nil {
+		return nil, err
+	}
+	if len(allowances) != len(req.Approvals) {
+		return nil, fmt.Errorf("expected %d allowance results, got %d", len(req.Approvals), len(allowances))
+	}
 	missing := make([]domaincontract.TokenApproval, 0)
-	for _, approval := range req.Approvals {
-		cached := s.cachedAllowance(req, approval)
-		if cached != nil && cached.Cmp(approval.Amount) >= 0 {
-			continue
+	for index, approval := range req.Approvals {
+		onChain := allowances[index]
+		if onChain == nil {
+			onChain = new(big.Int)
 		}
-		onChain, err := s.broadcaster.Allowance(ctx, req.RPCURL, approval.Token, req.Executor, approval.Spender)
-		if err != nil {
-			return nil, err
-		}
-		s.storeAllowance(req, approval, onChain)
 		if onChain.Cmp(approval.Amount) < 0 {
 			missing = append(missing, approval)
 		}
 	}
 	return missing, nil
-}
-
-func (s *AppService) cachedAllowance(req domaincontract.EnsureApprovalsRequest, approval domaincontract.TokenApproval) *big.Int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	value := s.allowances[approvalCacheKey(req, approval)]
-	return cloneBigInt(value)
-}
-
-func (s *AppService) storeAllowance(req domaincontract.EnsureApprovalsRequest, approval domaincontract.TokenApproval, allowance *big.Int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.allowances == nil {
-		s.allowances = make(map[approvalKey]*big.Int)
-	}
-	s.allowances[approvalCacheKey(req, approval)] = zeroIfNil(allowance)
-}
-
-func approvalCacheKey(req domaincontract.EnsureApprovalsRequest, approval domaincontract.TokenApproval) approvalKey {
-	return approvalKey{
-		RPCURL:   req.RPCURL,
-		Executor: req.Executor,
-		Token:    approval.Token,
-		Spender:  approval.Spender,
-	}
 }
 
 func approvalBroadcastRequest(req domaincontract.EnsureApprovalsRequest) domaincontract.BroadcastRequest {

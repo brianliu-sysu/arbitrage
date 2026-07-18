@@ -10,7 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-func TestEnsureApprovalsBroadcastsAndCachesMaxApproval(t *testing.T) {
+func TestEnsureApprovalsBroadcastsAndRechecksOnChainAllowance(t *testing.T) {
 	broadcaster := &fakeBroadcaster{allowance: big.NewInt(0)}
 	service := contractapp.NewAppService(broadcaster)
 
@@ -22,6 +22,10 @@ func TestEnsureApprovalsBroadcastsAndCachesMaxApproval(t *testing.T) {
 			Token:   common.HexToAddress("0x00000000000000000000000000000000000000bb"),
 			Spender: common.HexToAddress("0x00000000000000000000000000000000000000cc"),
 			Amount:  big.NewInt(100),
+		}, {
+			Token:   common.HexToAddress("0x00000000000000000000000000000000000000dd"),
+			Spender: common.HexToAddress("0x00000000000000000000000000000000000000ee"),
+			Amount:  big.NewInt(200),
 		}},
 		GasLimit:     100_000,
 		SkipEstimate: true,
@@ -31,8 +35,11 @@ func TestEnsureApprovalsBroadcastsAndCachesMaxApproval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure approvals: %v", err)
 	}
-	if !resp.Broadcast || broadcaster.approveCalls != 1 {
+	if !resp.Broadcast || broadcaster.approveCalls != 2 {
 		t.Fatalf("expected approval broadcast, resp=%+v calls=%d", resp, broadcaster.approveCalls)
+	}
+	if broadcaster.allowanceCalls != 1 {
+		t.Fatalf("expected one batched allowance call, got %d", broadcaster.allowanceCalls)
 	}
 
 	resp, err = service.EnsureApprovals(context.Background(), req)
@@ -42,8 +49,8 @@ func TestEnsureApprovalsBroadcastsAndCachesMaxApproval(t *testing.T) {
 	if resp.Broadcast {
 		t.Fatalf("expected cached approval to skip broadcast")
 	}
-	if broadcaster.allowanceCalls != 1 {
-		t.Fatalf("expected one on-chain allowance check, got %d", broadcaster.allowanceCalls)
+	if broadcaster.allowanceCalls != 2 {
+		t.Fatalf("expected allowance to be rechecked on chain, got %d checks", broadcaster.allowanceCalls)
 	}
 }
 
@@ -88,12 +95,17 @@ func (f *fakeBroadcaster) SimulateExecution(context.Context, domaincontract.Broa
 	return nil
 }
 
-func (f *fakeBroadcaster) Allowance(context.Context, string, common.Address, common.Address, common.Address) (*big.Int, error) {
+func (f *fakeBroadcaster) Allowances(_ context.Context, _ string, _ common.Address, approvals []domaincontract.TokenApproval) ([]*big.Int, error) {
 	f.allowanceCalls++
-	return new(big.Int).Set(f.allowance), nil
+	allowances := make([]*big.Int, len(approvals))
+	for index := range allowances {
+		allowances[index] = new(big.Int).Set(f.allowance)
+	}
+	return allowances, nil
 }
 
 func (f *fakeBroadcaster) BroadcastApprove(context.Context, domaincontract.BroadcastRequest, domaincontract.TokenApproval) (domaincontract.BroadcastResponse, error) {
 	f.approveCalls++
+	f.allowance = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
 	return domaincontract.BroadcastResponse{TxHash: common.HexToHash("0x2")}, nil
 }

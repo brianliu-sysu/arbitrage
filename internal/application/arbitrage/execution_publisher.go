@@ -196,6 +196,13 @@ func (p *ExecutionPublisher) Publish(ctx context.Context, opportunity *domainarb
 	}
 	resp, err := p.executor.Execute(ctx, broadcastReq)
 	if err != nil {
+		if errors.Is(err, domaincontract.ErrExecutionSimulationReverted) {
+			p.logger.Info("arbitrage execution skipped after bundle simulation reverted",
+				zap.String("opportunity", opportunity.ID),
+				zap.Error(err),
+			)
+			return nil
+		}
 		return fmt.Errorf("execute arbitrage: %w", err)
 	}
 	if err := markOpportunityExecuted(ctx, p.repo, opportunity, resp.TxHash); err != nil {

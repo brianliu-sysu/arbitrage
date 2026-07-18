@@ -62,6 +62,15 @@ func TestExecutionPublisherPassesCoinbasePaymentPlan(t *testing.T) {
 	}
 }
 
+func TestExecutionPublisherSkipsSimulationRevert(t *testing.T) {
+	executor := &fakeExecutionExecutor{executeErr: domaincontract.ErrExecutionSimulationReverted}
+	publisher := NewExecutionPublisher(testExecutionConfig(), fakeExecutionBuilder{}, executor, nil)
+
+	if err := publisher.Publish(context.Background(), testOpportunity()); err != nil {
+		t.Fatalf("expected simulation revert to skip opportunity, got %v", err)
+	}
+}
+
 func TestApplyCoinbasePaymentConfigFallsBackForUnsettledERC20Profit(t *testing.T) {
 	plan := domaincontract.ExecutionPlan{ProfitToken: common.HexToAddress("0x1")}
 	cfg := testExecutionConfig()
@@ -192,6 +201,7 @@ type fakeExecutionExecutor struct {
 	simulateCalls int
 	executeCalls  int
 	executeReq    domaincontract.BroadcastRequest
+	executeErr    error
 }
 
 func (f *fakeExecutionExecutor) EnsureApprovals(_ context.Context, req domaincontract.EnsureApprovalsRequest) (domaincontract.EnsureApprovalsResponse, error) {
@@ -208,5 +218,8 @@ func (f *fakeExecutionExecutor) Simulate(context.Context, domaincontract.Broadca
 func (f *fakeExecutionExecutor) Execute(_ context.Context, req domaincontract.BroadcastRequest) (domaincontract.BroadcastResponse, error) {
 	f.executeCalls++
 	f.executeReq = req
+	if f.executeErr != nil {
+		return domaincontract.BroadcastResponse{}, f.executeErr
+	}
 	return domaincontract.BroadcastResponse{TxHash: common.HexToHash("0x3")}, nil
 }

@@ -3,16 +3,34 @@ package blockchain
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
+	domaincontract "github.com/brianliu-sysu/uniswapv3/internal/domain/contract"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 )
+
+func TestValidateFlashbotsSimulationDecodesExecutorRevert(t *testing.T) {
+	broadcaster, err := NewContractExecutorBroadcaster()
+	if err != nil {
+		t.Fatalf("new broadcaster: %v", err)
+	}
+	raw := json.RawMessage(`{"results":[{"revert":"0x23d43a25000000000000000000000000c02aaa39b223fe8d0a0e5c4f27ead9083c756cc200000000000000000000000000000000000000000000000000005ade3bcdb1df00000000000000000000000000000000000000000000000000005af3107a4000"}]}`)
+	err = validateFlashbotsSimulation(raw, broadcaster.decodeABIError)
+	if !errors.Is(err, domaincontract.ErrExecutionSimulationReverted) {
+		t.Fatalf("expected simulation reverted error, got %v", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "InsufficientRepayBalance") {
+		t.Fatalf("expected decoded executor error, got %v", err)
+	}
+}
 
 func TestSubmitFlashbotsBundlesSimulatesAndTargetsConsecutiveBlocks(t *testing.T) {
 	var mu sync.Mutex
@@ -44,7 +62,7 @@ func TestSubmitFlashbotsBundlesSimulatesAndTargetsConsecutiveBlocks(t *testing.T
 		t.Fatalf("parse key: %v", err)
 	}
 	tx := types.NewTransaction(1, common.HexToAddress("0x1"), big.NewInt(0), 21_000, big.NewInt(1), nil)
-	if err := submitFlashbotsBundles(context.Background(), server.URL, authKey, tx, 100, 3); err != nil {
+	if err := submitFlashbotsBundles(context.Background(), server.URL, authKey, tx, 100, 3, nil); err != nil {
 		t.Fatalf("submit bundles: %v", err)
 	}
 

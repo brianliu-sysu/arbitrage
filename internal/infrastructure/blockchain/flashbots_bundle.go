@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 
+	domaincontract "github.com/brianliu-sysu/uniswapv3/internal/domain/contract"
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -39,6 +40,7 @@ func submitFlashbotsBundles(
 	tx *types.Transaction,
 	firstTargetBlock uint64,
 	targetBlockCount uint64,
+	decodeRevert func([]byte) string,
 ) error {
 	rawTx, err := tx.MarshalBinary()
 	if err != nil {
@@ -54,7 +56,7 @@ func submitFlashbotsBundles(
 	if err != nil {
 		return fmt.Errorf("simulate flashbots bundle: %w", err)
 	}
-	if err := validateFlashbotsSimulation(simulation); err != nil {
+	if err := validateFlashbotsSimulation(simulation, decodeRevert); err != nil {
 		return fmt.Errorf("simulate flashbots bundle: %w", err)
 	}
 
@@ -70,7 +72,7 @@ func submitFlashbotsBundles(
 	return nil
 }
 
-func validateFlashbotsSimulation(raw json.RawMessage) error {
+func validateFlashbotsSimulation(raw json.RawMessage, decodeRevert func([]byte) string) error {
 	var result struct {
 		Results []struct {
 			Error  string `json:"error"`
@@ -82,10 +84,16 @@ func validateFlashbotsSimulation(raw json.RawMessage) error {
 	}
 	for index, txResult := range result.Results {
 		if txResult.Error != "" {
-			return fmt.Errorf("transaction %d: %s", index, txResult.Error)
+			return fmt.Errorf("%w: transaction %d: %s", domaincontract.ErrExecutionSimulationReverted, index, txResult.Error)
 		}
 		if txResult.Revert != "" {
-			return fmt.Errorf("transaction %d reverted: %s", index, txResult.Revert)
+			detail := txResult.Revert
+			if rawRevert, decodeErr := hexutil.Decode(txResult.Revert); decodeErr == nil && decodeRevert != nil {
+				if decoded := decodeRevert(rawRevert); decoded != "" {
+					detail = decoded
+				}
+			}
+			return fmt.Errorf("%w: transaction %d reverted: %s", domaincontract.ErrExecutionSimulationReverted, index, detail)
 		}
 	}
 	return nil
