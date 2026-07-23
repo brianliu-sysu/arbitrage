@@ -14,7 +14,7 @@ func NewTickTable() TickTable {
 	return TickTable{ticks: make(map[int32]*Tick)}
 }
 
-func (tt TickTable) Clone() TickTable {
+func (tt *TickTable) Clone() TickTable {
 	cloned := NewTickTable()
 	for index, tick := range tt.ticks {
 		cloned.ticks[index] = tick.Clone()
@@ -36,7 +36,7 @@ func (tt *TickTable) GetOrCreate(index int32) *Tick {
 	return tick
 }
 
-func (tt TickTable) InitializedIndexes() []int32 {
+func (tt *TickTable) InitializedIndexes() []int32 {
 	indexes := make([]int32, 0, len(tt.ticks))
 	for index, tick := range tt.ticks {
 		if tick.IsInitialized() {

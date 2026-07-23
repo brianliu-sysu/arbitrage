@@ -20,22 +20,23 @@ const (
 
 // Opportunity is an arbitrage opportunity discovered by the scanner.
 type Opportunity struct {
-	ID          string
-	StrategyID  string
-	Status      OpportunityStatus
-	PoolRef     PoolRef
-	PoolAddress common.Address
-	BlockNumber uint64
-	Route       quoteunified.Route
-	AmountIn    *big.Int
-	AmountOut   *big.Int
-	GrossProfit *big.Int
-	GasCost     *big.Int
-	FlashLoan   FlashLoanQuote
-	NetProfit   *big.Int
-	QuoteSteps  []OpportunityQuoteStep
-	Payload     []byte
-	CreatedAt   time.Time
+	ID                string
+	StrategyID        string
+	Status            OpportunityStatus
+	PoolRef           PoolRef
+	PoolAddress       common.Address
+	BlockNumber       uint64
+	Route             quoteunified.Route
+	AmountIn          *big.Int
+	AmountOut         *big.Int
+	GrossProfit       *big.Int
+	GasCost           *big.Int
+	BuilderPaymentWei *big.Int
+	FlashLoan         FlashLoanQuote
+	NetProfit         *big.Int
+	QuoteSteps        []OpportunityQuoteStep
+	Payload           []byte
+	CreatedAt         time.Time
 }
 
 type OpportunityQuoteStep struct {
@@ -66,21 +67,22 @@ func NewOpportunity(
 	}
 
 	o := &Opportunity{
-		ID:          id,
-		StrategyID:  strategy.ID,
-		Status:      OpportunityStatusDiscovered,
-		PoolRef:     poolRef,
-		PoolAddress: poolAddress,
-		BlockNumber: blockNumber,
-		Route:       route,
-		AmountIn:    cloneBigInt(evaluation.AmountIn),
-		AmountOut:   cloneBigInt(evaluation.AmountOut),
-		GrossProfit: cloneBigInt(evaluation.GrossProfit),
-		GasCost:     cloneBigInt(gas.CostWei),
-		FlashLoan:   cloneFlashLoanQuote(evaluation.FlashLoan),
-		NetProfit:   cloneBigInt(evaluation.NetProfit),
-		QuoteSteps:  cloneQuoteSteps(evaluation.QuoteSteps),
-		CreatedAt:   createdAt,
+		ID:                id,
+		StrategyID:        strategy.ID,
+		Status:            OpportunityStatusDiscovered,
+		PoolRef:           poolRef,
+		PoolAddress:       poolAddress,
+		BlockNumber:       blockNumber,
+		Route:             route,
+		AmountIn:          cloneBigInt(evaluation.AmountIn),
+		AmountOut:         cloneBigInt(evaluation.AmountOut),
+		GrossProfit:       cloneBigInt(evaluation.GrossProfit),
+		GasCost:           cloneBigInt(gas.CostWei),
+		BuilderPaymentWei: cloneBigInt(evaluation.BuilderPaymentWei),
+		FlashLoan:         cloneFlashLoanQuote(evaluation.FlashLoan),
+		NetProfit:         cloneBigInt(evaluation.NetProfit),
+		QuoteSteps:        cloneQuoteSteps(evaluation.QuoteSteps),
+		CreatedAt:         createdAt,
 	}
 	_ = o.EnsurePayload()
 	return o

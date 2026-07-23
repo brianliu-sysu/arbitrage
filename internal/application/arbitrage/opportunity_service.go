@@ -315,35 +315,25 @@ func (s *OpportunityService) generateForRoute(
 
 	s.mu.RLock()
 	coinbasePaymentBPS := s.coinbasePaymentBPS
-	settlementSlippageBPS := s.settlementSlippageBPS
-	wrappedNative := s.wrappedNative
 	s.mu.RUnlock()
-	if strategy.StartToken == (common.Address{}) || strategy.StartToken == wrappedNative {
-		settlementSlippageBPS = 0
-	} else if coinbasePaymentBPS > 0 {
-		settlementAmount := new(big.Int).Sub(optimized.AmountOut, optimized.AmountIn)
-		settlementAmount.Sub(settlementAmount, flashLoan.Fee)
-		canSettle, settleErr := s.canSettleToWrappedNative(ctx, strategy.StartToken, settlementAmount)
-		if settleErr != nil {
-			return nil, fmt.Errorf("quote wrapped-native settlement: %w", settleErr)
-		}
-		if !canSettle {
-			coinbasePaymentBPS = 0
-			settlementSlippageBPS = 0
-		}
-	}
 	evaluation := s.evaluator.Evaluate(domainarb.EvaluationInput{
-		Strategy:              strategy,
-		BlockNumber:           blockNumber,
-		Route:                 routeRef.Route,
-		AmountIn:              optimized.AmountIn,
-		AmountOut:             optimized.AmountOut,
-		GasCost:               gasCost,
-		CoinbasePaymentBPS:    coinbasePaymentBPS,
-		SettlementSlippageBPS: settlementSlippageBPS,
-		FlashLoan:             flashLoan,
-		QuoteSteps:            opportunityQuoteSteps(quoteSteps),
+		Strategy:           strategy,
+		BlockNumber:        blockNumber,
+		Route:              routeRef.Route,
+		AmountIn:           optimized.AmountIn,
+		AmountOut:          optimized.AmountOut,
+		GasCost:            gasCost,
+		CoinbasePaymentBPS: coinbasePaymentBPS,
+		FlashLoan:          flashLoan,
+		QuoteSteps:         opportunityQuoteSteps(quoteSteps),
 	})
+	if evaluation.CoinbasePayment.Sign() > 0 {
+		builderPaymentWei, conversionErr := s.tokenAmountInWrappedNative(ctx, evaluation.CoinbasePayment, strategy.StartToken)
+		if conversionErr != nil {
+			return nil, fmt.Errorf("convert builder payment to native token: %w", conversionErr)
+		}
+		evaluation.BuilderPaymentWei = builderPaymentWei
+	}
 	if !evaluation.Accepted {
 		s.logger.Debug("arbitrage route rejected",
 			zap.Uint64("block", blockNumber),
@@ -388,28 +378,35 @@ func (s *OpportunityService) generateForRoute(
 	return opp, nil
 }
 
-func (s *OpportunityService) canSettleToWrappedNative(
+func (s *OpportunityService) tokenAmountInWrappedNative(
 	ctx context.Context,
-	token common.Address,
 	amount *big.Int,
-) (bool, error) {
+	token common.Address,
+) (*big.Int, error) {
 	if amount == nil || amount.Sign() <= 0 {
-		return false, nil
+		return new(big.Int), nil
 	}
 	s.mu.RLock()
 	graph := s.poolGraph
 	wrappedNative := s.wrappedNative
 	s.mu.RUnlock()
-	if graph == nil || wrappedNative == (common.Address{}) {
-		return false, nil
+	if wrappedNative == (common.Address{}) {
+		wrappedNative = asset.MainnetWETH
+	}
+	if token == (common.Address{}) || token == wrappedNative {
+		return new(big.Int).Set(amount), nil
+	}
+	if graph == nil {
+		return nil, errors.New("pool graph is not configured")
 	}
 	routes, err := quoteunified.NewRouteService(graph, 3).FindRoutes(token, wrappedNative)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
+	var bestAmountOut *big.Int
 	for _, route := range routes {
 		if err := ctx.Err(); err != nil {
-			return false, err
+			return nil, err
 		}
 		pools, loadErr := s.loadRoutePools(ctx, route)
 		if loadErr != nil {
@@ -417,10 +414,15 @@ func (s *OpportunityService) canSettleToWrappedNative(
 		}
 		quote, quoteErr := s.quotes.QuoteRoute(pools, route, amount)
 		if quoteErr == nil && quote.AmountOut != nil && quote.AmountOut.Sign() > 0 {
-			return true, nil
+			if bestAmountOut == nil || quote.AmountOut.Cmp(bestAmountOut) > 0 {
+				bestAmountOut = new(big.Int).Set(quote.AmountOut)
+			}
 		}
 	}
-	return false, nil
+	if bestAmountOut == nil {
+		return nil, errors.New("no quotable route to wrapped native token")
+	}
+	return bestAmountOut, nil
 }
 
 func (s *OpportunityService) gasCostInToken(ctx context.Context, costWei *big.Int, token common.Address) (*big.Int, error) {

@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"math/big"
 
-	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
-	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
+	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -160,7 +160,7 @@ func (s *QuoteService) runSwapStep(
 ) error {
 	sqrtPriceStartX96 := new(big.Int).Set(state.sqrtPriceX96)
 
-	tickNext, initialized, err := pool.Bitmap.NextInitializedTick(state.tick, pool.TickSpacing, zeroForOne)
+	tickNext, initialized, err := pool.Bitmap.NextInitializedTickWithinOneWord(state.tick, pool.TickSpacing, zeroForOne)
 	if err != nil {
 		return fmt.Errorf("find next initialized tick: %w", err)
 	}

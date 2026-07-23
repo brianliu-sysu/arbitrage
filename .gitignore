@@ -30,3 +30,10 @@ contract/lib/
 *.so
 *.dylib
 *.test
+main
+
+
+// agent.md 
+AGENTS.md
+Agent.md
+Agent.md

@@ -15,7 +15,7 @@ type PersistedBitmapWord struct {
 	Word    *big.Int
 }
 
-func (tt TickTable) ExportTicks() []PersistedTick {
+func (tt *TickTable) ExportTicks() []PersistedTick {
 	records := make([]PersistedTick, 0, len(tt.ticks))
 	for index, tick := range tt.ticks {
 		if !tick.IsInitialized() {
@@ -40,15 +40,15 @@ func ImportTickTable(records []PersistedTick) TickTable {
 	return table
 }
 
-func (tb TickBitmap) ExportBitmap() []PersistedBitmapWord {
+func (tb *TickBitmap) ExportBitmap() []PersistedBitmapWord {
 	records := make([]PersistedBitmapWord, 0, len(tb.words))
 	for wordPos, word := range tb.words {
-		if word == nil || word.Sign() == 0 {
+		if word == (BitmapWord{}) {
 			continue
 		}
 		records = append(records, PersistedBitmapWord{
 			WordPos: wordPos,
-			Word:    cloneInt(word),
+			Word:    bitmapWordToBigInt(word),
 		})
 	}
 	return records
@@ -57,7 +57,32 @@ func (tb TickBitmap) ExportBitmap() []PersistedBitmapWord {
 func ImportTickBitmap(records []PersistedBitmapWord) TickBitmap {
 	bitmap := NewTickBitmap()
 	for _, record := range records {
-		bitmap.words[record.WordPos] = cloneInt(record.Word)
+		word := bitmapWordFromBigInt(record.Word)
+		if word != (BitmapWord{}) {
+			bitmap.words[record.WordPos] = word
+		}
 	}
 	return bitmap
+}
+
+func bitmapWordToBigInt(word BitmapWord) *big.Int {
+	value := new(big.Int)
+	for segment := len(word) - 1; segment >= 0; segment-- {
+		value.Lsh(value, 64)
+		value.Or(value, new(big.Int).SetUint64(word[segment]))
+	}
+	return value
+}
+
+func bitmapWordFromBigInt(value *big.Int) BitmapWord {
+	var word BitmapWord
+	if value == nil || value.Sign() <= 0 {
+		return word
+	}
+	remainder := new(big.Int).Set(value)
+	for segment := range word {
+		word[segment] = remainder.Uint64()
+		remainder.Rsh(remainder, 64)
+	}
+	return word
 }

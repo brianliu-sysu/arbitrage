@@ -12,19 +12,20 @@ import (
 )
 
 type opportunityPayload struct {
-	ID          string                 `json:"id"`
-	StrategyID  string                 `json:"strategyId,omitempty"`
-	Status      OpportunityStatus      `json:"status,omitempty"`
-	PoolRef     string                 `json:"poolRef,omitempty"`
-	BlockNumber uint64                 `json:"blockNumber"`
-	Route       opportunityRoute       `json:"route,omitempty"`
-	AmountIn    string                 `json:"amountIn,omitempty"`
-	AmountOut   string                 `json:"amountOut,omitempty"`
-	GrossProfit string                 `json:"grossProfit,omitempty"`
-	GasCost     string                 `json:"gasCost,omitempty"`
-	FlashLoan   *opportunityFlash      `json:"flashLoan,omitempty"`
-	NetProfit   string                 `json:"netProfit,omitempty"`
-	QuoteSteps  []opportunityQuoteStep `json:"quoteSteps,omitempty"`
+	ID                string                 `json:"id"`
+	StrategyID        string                 `json:"strategyId,omitempty"`
+	Status            OpportunityStatus      `json:"status,omitempty"`
+	PoolRef           string                 `json:"poolRef,omitempty"`
+	BlockNumber       uint64                 `json:"blockNumber"`
+	Route             opportunityRoute       `json:"route,omitempty"`
+	AmountIn          string                 `json:"amountIn,omitempty"`
+	AmountOut         string                 `json:"amountOut,omitempty"`
+	GrossProfit       string                 `json:"grossProfit,omitempty"`
+	GasCost           string                 `json:"gasCost,omitempty"`
+	BuilderPaymentWei string                 `json:"builderPaymentWei,omitempty"`
+	FlashLoan         *opportunityFlash      `json:"flashLoan,omitempty"`
+	NetProfit         string                 `json:"netProfit,omitempty"`
+	QuoteSteps        []opportunityQuoteStep `json:"quoteSteps,omitempty"`
 }
 
 type opportunityFlash struct {
@@ -130,6 +131,9 @@ func encodeOpportunityPayload(o *Opportunity) ([]byte, error) {
 	}
 	if o.GasCost != nil {
 		payload.GasCost = o.GasCost.String()
+	}
+	if o.BuilderPaymentWei != nil {
+		payload.BuilderPaymentWei = o.BuilderPaymentWei.String()
 	}
 	payload.FlashLoan = encodeOpportunityFlash(o.FlashLoan)
 	if o.NetProfit != nil {
@@ -237,6 +241,9 @@ func (o *Opportunity) ApplyPayload() error {
 	}
 	if o.GasCost == nil && payload.GasCost != "" {
 		o.GasCost = parsePayloadBigInt(payload.GasCost)
+	}
+	if o.BuilderPaymentWei == nil && payload.BuilderPaymentWei != "" {
+		o.BuilderPaymentWei = parsePayloadBigInt(payload.BuilderPaymentWei)
 	}
 	if o.FlashLoan.Protocol == "" && payload.FlashLoan != nil && payload.FlashLoan.Protocol != "" {
 		o.FlashLoan = decodeOpportunityFlash(*payload.FlashLoan)

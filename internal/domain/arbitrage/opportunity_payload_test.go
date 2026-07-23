@@ -58,9 +58,10 @@ func TestOpportunityEnsurePayloadIncludesWrapHop(t *testing.T) {
 					FeeAmount: big.NewInt(5),
 				},
 			},
-			NetProfit:  big.NewInt(80),
-			Profitable: true,
-			Accepted:   true,
+			NetProfit:         big.NewInt(80),
+			BuilderPaymentWei: big.NewInt(15),
+			Profitable:        true,
+			Accepted:          true,
 		},
 		GasEstimate{CostWei: big.NewInt(20)},
 		time.Unix(0, 0).UTC(),
@@ -202,6 +203,9 @@ func TestOpportunityApplyPayloadRestoresFields(t *testing.T) {
 	}
 	if loaded.NetProfit.Cmp(original.NetProfit) != 0 {
 		t.Fatalf("expected net profit %s, got %s", original.NetProfit, loaded.NetProfit)
+	}
+	if loaded.BuilderPaymentWei.Cmp(original.BuilderPaymentWei) != 0 {
+		t.Fatalf("expected builder payment %s, got %s", original.BuilderPaymentWei, loaded.BuilderPaymentWei)
 	}
 	if loaded.Route.Len() != original.Route.Len() {
 		t.Fatalf("expected %d hops, got %d", original.Route.Len(), loaded.Route.Len())

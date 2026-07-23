@@ -487,6 +487,7 @@ func (b *ContractExecutorBroadcaster) sendTransaction(
 				return common.Hash{}, fmt.Errorf("suggest gas tip cap: %w", err)
 			}
 		}
+		tipCap = addBuilderPaymentToGasPrice(tipCap, req.BuilderPaymentWei, gasLimit)
 		feeCap := new(big.Int).Add(new(big.Int).Mul(header.BaseFee, big.NewInt(2)), tipCap)
 		targetBlock = header.Number.Uint64() + 1
 		tx = types.NewTx(&types.DynamicFeeTx{
@@ -506,6 +507,7 @@ func (b *ContractExecutorBroadcaster) sendTransaction(
 				return common.Hash{}, fmt.Errorf("suggest gas price: %w", err)
 			}
 		}
+		gasPrice = addBuilderPaymentToGasPrice(gasPrice, req.BuilderPaymentWei, gasLimit)
 		tx = types.NewTransaction(nonce, req.Executor, new(big.Int), gasLimit, new(big.Int).Set(gasPrice), data)
 	}
 
@@ -522,6 +524,22 @@ func (b *ContractExecutorBroadcaster) sendTransaction(
 	}
 
 	return signedTx.Hash(), nil
+}
+
+func addBuilderPaymentToGasPrice(gasPrice, builderPaymentWei *big.Int, gasLimit uint64) *big.Int {
+	result := new(big.Int)
+	if gasPrice != nil {
+		result.Set(gasPrice)
+	}
+	if builderPaymentWei == nil || builderPaymentWei.Sign() <= 0 || gasLimit == 0 {
+		return result
+	}
+	divisor := new(big.Int).SetUint64(gasLimit)
+	extra := new(big.Int).Quo(
+		new(big.Int).Add(new(big.Int).Set(builderPaymentWei), new(big.Int).Sub(divisor, big.NewInt(1))),
+		divisor,
+	)
+	return result.Add(result, extra)
 }
 
 func parsePrivateKey(raw string) (*ecdsa.PrivateKey, error) {

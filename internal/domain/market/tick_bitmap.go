@@ -2,22 +2,24 @@ package market
 
 import (
 	"fmt"
-	"math/big"
+	"math/bits"
 )
+
+type BitmapWord [4]uint64
 
 // TickBitmap tracks which compressed ticks are initialized.
 type TickBitmap struct {
-	words map[int16]*big.Int
+	words map[int16]BitmapWord
 }
 
 func NewTickBitmap() TickBitmap {
-	return TickBitmap{words: make(map[int16]*big.Int)}
+	return TickBitmap{words: make(map[int16]BitmapWord)}
 }
 
-func (tb TickBitmap) Clone() TickBitmap {
+func (tb *TickBitmap) Clone() TickBitmap {
 	cloned := NewTickBitmap()
 	for wordPos, word := range tb.words {
-		cloned.words[wordPos] = cloneInt(word)
+		cloned.words[wordPos] = word
 	}
 	return cloned
 }
@@ -48,16 +50,17 @@ func (tb *TickBitmap) FlipTick(tick, tickSpacing int32) error {
 	}
 
 	wordPos, bitPos := bitmapPosition(compressed)
-	mask := new(big.Int).Lsh(big.NewInt(1), bitPos)
-	word, ok := tb.words[wordPos]
-	if !ok {
-		word = big.NewInt(0)
+	word := tb.words[wordPos]
+	word[bitPos/64] ^= uint64(1) << (bitPos % 64)
+	if word == (BitmapWord{}) {
+		delete(tb.words, wordPos)
+	} else {
+		tb.words[wordPos] = word
 	}
-	tb.words[wordPos] = new(big.Int).Xor(word, mask)
 	return nil
 }
 
-func (tb TickBitmap) IsInitialized(tick, tickSpacing int32) (bool, error) {
+func (tb *TickBitmap) IsInitialized(tick, tickSpacing int32) (bool, error) {
 	compressed, err := compressTick(tick, tickSpacing)
 	if err != nil {
 		return false, err
@@ -68,7 +71,7 @@ func (tb TickBitmap) IsInitialized(tick, tickSpacing int32) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	return word.Bit(int(bitPos)) == 1, nil
+	return word[bitPos/64]&(uint64(1)<<(bitPos%64)) != 0, nil
 }
 
 // compressTickSearch rounds tick toward negative infinity before dividing by spacing,
@@ -88,50 +91,42 @@ func compressTickSearch(tick, tickSpacing int32) (int32, error) {
 	return compressed, nil
 }
 
-func (tb TickBitmap) wordAt(wordPos int16) *big.Int {
-	word, ok := tb.words[wordPos]
-	if !ok {
-		return big.NewInt(0)
+func mostSignificantBitAtOrBelow(word BitmapWord, bitPos uint) (uint, bool) {
+	segment := int(bitPos / 64)
+	offset := bitPos % 64
+	candidate := word[segment]
+	if offset < 63 {
+		candidate &= (uint64(1) << (offset + 1)) - 1
 	}
-	return word
-}
-
-func maskAtOrBelow(bitPos uint) *big.Int {
-	return new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), bitPos+1), big.NewInt(1))
-}
-
-func maskAtOrAbove(bitPos uint) *big.Int {
-	fullWord := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
-	if bitPos == 0 {
-		return fullWord
+	if candidate != 0 {
+		return uint(segment*64 + 63 - bits.LeadingZeros64(candidate)), true
 	}
-	lowMask := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), bitPos), big.NewInt(1))
-	return new(big.Int).And(new(big.Int).Not(lowMask), fullWord)
-}
-
-func mostSignificantBit(v *big.Int) uint {
-	if v.Sign() == 0 {
-		return 0
-	}
-	return uint(v.BitLen() - 1)
-}
-
-func leastSignificantBit(v *big.Int) uint {
-	if v.Sign() == 0 {
-		return 0
-	}
-	for bit := 0; bit < 256; bit++ {
-		if v.Bit(bit) == 1 {
-			return uint(bit)
+	for segment--; segment >= 0; segment-- {
+		if word[segment] != 0 {
+			return uint(segment*64 + 63 - bits.LeadingZeros64(word[segment])), true
 		}
 	}
-	return 0
+	return 0, false
 }
 
-// NextInitializedTick finds the next initialized tick within a single 256-bit bitmap word.
-// When lte is true it searches downward (<= tick); otherwise upward (>= tick).
-// This mirrors Uniswap V3 TickBitmap.nextInitializedTickWithinOneWord.
-func (tb TickBitmap) NextInitializedTick(tick, tickSpacing int32, lte bool) (nextTick int32, initialized bool, err error) {
+func leastSignificantBitAtOrAbove(word BitmapWord, bitPos uint) (uint, bool) {
+	segment := int(bitPos / 64)
+	offset := bitPos % 64
+	candidate := word[segment] & (^uint64(0) << offset)
+	if candidate != 0 {
+		return uint(segment*64 + bits.TrailingZeros64(candidate)), true
+	}
+	for segment++; segment < len(word); segment++ {
+		if word[segment] != 0 {
+			return uint(segment*64 + bits.TrailingZeros64(word[segment])), true
+		}
+	}
+	return 0, false
+}
+
+// NextInitializedTickWithinOneWord finds the next initialized tick within one 256-bit word.
+// lte=true searches <= the compressed tick; lte=false searches > the compressed tick.
+func (tb *TickBitmap) NextInitializedTickWithinOneWord(tick, tickSpacing int32, lte bool) (nextTick int32, initialized bool, err error) {
 	compressed, err := compressTickSearch(tick, tickSpacing)
 	if err != nil {
 		return 0, false, err
@@ -139,9 +134,7 @@ func (tb TickBitmap) NextInitializedTick(tick, tickSpacing int32, lte bool) (nex
 
 	if lte {
 		wordPos, bitPos := bitmapPosition(compressed)
-		masked := new(big.Int).And(tb.wordAt(wordPos), maskAtOrBelow(bitPos))
-		if masked.Sign() != 0 {
-			msb := mostSignificantBit(masked)
+		if msb, found := mostSignificantBitAtOrBelow(tb.words[wordPos], bitPos); found {
 			nextCompressed := compressed - int32(bitPos-msb)
 			return nextCompressed * tickSpacing, true, nil
 		}
@@ -151,12 +144,15 @@ func (tb TickBitmap) NextInitializedTick(tick, tickSpacing int32, lte bool) (nex
 
 	nextCompressed := compressed + 1
 	wordPos, bitPos := bitmapPosition(nextCompressed)
-	masked := new(big.Int).And(tb.wordAt(wordPos), maskAtOrAbove(bitPos))
-	if masked.Sign() != 0 {
-		lsb := leastSignificantBit(masked)
-		nextCompressed = nextCompressed + int32(lsb-bitPos)
+	if lsb, found := leastSignificantBitAtOrAbove(tb.words[wordPos], bitPos); found {
+		nextCompressed += int32(lsb - bitPos)
 		return nextCompressed * tickSpacing, true, nil
 	}
-	nextCompressed = nextCompressed + int32(255-bitPos)
+	nextCompressed += int32(255 - bitPos)
 	return nextCompressed * tickSpacing, false, nil
+}
+
+// NextInitializedTick is kept for compatibility.
+func (tb *TickBitmap) NextInitializedTick(tick, tickSpacing int32, lte bool) (nextTick int32, initialized bool, err error) {
+	return tb.NextInitializedTickWithinOneWord(tick, tickSpacing, lte)
 }

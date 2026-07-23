@@ -128,16 +128,10 @@ func (e *OpportunityExecutor) Execute(ctx context.Context, req OpportunityExecut
 	if err != nil {
 		return OpportunityExecuteResult{}, err
 	}
+	disableContractBuilderPayment(&plan)
 	approvals = domaincontract.MergeTokenApprovals(approvals, domaincontract.RequiredTokenApprovals(plan))
 	if plan.MinProfit == nil {
 		plan.MinProfit = cloneBigIntOrZero(opportunity.NetProfit)
-	}
-	applyCoinbasePaymentConfig(&plan, e.cfg)
-	if strings.TrimSpace(e.cfg.FlashbotsRPCURL) != "" && e.cfg.FlashbotsPaymentBPS > 0 && plan.CoinbasePaymentBPS == 0 && plan.ProfitToken != (common.Address{}) && plan.ProfitToken != e.cfg.WrappedNativeToken {
-		e.logger.Info("opportunity execution falling back to zero-bribe flashbots bundle",
-			zap.String("opportunity_id", opportunity.ID),
-			zap.String("profit_token", plan.ProfitToken.Hex()),
-		)
 	}
 	if err := e.validatePlan(plan, approvals); err != nil {
 		return OpportunityExecuteResult{}, err
@@ -190,14 +184,15 @@ func (e *OpportunityExecutor) Execute(ctx context.Context, req OpportunityExecut
 	}
 
 	broadcastReq := domaincontract.BroadcastRequest{
-		RPCURL:       strings.TrimSpace(e.cfg.RPCURL),
-		PrivateKey:   strings.TrimSpace(e.cfg.PrivateKey),
-		Executor:     e.cfg.Executor,
-		Plan:         plan,
-		GasLimit:     e.cfg.GasLimit,
-		GasPriceWei:  gasPriceWei,
-		SkipEstimate: e.cfg.SkipEstimate,
-		SubmitRPCURL: strings.TrimSpace(e.cfg.FlashbotsRPCURL),
+		RPCURL:            strings.TrimSpace(e.cfg.RPCURL),
+		PrivateKey:        strings.TrimSpace(e.cfg.PrivateKey),
+		Executor:          e.cfg.Executor,
+		Plan:              plan,
+		GasLimit:          e.cfg.GasLimit,
+		GasPriceWei:       gasPriceWei,
+		BuilderPaymentWei: cloneBigInt(opportunity.BuilderPaymentWei),
+		SkipEstimate:      e.cfg.SkipEstimate,
+		SubmitRPCURL:      strings.TrimSpace(e.cfg.FlashbotsRPCURL),
 	}
 	resp, err := e.executor.Execute(ctx, broadcastReq)
 	if err != nil {
@@ -383,19 +378,6 @@ func validateExecutionPlanForConfig(plan domaincontract.ExecutionPlan, approvals
 		}
 	}
 	return nil
-}
-
-func applyCoinbasePaymentConfig(plan *domaincontract.ExecutionPlan, cfg ExecutionConfig) {
-	if plan == nil || strings.TrimSpace(cfg.FlashbotsRPCURL) == "" || cfg.FlashbotsPaymentBPS == 0 {
-		return
-	}
-	if plan.ProfitToken != (common.Address{}) && plan.ProfitToken != cfg.WrappedNativeToken && len(plan.SettlementRoutes) == 0 {
-		plan.CoinbasePaymentBPS = 0
-		plan.WrappedNativeToken = common.Address{}
-		return
-	}
-	plan.CoinbasePaymentBPS = uint16(cfg.FlashbotsPaymentBPS)
-	plan.WrappedNativeToken = cfg.WrappedNativeToken
 }
 
 func validateRouteFillSlot(index int, route domaincontract.SwapRoute) error {

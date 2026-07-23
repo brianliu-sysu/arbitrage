@@ -60,15 +60,16 @@ type ExecutionPlan struct {
 }
 
 type BroadcastRequest struct {
-	RPCURL       string
-	PrivateKey   string
-	Executor     common.Address
-	Plan         ExecutionPlan
-	GasLimit     uint64
-	GasPriceWei  *big.Int
-	Nonce        *uint64
-	SkipEstimate bool
-	SubmitRPCURL string
+	RPCURL            string
+	PrivateKey        string
+	Executor          common.Address
+	Plan              ExecutionPlan
+	GasLimit          uint64
+	GasPriceWei       *big.Int
+	BuilderPaymentWei *big.Int
+	Nonce             *uint64
+	SkipEstimate      bool
+	SubmitRPCURL      string
 }
 
 type BroadcastResponse struct {

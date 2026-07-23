@@ -23,15 +23,16 @@ type EvaluationInput struct {
 
 // EvaluationResult is the profit outcome of a route evaluation.
 type EvaluationResult struct {
-	AmountIn        *big.Int
-	AmountOut       *big.Int
-	GrossProfit     *big.Int
-	NetProfit       *big.Int
-	CoinbasePayment *big.Int
-	FlashLoan       FlashLoanQuote
-	QuoteSteps      []OpportunityQuoteStep
-	Profitable      bool
-	Accepted        bool
+	AmountIn          *big.Int
+	AmountOut         *big.Int
+	GrossProfit       *big.Int
+	NetProfit         *big.Int
+	CoinbasePayment   *big.Int
+	BuilderPaymentWei *big.Int
+	FlashLoan         FlashLoanQuote
+	QuoteSteps        []OpportunityQuoteStep
+	Profitable        bool
+	Accepted          bool
 }
 
 // Evaluator computes gross and net profit and applies strategy filters.

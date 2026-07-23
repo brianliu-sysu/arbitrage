@@ -616,9 +616,9 @@ func livePlanConfigFromRuntime(cfg config.Config) arbitrageapp.LivePlanConfig {
 	blockchainCfg := cfg.BlockchainConfig()
 	execution := cfg.Arbitrage.Execution
 	return arbitrageapp.LivePlanConfig{
-		RequireWETHProfit:     strings.TrimSpace(execution.FlashbotsRPCURL) != "" && execution.FlashbotsPaymentBPS > 0,
-		CoinbasePaymentBPS:    execution.FlashbotsPaymentBPS,
-		SettlementSlippageBPS: execution.SettlementSlippageBPS,
+		RequireWETHProfit:     false,
+		CoinbasePaymentBPS:    0,
+		SettlementSlippageBPS: 0,
 		WETH:                  execution.WETH(),
 		BalancerVault:         blockchainCfg.BalancerVaultAddress,
 		BalancerVaultV3:       blockchainCfg.BalancerVaultV3Address,

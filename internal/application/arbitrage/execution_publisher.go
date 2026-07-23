@@ -143,16 +143,10 @@ func (p *ExecutionPublisher) Publish(ctx context.Context, opportunity *domainarb
 		}
 		return fmt.Errorf("build execution plan: %w", err)
 	}
+	disableContractBuilderPayment(&plan)
 	approvals = domaincontract.MergeTokenApprovals(approvals, domaincontract.RequiredTokenApprovals(plan))
 	if plan.MinProfit == nil {
 		plan.MinProfit = cloneBigIntOrZero(opportunity.NetProfit)
-	}
-	applyCoinbasePaymentConfig(&plan, p.cfg)
-	if strings.TrimSpace(p.cfg.FlashbotsRPCURL) != "" && p.cfg.FlashbotsPaymentBPS > 0 && plan.CoinbasePaymentBPS == 0 && plan.ProfitToken != (common.Address{}) && plan.ProfitToken != p.cfg.WrappedNativeToken {
-		p.logger.Info("arbitrage execution falling back to zero-bribe flashbots bundle",
-			zap.String("opportunity", opportunity.ID),
-			zap.String("profit_token", plan.ProfitToken.Hex()),
-		)
 	}
 	if err := validateExecutionPlanForConfig(plan, approvals, p.cfg); err != nil {
 		return fmt.Errorf("validate execution plan: %w", err)
@@ -185,14 +179,15 @@ func (p *ExecutionPublisher) Publish(ctx context.Context, opportunity *domainarb
 	}
 
 	broadcastReq := domaincontract.BroadcastRequest{
-		RPCURL:       strings.TrimSpace(p.cfg.RPCURL),
-		PrivateKey:   strings.TrimSpace(p.cfg.PrivateKey),
-		Executor:     p.cfg.Executor,
-		Plan:         plan,
-		GasLimit:     p.cfg.GasLimit,
-		GasPriceWei:  gasPriceWei,
-		SkipEstimate: p.cfg.SkipEstimate,
-		SubmitRPCURL: strings.TrimSpace(p.cfg.FlashbotsRPCURL),
+		RPCURL:            strings.TrimSpace(p.cfg.RPCURL),
+		PrivateKey:        strings.TrimSpace(p.cfg.PrivateKey),
+		Executor:          p.cfg.Executor,
+		Plan:              plan,
+		GasLimit:          p.cfg.GasLimit,
+		GasPriceWei:       gasPriceWei,
+		BuilderPaymentWei: cloneBigInt(opportunity.BuilderPaymentWei),
+		SkipEstimate:      p.cfg.SkipEstimate,
+		SubmitRPCURL:      strings.TrimSpace(p.cfg.FlashbotsRPCURL),
 	}
 	resp, err := p.executor.Execute(ctx, broadcastReq)
 	if err != nil {
@@ -220,6 +215,16 @@ func (p *ExecutionPublisher) Publish(ctx context.Context, opportunity *domainarb
 		zap.String("flashbots_rpc", strings.TrimSpace(p.cfg.FlashbotsRPCURL)),
 	)
 	return nil
+}
+
+func disableContractBuilderPayment(plan *domaincontract.ExecutionPlan) {
+	if plan == nil {
+		return
+	}
+	plan.SettlementRoutes = nil
+	plan.SettlementMinProfit = nil
+	plan.CoinbasePaymentBPS = 0
+	plan.WrappedNativeToken = common.Address{}
 }
 
 func (p *ExecutionPublisher) begin(opportunityID string) (common.Hash, bool) {

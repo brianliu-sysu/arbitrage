@@ -160,7 +160,7 @@ func (s *QuoteService) runSwapStep(
 ) error {
 	sqrtPriceStartX96 := new(big.Int).Set(state.sqrtPriceX96)
 
-	tickNext, initialized, err := pool.Bitmap.NextInitializedTick(state.tick, pool.Key.TickSpacing, zeroForOne)
+	tickNext, initialized, err := pool.Bitmap.NextInitializedTickWithinOneWord(state.tick, pool.Key.TickSpacing, zeroForOne)
 	if err != nil {
 		return fmt.Errorf("find next initialized tick: %w", err)
 	}

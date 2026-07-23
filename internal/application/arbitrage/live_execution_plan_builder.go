@@ -99,7 +99,7 @@ func (b *LiveExecutionPlanBuilder) BuildExecutionPlan(
 			if err != nil {
 				return domaincontract.ExecutionPlan{}, nil, err
 			}
-			return b.addWETHSettlement(ctx, opportunity, refreshed, approvals)
+			return refreshed, domaincontract.MergeTokenApprovals(approvals, domaincontract.RequiredTokenApprovals(refreshed)), nil
 		}
 		if !isExecutionUnavailable(err) {
 			return domaincontract.ExecutionPlan{}, nil, err
@@ -121,7 +121,7 @@ func (b *LiveExecutionPlanBuilder) BuildExecutionPlan(
 	if err != nil {
 		return domaincontract.ExecutionPlan{}, nil, err
 	}
-	return b.addWETHSettlement(ctx, opportunity, plan, approvals)
+	return plan, domaincontract.MergeTokenApprovals(approvals, domaincontract.RequiredTokenApprovals(plan)), nil
 }
 
 func (b *LiveExecutionPlanBuilder) addWETHSettlement(
