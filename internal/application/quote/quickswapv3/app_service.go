@@ -4,6 +4,7 @@ import (
 	"context"
 
 	quoteappclv3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/clv3"
+	quotecontract "github.com/brianliu-sysu/uniswapv3/internal/application/quote/contract"
 	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
 	marketquick "github.com/brianliu-sysu/uniswapv3/internal/domain/market/quickswapv3"
 	quotequickswapv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/quickswapv3"
@@ -12,9 +13,9 @@ import (
 
 func NewAppService(
 	pools marketquick.PoolRepository,
-	registry quoteappclv3.PoolRegistry,
+	registry quotecontract.PoolRegistry[common.Address],
 	quotes *quotequickswapv3domain.QuoteService,
-	readiness ReadinessChecker,
+	readiness quotecontract.PoolReadiness[common.Address],
 	maxHops int,
 ) *AppService {
 	engine := quotequickswapv3domain.NewQuoteService()

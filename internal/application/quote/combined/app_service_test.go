@@ -9,7 +9,6 @@ import (
 	quoteapp "github.com/brianliu-sysu/uniswapv3/internal/application/quote"
 	quotecombined "github.com/brianliu-sysu/uniswapv3/internal/application/quote/combined"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
-	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
 	marketuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
@@ -201,16 +200,10 @@ func (r staticV4Registry) Remove(_ context.Context, id marketuniv4.PoolID) error
 	return nil
 }
 
-type alwaysReady struct{}
+type alwaysReady[PoolID comparable] struct{}
 
-func (alwaysReady) IsSystemReady() bool                          { return true }
-func (alwaysReady) IsV3PoolReady(_ common.Address) bool          { return true }
-func (alwaysReady) IsPancakeV3PoolReady(_ common.Address) bool   { return true }
-func (alwaysReady) IsQuickSwapV3PoolReady(_ common.Address) bool { return true }
-func (alwaysReady) IsV4PoolReady(_ marketuniv4.PoolID) bool      { return true }
-func (alwaysReady) IsBalancerPoolReady(_ marketbalancer.PoolID) bool {
-	return true
-}
+func (alwaysReady[PoolID]) IsSystemReady() bool     { return true }
+func (alwaysReady[PoolID]) IsPoolReady(PoolID) bool { return true }
 
 func testToken(index byte) common.Address {
 	return common.HexToAddress(fmt.Sprintf("0x000000000000000000000000000000000000000%x", index))
@@ -267,7 +260,7 @@ func newCombinedService(v3Repo *memoryV3PoolRepo, pancakeRepo *memoryPancakePool
 			quotepancakev3domain.NewQuoteService(),
 			quoteuniv4domain.NewQuoteService(),
 		),
-		alwaysReady{},
+		alwaysReady[common.Address]{},
 		3,
 	)
 }
@@ -282,13 +275,13 @@ func testProtocolAdapters(
 ) []quotecombined.ProtocolAdapter {
 	protocols := make([]quotecombined.ProtocolAdapter, 0, 3)
 	if v3Repo != nil {
-		protocols = append(protocols, quotecombined.NewUniv3ProtocolAdapter(v3Repo, v3Reg, alwaysReady{}))
+		protocols = append(protocols, quotecombined.NewUniv3ProtocolAdapter(v3Repo, v3Reg, alwaysReady[common.Address]{}))
 	}
 	if pancakeRepo != nil {
-		protocols = append(protocols, quotecombined.NewPancakeV3ProtocolAdapter(pancakeRepo, pancakeReg, alwaysReady{}))
+		protocols = append(protocols, quotecombined.NewPancakeV3ProtocolAdapter(pancakeRepo, pancakeReg, alwaysReady[common.Address]{}))
 	}
 	if v4Repo != nil {
-		protocols = append(protocols, quotecombined.NewUniv4ProtocolAdapter(v4Repo, v4Reg, alwaysReady{}))
+		protocols = append(protocols, quotecombined.NewUniv4ProtocolAdapter(v4Repo, v4Reg, alwaysReady[marketuniv4.PoolID]{}))
 	}
 	return protocols
 }

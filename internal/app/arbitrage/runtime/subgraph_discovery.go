@@ -72,7 +72,7 @@ func reconcileSubgraphPools[PoolID comparable](r *syncLifecycle, name string, re
 		if routes, err := r.runtime.Arbitrage.RefreshArbitrageRoutes(r.runCtx); err != nil {
 			r.logger.Warn("refresh arbitrage routes after subgraph update failed", zap.String("protocol", name), zap.Error(err))
 		} else {
-			r.logger.Info("arbitrage routes refreshed after subgraph update", zap.String("protocol", name), zap.Int("new_pools", added), zap.Int("routes", routes))
+			r.logger.Debug("arbitrage routes refreshed after subgraph update", zap.String("protocol", name), zap.Int("new_pools", added), zap.Int("routes", routes))
 		}
 	}
 }

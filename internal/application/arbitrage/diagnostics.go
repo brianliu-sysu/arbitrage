@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	quotecombined "github.com/brianliu-sysu/uniswapv3/internal/application/quote/combined"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	"go.uber.org/zap"
 )
@@ -15,7 +14,6 @@ type Diagnostics struct {
 	StartTokens    int
 	GraphEdges     int
 	ArbitrageReady bool
-	Readiness      quotecombined.ReadinessDiagnostics
 	RefreshError   string
 }
 
@@ -26,10 +24,7 @@ func (s *Services) CollectDiagnostics(ctx context.Context) Diagnostics {
 		StartTokens: len(s.StartTokens()),
 	}
 	if s.readiness != nil {
-		if combined, ok := s.readiness.(*quotecombined.SyncReadiness); ok {
-			d.Readiness = combined.Diagnostics()
-			d.ArbitrageReady = d.Readiness.ArbitrageReady
-		}
+		d.ArbitrageReady = s.readiness.IsSystemReady()
 	}
 	if edges, err := s.countGraphEdges(ctx); err != nil {
 		d.RefreshError = err.Error()
@@ -51,23 +46,6 @@ func (s *Services) LogDiagnostics(ctx context.Context, logger *zap.Logger, event
 		zap.Int("start_tokens", d.StartTokens),
 		zap.Int("graph_edges", d.GraphEdges),
 		zap.Bool("arbitrage_ready", d.ArbitrageReady),
-		zap.Bool("univ3_system_ready", d.Readiness.V3.SystemReady),
-		zap.Int("univ3_ready_pools", d.Readiness.V3.ReadyPools),
-		zap.Int("univ3_total_pools", d.Readiness.V3.TotalPools),
-	}
-	if d.Readiness.Pancake.Enabled {
-		fields = append(fields,
-			zap.Bool("pancakev3_system_ready", d.Readiness.Pancake.SystemReady),
-			zap.Int("pancakev3_ready_pools", d.Readiness.Pancake.ReadyPools),
-			zap.Int("pancakev3_total_pools", d.Readiness.Pancake.TotalPools),
-		)
-	}
-	if d.Readiness.V4.Enabled {
-		fields = append(fields,
-			zap.Bool("univ4_system_ready", d.Readiness.V4.SystemReady),
-			zap.Int("univ4_ready_pools", d.Readiness.V4.ReadyPools),
-			zap.Int("univ4_total_pools", d.Readiness.V4.TotalPools),
-		)
 	}
 	if d.RefreshError != "" {
 		fields = append(fields, zap.String("graph_error", d.RefreshError))

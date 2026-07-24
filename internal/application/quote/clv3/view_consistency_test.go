@@ -29,7 +29,7 @@ func (r *switchingViewReadiness) IsSystemReady() bool {
 
 func (*switchingViewReadiness) IsPoolReady(common.Address) bool { return false }
 
-func TestQuoteRetriesWhenCommittedViewChanges(t *testing.T) {
+func TestQuoteRetriesWhenViewRevisionChanges(t *testing.T) {
 	readiness := &switchingViewReadiness{}
 	service := NewAppService(nil, nil, nil, readiness, 3)
 	_, err := service.Quote(context.Background(), Request{

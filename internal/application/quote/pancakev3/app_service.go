@@ -4,6 +4,7 @@ import (
 	"context"
 
 	quoteappclv3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/clv3"
+	quotecontract "github.com/brianliu-sysu/uniswapv3/internal/application/quote/contract"
 	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
 	quotepancakev3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/pancakev3"
@@ -12,9 +13,9 @@ import (
 
 func NewAppService(
 	pools marketpancake.PoolRepository,
-	registry quoteappclv3.PoolRegistry,
+	registry quotecontract.PoolRegistry[common.Address],
 	quotes *quotepancakev3domain.QuoteService,
-	readiness ReadinessChecker,
+	readiness quotecontract.PoolReadiness[common.Address],
 	maxHops int,
 ) *AppService {
 	engine := quotepancakev3domain.NewQuoteService()

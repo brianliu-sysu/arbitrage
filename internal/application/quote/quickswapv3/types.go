@@ -6,11 +6,10 @@ import (
 )
 
 type (
-	Request          = quoteappclv3.Request
-	Response         = quoteappclv3.Response
-	RouteQuote       = quoteappclv3.RouteQuote
-	ReadinessChecker = quoteappclv3.ReadinessChecker
-	Route            = quoteclv3.Route
+	Request    = quoteappclv3.Request
+	Response   = quoteappclv3.Response
+	RouteQuote = quoteappclv3.RouteQuote
+	Route      = quoteclv3.Route
 )
 
 // AppService orchestrates QuickSwap V3 route discovery and quoting.

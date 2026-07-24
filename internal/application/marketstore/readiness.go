@@ -87,6 +87,15 @@ func (r v4Readiness) BlockNumber() uint64                    { return r.view.Blo
 func (r v4Readiness) Generation() uint64                     { return r.view.Version().Generation }
 func (r v4Readiness) IsPoolReady(id marketuniv4.PoolID) bool { return r.view.IsV4PoolReady(id) }
 
+type balancerReadiness struct{ view *View }
+
+func (r balancerReadiness) IsSystemReady() bool { return r.view.IsSystemReady() }
+func (r balancerReadiness) BlockNumber() uint64 { return r.view.BlockNumber() }
+func (r balancerReadiness) Generation() uint64  { return r.view.Version().Generation }
+func (r balancerReadiness) IsPoolReady(id marketbalancer.PoolID) bool {
+	return r.view.IsBalancerPoolReady(id)
+}
+
 // Readiness exposes the committed-view readiness contract without leaking its
 // private adapter implementation.
 type Readiness[PoolID comparable] interface {
@@ -110,4 +119,8 @@ func (v *View) QuickSwapReadiness() Readiness[common.Address] {
 
 func (v *View) Univ4Readiness() Readiness[marketuniv4.PoolID] {
 	return v4Readiness{view: v}
+}
+
+func (v *View) BalancerReadiness() Readiness[marketbalancer.PoolID] {
+	return balancerReadiness{view: v}
 }

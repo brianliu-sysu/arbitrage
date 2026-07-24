@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 
+	quotecontract "github.com/brianliu-sysu/uniswapv3/internal/application/quote/contract"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/asset"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
@@ -12,30 +13,20 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// ReadinessChecker gates quoting on pool and system readiness.
-type ReadinessChecker interface {
-	IsSystemReady() bool
-	IsPoolReady(poolID marketv4.PoolID) bool
-}
-
-type PoolRegistry interface {
-	List(context.Context) ([]marketv4.PoolID, error)
-}
-
 // AppService orchestrates V4 route discovery and quoting.
 type AppService struct {
-	pools     marketv4.PoolRepository
-	registry  PoolRegistry
+	pools     quotecontract.PoolRepository[marketv4.PoolID, marketv4.Pool]
+	registry  quotecontract.PoolRegistry[marketv4.PoolID]
 	quotes    *quoteuniv4.QuoteService
-	readiness ReadinessChecker
+	readiness quotecontract.PoolReadiness[marketv4.PoolID]
 	maxHops   int
 }
 
 func NewAppService(
-	pools marketv4.PoolRepository,
-	registry PoolRegistry,
+	pools quotecontract.PoolRepository[marketv4.PoolID, marketv4.Pool],
+	registry quotecontract.PoolRegistry[marketv4.PoolID],
 	quotes *quoteuniv4.QuoteService,
-	readiness ReadinessChecker,
+	readiness quotecontract.PoolReadiness[marketv4.PoolID],
 	maxHops int,
 ) *AppService {
 	if maxHops <= 0 {
@@ -56,9 +47,9 @@ func (s *AppService) Quote(ctx context.Context, req Request) (Response, error) {
 		return Response{}, err
 	}
 	for {
-		blockBefore := quoteViewBlock(s.readiness)
+		blockBefore := quotecontract.ViewRevision(s.readiness)
 		response, err := s.quoteCurrentView(ctx, req)
-		if blockBefore == quoteViewBlock(s.readiness) {
+		if blockBefore == quotecontract.ViewRevision(s.readiness) {
 			return response, err
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -79,16 +70,6 @@ func (s *AppService) quoteCurrentView(ctx context.Context, req Request) (Respons
 		return Response{}, fmt.Errorf("multi-hop exact-output quotes are not supported")
 	}
 	return s.quoteBestRoute(ctx, req)
-}
-
-func quoteViewBlock(readiness ReadinessChecker) uint64 {
-	if versioned, ok := readiness.(interface{ Generation() uint64 }); ok {
-		return versioned.Generation()
-	}
-	if versioned, ok := readiness.(interface{ BlockNumber() uint64 }); ok {
-		return versioned.BlockNumber()
-	}
-	return 0
 }
 
 func validateQuoteRequest(req Request) error {

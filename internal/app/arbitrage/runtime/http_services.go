@@ -13,7 +13,6 @@ import (
 	quotequickswapv3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/quickswapv3"
 	quoteuniv3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/univ3"
 	quoteuniv4 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/univ4"
-	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync/protocol"
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
 	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
@@ -28,17 +27,9 @@ import (
 	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/persistence"
 	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/registry"
 	httpapi "github.com/brianliu-sysu/uniswapv3/internal/interfaces/http"
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
-
-func balancerRegistry(resources protocolResources) marketbalancer.PoolRegistry {
-	if resources.balancer == nil {
-		return nil
-	}
-	return resources.balancer.registry
-}
 
 func newQuoteV3AppService(
 	runtime *chainRuntime,
@@ -54,7 +45,7 @@ func newQuoteV3AppService(
 	}
 	return quoteuniv3.NewAppService(
 		runtime.MarketStore.Univ3Repository(),
-		services.Lifecycle.Pools,
+		runtime.MarketStore.Univ3Registry(),
 		quoteuniv3domain.NewQuoteService(),
 		runtime.MarketStore.Univ3Readiness(),
 		maxHops,
@@ -75,7 +66,7 @@ func newQuotePancakeV3AppService(
 	}
 	return quotepancakev3.NewAppService(
 		runtime.MarketStore.PancakeRepository(),
-		services.Lifecycle.Pools,
+		runtime.MarketStore.PancakeRegistry(),
 		quotepancakev3domain.NewQuoteService(),
 		runtime.MarketStore.PancakeReadiness(),
 		maxHops,
@@ -96,7 +87,7 @@ func newQuoteQuickSwapV3AppService(
 	}
 	return quotequickswapv3.NewAppService(
 		runtime.MarketStore.QuickSwapRepository(),
-		services.Lifecycle.Pools,
+		runtime.MarketStore.QuickSwapRegistry(),
 		quotequickswapv3domain.NewQuoteService(),
 		runtime.MarketStore.QuickSwapReadiness(),
 		maxHops,
@@ -117,7 +108,7 @@ func newQuoteV4AppService(
 	}
 	return quoteuniv4.NewAppService(
 		runtime.MarketStore.Univ4Repository(),
-		services.Lifecycle.Pools,
+		runtime.MarketStore.Univ4Registry(),
 		quoteuniv4domain.NewQuoteService(),
 		runtime.MarketStore.Univ4Readiness(),
 		maxHops,
@@ -132,36 +123,15 @@ func newQuoteCombinedAppService(
 	if maxHops <= 0 {
 		maxHops = 3
 	}
-	var univ3Active *syncapp.PoolLifecycleService[common.Address]
-	var pancakeActive *syncapp.PoolLifecycleService[common.Address]
-	var quickSwapActive *syncapp.PoolLifecycleService[common.Address]
-	var univ4Active *syncapp.PoolLifecycleService[marketv4.PoolID]
-	var balancerActive *syncapp.PoolLifecycleService[marketbalancer.PoolID]
-	if services := runtime.protocols.univ3Services(); services != nil {
-		univ3Active = services.Lifecycle.Pools
-	}
-	if services := runtime.protocols.pancakeServices(); services != nil {
-		pancakeActive = services.Lifecycle.Pools
-	}
-	if services := runtime.protocols.quickSwapServices(); services != nil {
-		quickSwapActive = services.Lifecycle.Pools
-	}
-	if services := runtime.protocols.univ4Services(); services != nil {
-		univ4Active = services.Lifecycle.Pools
-	}
-	if services := runtime.protocols.balancerServices(); services != nil {
-		balancerActive = services.Lifecycle.Pools
-	}
-
 	protocols := []quotecombined.ProtocolAdapter{
-		quotecombined.NewUniv3ProtocolAdapter(runtime.MarketStore.Univ3Repository(), univ3Active, runtime.MarketStore),
-		quotecombined.NewPancakeV3ProtocolAdapter(runtime.MarketStore.PancakeRepository(), pancakeActive, runtime.MarketStore),
-		quotecombined.NewQuickSwapV3ProtocolAdapter(runtime.MarketStore.QuickSwapRepository(), quickSwapActive, runtime.MarketStore),
-		quotecombined.NewUniv4ProtocolAdapter(runtime.MarketStore.Univ4Repository(), univ4Active, runtime.MarketStore),
+		quotecombined.NewUniv3ProtocolAdapter(runtime.MarketStore.Univ3Repository(), runtime.MarketStore.Univ3Registry(), runtime.MarketStore.Univ3Readiness()),
+		quotecombined.NewPancakeV3ProtocolAdapter(runtime.MarketStore.PancakeRepository(), runtime.MarketStore.PancakeRegistry(), runtime.MarketStore.PancakeReadiness()),
+		quotecombined.NewQuickSwapV3ProtocolAdapter(runtime.MarketStore.QuickSwapRepository(), runtime.MarketStore.QuickSwapRegistry(), runtime.MarketStore.QuickSwapReadiness()),
+		quotecombined.NewUniv4ProtocolAdapter(runtime.MarketStore.Univ4Repository(), runtime.MarketStore.Univ4Registry(), runtime.MarketStore.Univ4Readiness()),
 		quotecombined.NewBalancerProtocolAdapter(
 			runtime.MarketStore.BalancerRepository(),
-			activeBalancerRegistry{lifecycle: balancerActive, registry: balancerRegistry(runtime.resources.protocols)},
-			runtime.MarketStore,
+			runtime.MarketStore.BalancerRegistry(),
+			runtime.MarketStore.BalancerReadiness(),
 		),
 	}
 	return quotecombined.NewAppService(

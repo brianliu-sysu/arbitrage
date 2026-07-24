@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	quotecontract "github.com/brianliu-sysu/uniswapv3/internal/application/quote/contract"
 	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
 	marketquick "github.com/brianliu-sysu/uniswapv3/internal/domain/market/quickswapv3"
@@ -13,31 +14,6 @@ import (
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	"github.com/ethereum/go-ethereum/common"
 )
-
-// SystemReadinessChecker gates all combined quoting.
-type SystemReadinessChecker interface {
-	IsSystemReady() bool
-}
-
-type Univ3ReadinessChecker interface {
-	IsV3PoolReady(common.Address) bool
-}
-
-type PancakeV3ReadinessChecker interface {
-	IsPancakeV3PoolReady(common.Address) bool
-}
-
-type QuickSwapV3ReadinessChecker interface {
-	IsQuickSwapV3PoolReady(common.Address) bool
-}
-
-type Univ4ReadinessChecker interface {
-	IsV4PoolReady(marketuniv4.PoolID) bool
-}
-
-type BalancerReadinessChecker interface {
-	IsBalancerPoolReady(marketbalancer.PoolID) bool
-}
 
 // DirectPoolSelector identifies a pool requested for a direct quote.
 type DirectPoolSelector struct {
@@ -57,12 +33,16 @@ type ProtocolAdapter interface {
 }
 
 type univ3ProtocolAdapter struct {
-	pools     marketuniv3.PoolRepository
-	registry  PoolRegistry[common.Address]
-	readiness Univ3ReadinessChecker
+	pools     quotecontract.PoolRepository[common.Address, marketuniv3.Pool]
+	registry  quotecontract.PoolRegistry[common.Address]
+	readiness quotecontract.PoolReadiness[common.Address]
 }
 
-func NewUniv3ProtocolAdapter(pools marketuniv3.PoolRepository, registry PoolRegistry[common.Address], readiness Univ3ReadinessChecker) ProtocolAdapter {
+func NewUniv3ProtocolAdapter(
+	pools quotecontract.PoolRepository[common.Address, marketuniv3.Pool],
+	registry quotecontract.PoolRegistry[common.Address],
+	readiness quotecontract.PoolReadiness[common.Address],
+) ProtocolAdapter {
 	if pools == nil || registry == nil {
 		return nil
 	}
@@ -100,7 +80,7 @@ func (a *univ3ProtocolAdapter) QuoteDirect(ctx context.Context, selector DirectP
 	if pool == nil {
 		return Response{}, false, nil
 	}
-	if a.readiness != nil && !a.readiness.IsV3PoolReady(*selector.Address) {
+	if a.readiness != nil && !a.readiness.IsPoolReady(*selector.Address) {
 		return Response{}, true, fmt.Errorf("pool %s is not ready", selector.Address.Hex())
 	}
 	result, err := quoteV3Direct(quotes, pool, req)
@@ -133,19 +113,23 @@ func (a *univ3ProtocolAdapter) CheckRouteHopReady(hop quoteunified.RouteHop) (bo
 	if hop.Version != quoteunified.PoolVersionV3 {
 		return false, nil
 	}
-	if a.readiness != nil && !a.readiness.IsV3PoolReady(hop.PoolV3) {
+	if a.readiness != nil && !a.readiness.IsPoolReady(hop.PoolV3) {
 		return true, fmt.Errorf("pool %s is not ready", hop.PoolV3.Hex())
 	}
 	return true, nil
 }
 
 type pancakeV3ProtocolAdapter struct {
-	pools     marketpancake.PoolRepository
-	registry  PoolRegistry[common.Address]
-	readiness PancakeV3ReadinessChecker
+	pools     quotecontract.PoolRepository[common.Address, marketpancake.Pool]
+	registry  quotecontract.PoolRegistry[common.Address]
+	readiness quotecontract.PoolReadiness[common.Address]
 }
 
-func NewPancakeV3ProtocolAdapter(pools marketpancake.PoolRepository, registry PoolRegistry[common.Address], readiness PancakeV3ReadinessChecker) ProtocolAdapter {
+func NewPancakeV3ProtocolAdapter(
+	pools quotecontract.PoolRepository[common.Address, marketpancake.Pool],
+	registry quotecontract.PoolRegistry[common.Address],
+	readiness quotecontract.PoolReadiness[common.Address],
+) ProtocolAdapter {
 	if pools == nil || registry == nil {
 		return nil
 	}
@@ -183,7 +167,7 @@ func (a *pancakeV3ProtocolAdapter) QuoteDirect(ctx context.Context, selector Dir
 	if pool == nil {
 		return Response{}, false, nil
 	}
-	if a.readiness != nil && !a.readiness.IsPancakeV3PoolReady(*selector.Address) {
+	if a.readiness != nil && !a.readiness.IsPoolReady(*selector.Address) {
 		return Response{}, true, fmt.Errorf("pool %s is not ready", selector.Address.Hex())
 	}
 	result, err := quotePancakeV3Direct(quotes, pool, req)
@@ -216,19 +200,23 @@ func (a *pancakeV3ProtocolAdapter) CheckRouteHopReady(hop quoteunified.RouteHop)
 	if hop.Version != quoteunified.PoolVersionPancakeV3 {
 		return false, nil
 	}
-	if a.readiness != nil && !a.readiness.IsPancakeV3PoolReady(hop.PoolPancakeV3) {
+	if a.readiness != nil && !a.readiness.IsPoolReady(hop.PoolPancakeV3) {
 		return true, fmt.Errorf("pool %s is not ready", hop.PoolPancakeV3.Hex())
 	}
 	return true, nil
 }
 
 type quickSwapV3ProtocolAdapter struct {
-	pools     marketquick.PoolRepository
-	registry  PoolRegistry[common.Address]
-	readiness QuickSwapV3ReadinessChecker
+	pools     quotecontract.PoolRepository[common.Address, marketquick.Pool]
+	registry  quotecontract.PoolRegistry[common.Address]
+	readiness quotecontract.PoolReadiness[common.Address]
 }
 
-func NewQuickSwapV3ProtocolAdapter(pools marketquick.PoolRepository, registry PoolRegistry[common.Address], readiness QuickSwapV3ReadinessChecker) ProtocolAdapter {
+func NewQuickSwapV3ProtocolAdapter(
+	pools quotecontract.PoolRepository[common.Address, marketquick.Pool],
+	registry quotecontract.PoolRegistry[common.Address],
+	readiness quotecontract.PoolReadiness[common.Address],
+) ProtocolAdapter {
 	if pools == nil || registry == nil {
 		return nil
 	}
@@ -266,7 +254,7 @@ func (a *quickSwapV3ProtocolAdapter) QuoteDirect(ctx context.Context, selector D
 	if pool == nil {
 		return Response{}, false, nil
 	}
-	if a.readiness != nil && !a.readiness.IsQuickSwapV3PoolReady(*selector.Address) {
+	if a.readiness != nil && !a.readiness.IsPoolReady(*selector.Address) {
 		return Response{}, true, fmt.Errorf("pool %s is not ready", selector.Address.Hex())
 	}
 	result, err := quoteQuickSwapV3Direct(quotes, pool, req)
@@ -299,19 +287,23 @@ func (a *quickSwapV3ProtocolAdapter) CheckRouteHopReady(hop quoteunified.RouteHo
 	if hop.Version != quoteunified.PoolVersionQuickSwapV3 {
 		return false, nil
 	}
-	if a.readiness != nil && !a.readiness.IsQuickSwapV3PoolReady(hop.PoolQuickSwapV3) {
+	if a.readiness != nil && !a.readiness.IsPoolReady(hop.PoolQuickSwapV3) {
 		return true, fmt.Errorf("pool %s is not ready", hop.PoolQuickSwapV3.Hex())
 	}
 	return true, nil
 }
 
 type univ4ProtocolAdapter struct {
-	pools     marketuniv4.PoolRepository
-	registry  PoolRegistry[marketuniv4.PoolID]
-	readiness Univ4ReadinessChecker
+	pools     quotecontract.PoolRepository[marketuniv4.PoolID, marketuniv4.Pool]
+	registry  quotecontract.PoolRegistry[marketuniv4.PoolID]
+	readiness quotecontract.PoolReadiness[marketuniv4.PoolID]
 }
 
-func NewUniv4ProtocolAdapter(pools marketuniv4.PoolRepository, registry PoolRegistry[marketuniv4.PoolID], readiness Univ4ReadinessChecker) ProtocolAdapter {
+func NewUniv4ProtocolAdapter(
+	pools quotecontract.PoolRepository[marketuniv4.PoolID, marketuniv4.Pool],
+	registry quotecontract.PoolRegistry[marketuniv4.PoolID],
+	readiness quotecontract.PoolReadiness[marketuniv4.PoolID],
+) ProtocolAdapter {
 	if pools == nil || registry == nil {
 		return nil
 	}
@@ -349,7 +341,7 @@ func (a *univ4ProtocolAdapter) QuoteDirect(ctx context.Context, selector DirectP
 	if pool == nil {
 		return Response{}, false, nil
 	}
-	if a.readiness != nil && !a.readiness.IsV4PoolReady(*selector.Univ4ID) {
+	if a.readiness != nil && !a.readiness.IsPoolReady(*selector.Univ4ID) {
 		return Response{}, true, fmt.Errorf("pool %s is not ready", selector.Univ4ID.String())
 	}
 	result, err := quoteV4Direct(quotes, pool, req)
@@ -382,19 +374,23 @@ func (a *univ4ProtocolAdapter) CheckRouteHopReady(hop quoteunified.RouteHop) (bo
 	if hop.Version != quoteunified.PoolVersionV4 {
 		return false, nil
 	}
-	if a.readiness != nil && !a.readiness.IsV4PoolReady(hop.PoolV4) {
+	if a.readiness != nil && !a.readiness.IsPoolReady(hop.PoolV4) {
 		return true, fmt.Errorf("pool %s is not ready", hop.PoolV4.String())
 	}
 	return true, nil
 }
 
 type balancerProtocolAdapter struct {
-	pools     marketbalancer.PoolRepository
-	registry  BalancerPoolRegistry
-	readiness BalancerReadinessChecker
+	pools     quotecontract.PoolRepository[marketbalancer.PoolID, marketbalancer.Pool]
+	registry  quotecontract.PoolRegistry[marketbalancer.PoolID]
+	readiness quotecontract.PoolReadiness[marketbalancer.PoolID]
 }
 
-func NewBalancerProtocolAdapter(pools marketbalancer.PoolRepository, registry BalancerPoolRegistry, readiness BalancerReadinessChecker) ProtocolAdapter {
+func NewBalancerProtocolAdapter(
+	pools quotecontract.PoolRepository[marketbalancer.PoolID, marketbalancer.Pool],
+	registry quotecontract.PoolRegistry[marketbalancer.PoolID],
+	readiness quotecontract.PoolReadiness[marketbalancer.PoolID],
+) ProtocolAdapter {
 	if pools == nil || registry == nil {
 		return nil
 	}
@@ -438,7 +434,7 @@ func (a *balancerProtocolAdapter) QuoteDirect(ctx context.Context, selector Dire
 	if pool == nil {
 		return Response{}, false, nil
 	}
-	if a.readiness != nil && !a.readiness.IsBalancerPoolReady(id) {
+	if a.readiness != nil && !a.readiness.IsPoolReady(id) {
 		return Response{}, true, fmt.Errorf("pool %s is not ready", id.String())
 	}
 	result, err := quoteBalancerDirect(quotes, pool, req)
@@ -464,11 +460,11 @@ func (a *balancerProtocolAdapter) resolveSelector(ctx context.Context, selector 
 		return marketbalancer.PoolID{}, true, fmt.Errorf("list pools: %w", err)
 	}
 	for _, id := range ids {
-		spec, err := a.registry.GetSpec(ctx, id)
+		pool, err := a.pools.Get(ctx, id)
 		if err != nil {
-			return marketbalancer.PoolID{}, true, fmt.Errorf("load pool spec %s: %w", id.String(), err)
+			return marketbalancer.PoolID{}, true, fmt.Errorf("load pool %s: %w", id.String(), err)
 		}
-		if spec.Address == *selector.Address {
+		if pool != nil && pool.Address == *selector.Address {
 			return id, true, nil
 		}
 	}
@@ -497,7 +493,7 @@ func (a *balancerProtocolAdapter) CheckRouteHopReady(hop quoteunified.RouteHop) 
 	if hop.Version != quoteunified.PoolVersionBalancer {
 		return false, nil
 	}
-	if a.readiness != nil && !a.readiness.IsBalancerPoolReady(hop.PoolBalancer) {
+	if a.readiness != nil && !a.readiness.IsPoolReady(hop.PoolBalancer) {
 		return true, fmt.Errorf("pool %s is not ready", hop.PoolBalancer.String())
 	}
 	return true, nil

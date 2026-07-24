@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"context"
 	"fmt"
 
 	"go.uber.org/zap"
@@ -9,7 +8,6 @@ import (
 	arbitrageapp "github.com/brianliu-sysu/uniswapv3/internal/application/arbitrage"
 	contractapp "github.com/brianliu-sysu/uniswapv3/internal/application/contract"
 	"github.com/brianliu-sysu/uniswapv3/internal/application/marketstore"
-	quotecombined "github.com/brianliu-sysu/uniswapv3/internal/application/quote/combined"
 	syncbalancer "github.com/brianliu-sysu/uniswapv3/internal/application/sync/balancer"
 	syncpancakev3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/pancakev3"
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync/protocol"
@@ -183,25 +181,6 @@ func (s *protocolServices) balancerServices() *syncbalancer.Services {
 		}
 	}
 	return nil
-}
-
-type activeBalancerRegistry struct {
-	lifecycle *syncapp.PoolLifecycleService[marketbalancer.PoolID]
-	registry  marketbalancer.PoolRegistry
-}
-
-func (r activeBalancerRegistry) List(ctx context.Context) ([]marketbalancer.PoolID, error) {
-	if r.lifecycle == nil {
-		return nil, nil
-	}
-	return r.lifecycle.List(ctx)
-}
-
-func (r activeBalancerRegistry) GetSpec(ctx context.Context, id marketbalancer.PoolID) (marketbalancer.PoolSpec, error) {
-	if r.registry == nil {
-		return marketbalancer.PoolSpec{}, nil
-	}
-	return r.registry.GetSpec(ctx, id)
 }
 
 func newProtocolServices(
@@ -386,26 +365,6 @@ func newBalancerProtocol(
 	return syncbalancer.NewServices(deps), nil
 }
 
-func (s *protocolServices) readiness() *quotecombined.SyncReadiness {
-	readiness := &quotecombined.SyncReadiness{}
-	if services := s.univ3Services(); services != nil {
-		readiness.V3 = services.Lifecycle.Readiness
-	}
-	if services := s.pancakeServices(); services != nil {
-		readiness.Pancake = services.Lifecycle.Readiness
-	}
-	if services := s.quickSwapServices(); services != nil {
-		readiness.QuickSwap = services.Lifecycle.Readiness
-	}
-	if services := s.univ4Services(); services != nil {
-		readiness.V4 = services.Lifecycle.Readiness
-	}
-	if services := s.balancerServices(); services != nil {
-		readiness.Balancer = services.Lifecycle.Readiness
-	}
-	return readiness
-}
-
 func newMarketStore(store *persistence.Services, protocols *protocolServices, logger *zap.Logger) *marketstore.Store {
 	var univ3Active *syncapp.PoolLifecycleService[common.Address]
 	var pancakeActive *syncapp.PoolLifecycleService[common.Address]
@@ -491,7 +450,7 @@ func newArbitrageServices(
 			quoteuniv4domain.NewQuoteService(),
 			quotebalancerdomain.NewQuoteService(),
 		),
-		Readiness:             protocols.readiness(),
+		Readiness:             marketView,
 		Repository:            durableStore.Opportunities,
 		Executor:              contractExecutor,
 		ExecutionHead:         chain.Client,

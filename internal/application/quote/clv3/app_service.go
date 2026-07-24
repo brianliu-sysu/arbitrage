@@ -5,42 +5,27 @@ import (
 	"fmt"
 	"math/big"
 
+	quotecontract "github.com/brianliu-sysu/uniswapv3/internal/application/quote/contract"
 	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
 	quoteclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/clv3"
 	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// ReadinessChecker gates quoting on pool and system readiness.
-type ReadinessChecker interface {
-	IsSystemReady() bool
-	IsPoolReady(poolAddress common.Address) bool
-}
-
-// PoolRepository loads CLV3 pool state for quoting.
-type PoolRepository interface {
-	Get(ctx context.Context, address common.Address) (*marketclv3.Pool, error)
-}
-
-// PoolRegistry lists tracked CLV3 pool addresses.
-type PoolRegistry interface {
-	List(ctx context.Context) ([]common.Address, error)
-}
-
 // AppService orchestrates CLV3 route discovery and quoting.
 type AppService struct {
-	pools     PoolRepository
-	registry  PoolRegistry
+	pools     quotecontract.PoolRepository[common.Address, marketclv3.Pool]
+	registry  quotecontract.PoolRegistry[common.Address]
 	quotes    *quoteclv3.QuoteService
-	readiness ReadinessChecker
+	readiness quotecontract.PoolReadiness[common.Address]
 	maxHops   int
 }
 
 func NewAppService(
-	pools PoolRepository,
-	registry PoolRegistry,
+	pools quotecontract.PoolRepository[common.Address, marketclv3.Pool],
+	registry quotecontract.PoolRegistry[common.Address],
 	quotes *quoteclv3.QuoteService,
-	readiness ReadinessChecker,
+	readiness quotecontract.PoolReadiness[common.Address],
 	maxHops int,
 ) *AppService {
 	if maxHops <= 0 {
@@ -61,9 +46,9 @@ func (s *AppService) Quote(ctx context.Context, req Request) (Response, error) {
 		return Response{}, err
 	}
 	for {
-		blockBefore := quoteViewBlock(s.readiness)
+		blockBefore := quotecontract.ViewRevision(s.readiness)
 		response, err := s.quoteCurrentView(ctx, req)
-		if blockBefore == quoteViewBlock(s.readiness) {
+		if blockBefore == quotecontract.ViewRevision(s.readiness) {
 			return response, err
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -84,16 +69,6 @@ func (s *AppService) quoteCurrentView(ctx context.Context, req Request) (Respons
 		return Response{}, fmt.Errorf("multi-hop exact-output quotes are not supported")
 	}
 	return s.quoteBestRoute(ctx, req)
-}
-
-func quoteViewBlock(readiness ReadinessChecker) uint64 {
-	if versioned, ok := readiness.(interface{ Generation() uint64 }); ok {
-		return versioned.Generation()
-	}
-	if versioned, ok := readiness.(interface{ BlockNumber() uint64 }); ok {
-		return versioned.BlockNumber()
-	}
-	return 0
 }
 
 func validateQuoteRequest(req Request) error {

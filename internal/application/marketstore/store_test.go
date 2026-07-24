@@ -109,6 +109,55 @@ func TestViewKeepsOldSnapshotUntilCompleteBlockCommits(t *testing.T) {
 	}
 }
 
+func TestSnapshotRegistryChangesOnlyAfterPublish(t *testing.T) {
+	poolA := common.HexToAddress("0x0000000000000000000000000000000000000011")
+	poolB := common.HexToAddress("0x0000000000000000000000000000000000000022")
+	token0 := common.HexToAddress("0x0000000000000000000000000000000000000001")
+	token1 := common.HexToAddress("0x0000000000000000000000000000000000000002")
+	source := &testUniv3Repository{pools: map[common.Address]*marketuniv3.Pool{
+		poolA: marketuniv3.NewPool(poolA, token0, token1, 500, 10),
+		poolB: marketuniv3.NewPool(poolB, token0, token1, 3000, 60),
+	}}
+	source.pools[poolA].LastBlockNumber = 10
+	source.pools[poolB].LastBlockNumber = 10
+	liveRegistry := &testAddressRegistry{ids: []common.Address{poolA, poolB}}
+	view := NewView(Sources{Univ3Pools: source, Univ3Registry: liveRegistry})
+
+	if err := view.Publish(context.Background(), domainchain.MarketVersion{Number: 10, Generation: 1}, Changes{}); err != nil {
+		t.Fatalf("publish initial snapshot: %v", err)
+	}
+	liveRegistry.ids = []common.Address{poolA}
+
+	ids, err := view.Univ3Registry().List(context.Background())
+	if err != nil {
+		t.Fatalf("list committed registry before publish: %v", err)
+	}
+	if !containsAddress(ids, poolA) || !containsAddress(ids, poolB) {
+		t.Fatalf("live registry mutation leaked into committed registry: %v", ids)
+	}
+
+	source.pools[poolA].LastBlockNumber = 11
+	if err := view.Publish(context.Background(), domainchain.MarketVersion{Number: 11, Generation: 2}, Changes{Univ3: []common.Address{poolA}}); err != nil {
+		t.Fatalf("publish updated snapshot: %v", err)
+	}
+	ids, err = view.Univ3Registry().List(context.Background())
+	if err != nil {
+		t.Fatalf("list committed registry after publish: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != poolA {
+		t.Fatalf("unexpected committed registry after publish: %v", ids)
+	}
+}
+
+func containsAddress(ids []common.Address, target common.Address) bool {
+	for _, id := range ids {
+		if id == target {
+			return true
+		}
+	}
+	return false
+}
+
 func TestViewCommitReportsFirstMismatchButScansRemaining(t *testing.T) {
 	poolA := common.HexToAddress("0x0000000000000000000000000000000000000011")
 	poolB := common.HexToAddress("0x0000000000000000000000000000000000000022")

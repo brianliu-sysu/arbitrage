@@ -12,7 +12,6 @@ import (
 
 	quotecombined "github.com/brianliu-sysu/uniswapv3/internal/application/quote/combined"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
-	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	quoteuniv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
@@ -42,15 +41,15 @@ func TestQuoteCombinedHandlerReturnsMixedRouteJSON(t *testing.T) {
 
 	combined := quotecombined.NewAppService(
 		[]quotecombined.ProtocolAdapter{
-			quotecombined.NewUniv3ProtocolAdapter(v3Repo, staticRegistry{addresses: []common.Address{poolAB}}, combinedAlwaysReady{}),
-			quotecombined.NewUniv4ProtocolAdapter(v4Repo, staticV4Registry{entries: map[marketv4.PoolID]marketv4.PoolKey{poolBCID: poolBC.Key}}, combinedAlwaysReady{}),
+			quotecombined.NewUniv3ProtocolAdapter(v3Repo, staticRegistry{addresses: []common.Address{poolAB}}, combinedAlwaysReady[common.Address]{}),
+			quotecombined.NewUniv4ProtocolAdapter(v4Repo, staticV4Registry{entries: map[marketv4.PoolID]marketv4.PoolKey{poolBCID: poolBC.Key}}, combinedAlwaysReady[marketv4.PoolID]{}),
 		},
 		quoteunified.NewQuoteService(
 			quoteuniv3domain.NewQuoteService(),
 			nil,
 			quoteuniv4domain.NewQuoteService(),
 		),
-		combinedAlwaysReady{},
+		combinedAlwaysReady[common.Address]{},
 		3,
 	)
 
@@ -89,16 +88,10 @@ func TestQuoteCombinedHandlerReturnsMixedRouteJSON(t *testing.T) {
 	}
 }
 
-type combinedAlwaysReady struct{}
+type combinedAlwaysReady[PoolID comparable] struct{}
 
-func (combinedAlwaysReady) IsSystemReady() bool                          { return true }
-func (combinedAlwaysReady) IsV3PoolReady(_ common.Address) bool          { return true }
-func (combinedAlwaysReady) IsPancakeV3PoolReady(_ common.Address) bool   { return true }
-func (combinedAlwaysReady) IsQuickSwapV3PoolReady(_ common.Address) bool { return true }
-func (combinedAlwaysReady) IsV4PoolReady(_ marketv4.PoolID) bool         { return true }
-func (combinedAlwaysReady) IsBalancerPoolReady(_ marketbalancer.PoolID) bool {
-	return true
-}
+func (combinedAlwaysReady[PoolID]) IsSystemReady() bool     { return true }
+func (combinedAlwaysReady[PoolID]) IsPoolReady(PoolID) bool { return true }
 
 func setupV4Pool(token0, token1 common.Address, liquidity int64) (*marketv4.Pool, marketv4.PoolID) {
 	key := marketv4.PoolKey{
