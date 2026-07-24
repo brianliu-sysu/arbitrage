@@ -188,7 +188,7 @@ func allSnapshotChanges(value snapshot) Changes {
 }
 
 func (v *View) logCommitStarted(plan commitPlan) {
-	v.logger.Info("committed market view commit start",
+	v.logger.Debug("committed market view commit start",
 		zap.Uint64("block", plan.version.Number),
 		zap.Uint64("generation", plan.version.Generation),
 		zap.String("hash", plan.version.Hash.Hex()),
@@ -209,7 +209,7 @@ func (v *View) logCommitStarted(plan commitPlan) {
 }
 
 func (v *View) logCommitCompleted(plan commitPlan, started time.Time) {
-	v.logger.Info("committed market view commit done",
+	v.logger.Debug("committed market view commit done",
 		zap.Uint64("block", plan.version.Number),
 		zap.Uint64("generation", plan.version.Generation),
 		zap.String("hash", plan.version.Hash.Hex()),
