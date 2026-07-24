@@ -9,8 +9,8 @@ import (
 
 	clv3sync "github.com/brianliu-sysu/uniswapv3/internal/application/sync/clv3"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
-	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -383,6 +383,65 @@ func TestBlockApplyServiceMarkPoolsReady(t *testing.T) {
 	}
 }
 
+func TestBlockApplySnapshotRestoresPoolCheckpointAndReadiness(t *testing.T) {
+	ctx := context.Background()
+	poolRepo := newMemoryPoolRepo()
+	checkpointRepo := newMemoryCheckpointRepo()
+	readiness := clv3sync.NewReadinessService()
+	blockApply := clv3sync.NewBlockApplyService(poolRepo, checkpointRepo, nil, readiness, nil)
+	address := testPoolAddress()
+
+	pool := marketclv3.NewPool(address, common.Address{}, common.Address{}, 3000, 60)
+	pool.Status = market.PoolStatusSyncing
+	pool.LastBlockNumber = 10
+	if err := poolRepo.Save(ctx, pool); err != nil {
+		t.Fatalf("save pool: %v", err)
+	}
+	if err := checkpointRepo.Save(ctx, &blockchain.Checkpoint{
+		PoolAddress: address,
+		BlockNumber: 10,
+		BlockHash:   common.HexToHash("0x10"),
+	}); err != nil {
+		t.Fatalf("save checkpoint: %v", err)
+	}
+
+	snapshot, err := blockApply.CaptureState(ctx, []common.Address{address})
+	if err != nil {
+		t.Fatalf("capture state: %v", err)
+	}
+	if _, err := blockApply.ApplyBlock(ctx, clv3sync.ApplyBlockRequest{
+		BlockNumber:  11,
+		BlockHash:    common.HexToHash("0x11"),
+		TrackedPools: []common.Address{address},
+	}); err != nil {
+		t.Fatalf("apply block: %v", err)
+	}
+	if err := blockApply.MarkPoolsReady(ctx, []common.Address{address}); err != nil {
+		t.Fatalf("mark ready: %v", err)
+	}
+	if err := snapshot.Restore(ctx); err != nil {
+		t.Fatalf("restore state: %v", err)
+	}
+
+	restoredPool, err := poolRepo.Get(ctx, address)
+	if err != nil {
+		t.Fatalf("load restored pool: %v", err)
+	}
+	if restoredPool.LastBlockNumber != 10 || restoredPool.Status != market.PoolStatusSyncing {
+		t.Fatalf("unexpected restored pool: block=%d status=%s", restoredPool.LastBlockNumber, restoredPool.Status)
+	}
+	restoredCheckpoint, err := checkpointRepo.Get(ctx, address)
+	if err != nil {
+		t.Fatalf("load restored checkpoint: %v", err)
+	}
+	if restoredCheckpoint == nil || restoredCheckpoint.BlockNumber != 10 {
+		t.Fatalf("unexpected restored checkpoint: %+v", restoredCheckpoint)
+	}
+	if readiness.IsPoolReady(address) {
+		t.Fatal("expected readiness to be restored to false")
+	}
+}
+
 func TestCatchupServiceSkipsWhenPoolAheadOfCheckpoint(t *testing.T) {
 	ctx := context.Background()
 	poolRepo := newMemoryPoolRepo()
@@ -417,7 +476,7 @@ func TestCatchupServiceSkipsWhenPoolAheadOfCheckpoint(t *testing.T) {
 		t.Fatalf("save checkpoint: %v", err)
 	}
 
-	if err := services.Catchup.CatchUpPool(ctx, testPoolAddress(), 200); err != nil {
+	if err := services.Lifecycle.CatchUpPool(ctx, testPoolAddress(), 200); err != nil {
 		t.Fatalf("catch up pool: %v", err)
 	}
 
@@ -451,11 +510,11 @@ func TestCatchupServiceCatchUpPool(t *testing.T) {
 		Bootstrap: stubBootstrapReader{},
 	})
 
-	if err := services.Lifecycle.StartAll(ctx, 1); err != nil {
+	if err := services.Lifecycle.Pools.StartAll(ctx, 1); err != nil {
 		t.Fatalf("start pools: %v", err)
 	}
 
-	if err := services.Catchup.CatchUpPool(ctx, testPoolAddress(), 2); err != nil {
+	if err := services.Lifecycle.CatchUpPool(ctx, testPoolAddress(), 2); err != nil {
 		t.Fatalf("catch up pool: %v", err)
 	}
 
@@ -494,11 +553,11 @@ func TestCatchupServiceCatchUpAllBatchesPools(t *testing.T) {
 		Bootstrap: stubBootstrapReader{},
 	})
 
-	if err := services.Lifecycle.StartAll(ctx, 1); err != nil {
+	if err := services.Lifecycle.Pools.StartAll(ctx, 1); err != nil {
 		t.Fatalf("start pools: %v", err)
 	}
 
-	if err := services.Catchup.CatchUpAll(ctx, 3); err != nil {
+	if err := services.Lifecycle.CatchUpAll(ctx, 3); err != nil {
 		t.Fatalf("catch up all: %v", err)
 	}
 
@@ -552,11 +611,12 @@ func TestSnapshotSchedulerRunOnce(t *testing.T) {
 		Bootstrap:   stubBootstrapReader{},
 	})
 
-	if err := services.Lifecycle.Start(ctx, testPoolAddress(), 5); err != nil {
+	if err := services.Lifecycle.Pools.Start(ctx, testPoolAddress(), 5); err != nil {
 		t.Fatalf("start pool: %v", err)
 	}
 
-	scheduler := clv3sync.NewSnapshotScheduler(clv3sync.Config{SnapshotFallback: time.Minute}, poolRepo, services.Snapshot, services.Lifecycle)
+	snapshots := clv3sync.NewSnapshotService(snapshotRepo, clv3sync.SnapshotPolicy{})
+	scheduler := clv3sync.NewSnapshotScheduler(clv3sync.Config{SnapshotFallback: time.Minute}, poolRepo, snapshots, services.Lifecycle.Pools)
 	if err := scheduler.RunOnce(ctx); err != nil {
 		t.Fatalf("run snapshot scheduler: %v", err)
 	}
@@ -568,7 +628,7 @@ func TestSnapshotSchedulerRunOnce(t *testing.T) {
 	_ = readiness
 }
 
-func TestHeadSyncServiceHandleHead(t *testing.T) {
+func TestBlockConsumerHandlesSharedBlock(t *testing.T) {
 	ctx := context.Background()
 	poolRepo := newMemoryPoolRepo()
 	checkpointRepo := newMemoryCheckpointRepo()
@@ -586,25 +646,24 @@ func TestHeadSyncServiceHandleHead(t *testing.T) {
 		Bootstrap:   stubBootstrapReader{},
 	})
 
-	if err := services.Lifecycle.StartAll(ctx, 1); err != nil {
+	if err := services.Lifecycle.Pools.StartAll(ctx, 1); err != nil {
 		t.Fatalf("start pools: %v", err)
 	}
-	services.Readiness.SetSystemReady(true)
+	services.Lifecycle.Readiness.SetSystemReady(true)
 
 	head := blockchain.BlockHeader{Number: 2, Hash: common.HexToHash("0x2"), ParentHash: common.HexToHash("0x1")}
-	services.HeadSync.SetLocalHead(blockchain.BlockHeader{Number: 1, Hash: common.HexToHash("0x1")})
 
-	if err := services.HeadSync.HandleHead(ctx, head); err != nil {
-		t.Fatalf("handle head: %v", err)
+	if err := services.Lifecycle.BlockHandler.HandleBlock(ctx, head, nil); err != nil {
+		t.Fatalf("handle block: %v", err)
 	}
-	if !services.Readiness.IsPoolReady(testPoolAddress()) {
-		t.Fatal("expected pool ready after head sync")
+	if !services.Lifecycle.Readiness.IsPoolReady(testPoolAddress()) {
+		t.Fatal("expected pool ready after block consumption")
 	}
 	loaded, err := poolRepo.Get(ctx, testPoolAddress())
 	if err != nil {
 		t.Fatalf("load pool: %v", err)
 	}
 	if loaded.Status != market.PoolStatusReady {
-		t.Fatalf("expected ready status after head sync, got %s", loaded.Status)
+		t.Fatalf("expected ready status after block consumption, got %s", loaded.Status)
 	}
 }

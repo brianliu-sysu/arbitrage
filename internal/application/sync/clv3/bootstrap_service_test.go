@@ -5,8 +5,8 @@ import (
 	"math/big"
 	"testing"
 
-	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
 	"github.com/ethereum/go-ethereum/common"
 )
 

@@ -6,11 +6,12 @@ import (
 	"github.com/brianliu-sysu/uniswapv3/internal/config"
 )
 
-func TestV4SubgraphRegistryBuildPoolWhereFilterDefaultHooks(t *testing.T) {
+func TestV4SubgraphRegistryBuildPoolWhereFilterConfiguredZeroHook(t *testing.T) {
 	registry := NewV4SubgraphRegistry(config.V4SubgraphPoolConfig{
 		SubgraphPoolConfig: config.SubgraphPoolConfig{
 			MinTotalValueLockedUSD: "1000000",
 		},
+		Hooks: []string{config.V4ZeroHooksAddress},
 	})
 
 	where := registry.buildPoolWhereFilter()
@@ -18,8 +19,8 @@ func TestV4SubgraphRegistryBuildPoolWhereFilterDefaultHooks(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected hooks_in filter, got %#v", where["hooks_in"])
 	}
-	if len(hooks) != 1 || hooks[0] != config.DefaultV4HooksAddress {
-		t.Fatalf("expected default zero hook filter, got %#v", hooks)
+	if len(hooks) != 1 || hooks[0] != config.V4ZeroHooksAddress {
+		t.Fatalf("expected configured zero hook filter, got %#v", hooks)
 	}
 }
 

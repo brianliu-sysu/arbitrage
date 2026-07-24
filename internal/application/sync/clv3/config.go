@@ -3,7 +3,7 @@ package clv3sync
 import (
 	"context"
 
-	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
+	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync/protocol"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
 	"github.com/ethereum/go-ethereum/common"
@@ -17,8 +17,6 @@ func DefaultConfig() Config {
 
 type RawLog = syncapp.RawLog
 type BlockReader = syncapp.BlockReader
-type HeadSubscriber = syncapp.HeadSubscriber
-type HealthProbe = syncapp.HealthProbe
 
 type LogFilter = blockchain.CLV3LogFilter
 type BootstrapData = marketclv3.BootstrapData
@@ -84,7 +82,5 @@ type ServiceDeps struct {
 	Parser      EventParser
 	Blocks      BlockReader
 	Bootstrap   PoolBootstrapReader
-	Subscriber  HeadSubscriber
-	Health      []HealthProbe
 	Listener    ChangedPoolsListener
 }

@@ -9,24 +9,18 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// PoolsChainReaders adapts blockchain clients for pool diagnostics.
-type PoolsChainReaders struct {
-	client   *EthClient
-	v4       *V4PoolReader
-	v3       *PoolReader
-	pancake  *PoolReader
-	balancer *BalancerPoolReader
+type PoolsHeadReader struct {
+	client *EthClient
 }
 
-func NewPoolsChainReaders(client *EthClient, v3, pancake *PoolReader, v4 *V4PoolReader, balancer *BalancerPoolReader) *PoolsChainReaders {
-	return &PoolsChainReaders{client: client, v3: v3, pancake: pancake, v4: v4, balancer: balancer}
+func NewPoolsHeadReader(client *EthClient) *PoolsHeadReader {
+	return &PoolsHeadReader{client: client}
 }
 
-func (r *PoolsChainReaders) PancakeReader() PancakeChainReader {
-	return PancakeChainReader{inner: r}
-}
-
-func (r *PoolsChainReaders) LatestBlockNumber(ctx context.Context) (uint64, error) {
+func (r *PoolsHeadReader) LatestBlockNumber(ctx context.Context) (uint64, error) {
+	if r == nil || r.client == nil {
+		return 0, ErrClientClosed
+	}
 	header, err := r.client.GetLatestBlockHeader(ctx)
 	if err != nil {
 		return 0, err
@@ -34,118 +28,93 @@ func (r *PoolsChainReaders) LatestBlockNumber(ctx context.Context) (uint64, erro
 	return header.Number, nil
 }
 
-func (r *PoolsChainReaders) ReadV4BaseState(ctx context.Context, poolID marketv4.PoolID, blockNumber uint64) (*domainchain.BasePoolState, error) {
-	return r.readV4BaseState(ctx, r.v4, poolID, blockNumber)
+type CLV3ChainReader struct {
+	reader *PoolReader
 }
 
-func (r *PoolsChainReaders) ReadV3BaseState(ctx context.Context, poolAddress common.Address, blockNumber uint64) (*domainchain.BasePoolState, error) {
-	return r.readCLV3BaseState(ctx, r.v3, poolAddress, blockNumber)
+func NewCLV3ChainReader(reader *PoolReader) *CLV3ChainReader {
+	return &CLV3ChainReader{reader: reader}
 }
 
-func (r *PoolsChainReaders) ReadManyV3BaseStates(
+func (r *CLV3ChainReader) ReadV3BaseState(
+	ctx context.Context,
+	poolAddress common.Address,
+	blockNumber uint64,
+) (*domainchain.BasePoolState, error) {
+	if r == nil || r.reader == nil {
+		return nil, ErrClientClosed
+	}
+	return r.reader.ReadBaseState(ctx, poolAddress, blockNumber)
+}
+
+func (r *CLV3ChainReader) ReadManyV3BaseStates(
 	ctx context.Context,
 	poolAddresses []common.Address,
 	blockNumber uint64,
 ) (map[common.Address]*domainchain.BasePoolState, error) {
-	return r.readManyCLV3BaseStates(ctx, r.v3, poolAddresses, blockNumber)
+	if r == nil || r.reader == nil {
+		return nil, ErrClientClosed
+	}
+	return r.reader.ReadManyBaseStates(ctx, poolAddresses, blockNumber)
 }
 
-func (r *PoolsChainReaders) ReadManyV4BaseStates(
+type V4ChainReader struct {
+	reader *V4PoolReader
+}
+
+func NewV4ChainReader(reader *V4PoolReader) *V4ChainReader {
+	return &V4ChainReader{reader: reader}
+}
+
+func (r *V4ChainReader) ReadV4BaseState(
+	ctx context.Context,
+	poolID marketv4.PoolID,
+	blockNumber uint64,
+) (*domainchain.BasePoolState, error) {
+	if r == nil || r.reader == nil {
+		return nil, ErrClientClosed
+	}
+	return r.reader.ReadBaseState(ctx, poolID, blockNumber)
+}
+
+func (r *V4ChainReader) ReadManyV4BaseStates(
 	ctx context.Context,
 	poolIDs []marketv4.PoolID,
 	blockNumber uint64,
 ) (map[marketv4.PoolID]*domainchain.BasePoolState, error) {
-	if r.v4 == nil {
+	if r == nil || r.reader == nil {
 		return nil, ErrClientClosed
 	}
-	states, err := r.v4.ReadManyBaseStates(ctx, poolIDs, blockNumber)
-	if err != nil {
-		return nil, err
-	}
-	return states, nil
+	return r.reader.ReadManyBaseStates(ctx, poolIDs, blockNumber)
 }
 
-func (r *PoolsChainReaders) ReadBalancerState(
+type BalancerChainReader struct {
+	reader *BalancerPoolReader
+}
+
+func NewBalancerChainReader(reader *BalancerPoolReader) *BalancerChainReader {
+	return &BalancerChainReader{reader: reader}
+}
+
+func (r *BalancerChainReader) ReadBalancerState(
 	ctx context.Context,
 	poolID marketbalancer.PoolID,
 	spec marketbalancer.PoolSpec,
 	blockNumber uint64,
 ) (*marketbalancer.BootstrapData, error) {
-	if r.balancer == nil {
+	if r == nil || r.reader == nil {
 		return nil, ErrClientClosed
 	}
-	return r.balancer.ReadBootstrapData(ctx, poolID, spec, blockNumber)
+	return r.reader.ReadBootstrapData(ctx, poolID, spec, blockNumber)
 }
 
-func (r *PoolsChainReaders) ReadManyBalancerStates(
+func (r *BalancerChainReader) ReadManyBalancerStates(
 	ctx context.Context,
 	inputs []marketbalancer.BootstrapInput,
 	blockNumber uint64,
 ) (map[marketbalancer.PoolID]*marketbalancer.BootstrapData, error) {
-	if r.balancer == nil {
+	if r == nil || r.reader == nil {
 		return nil, ErrClientClosed
 	}
-	return r.balancer.ReadManyBootstrapData(ctx, inputs, blockNumber)
-}
-
-func (r *PoolsChainReaders) readCLV3BaseState(
-	ctx context.Context,
-	reader *PoolReader,
-	poolAddress common.Address,
-	blockNumber uint64,
-) (*domainchain.BasePoolState, error) {
-	if reader == nil {
-		return nil, ErrClientClosed
-	}
-	state, err := reader.ReadBaseState(ctx, poolAddress, blockNumber)
-	if err != nil {
-		return nil, err
-	}
-	return state, nil
-}
-
-func (r *PoolsChainReaders) readManyCLV3BaseStates(
-	ctx context.Context,
-	reader *PoolReader,
-	poolAddresses []common.Address,
-	blockNumber uint64,
-) (map[common.Address]*domainchain.BasePoolState, error) {
-	if reader == nil {
-		return nil, ErrClientClosed
-	}
-	states, err := reader.ReadManyBaseStates(ctx, poolAddresses, blockNumber)
-	if err != nil {
-		return nil, err
-	}
-	return states, nil
-}
-
-func (r *PoolsChainReaders) readV4BaseState(
-	ctx context.Context,
-	reader *V4PoolReader,
-	poolID marketv4.PoolID,
-	blockNumber uint64,
-) (*domainchain.BasePoolState, error) {
-	if reader == nil {
-		return nil, ErrClientClosed
-	}
-	state, err := reader.ReadBaseState(ctx, poolID, blockNumber)
-	if err != nil {
-		return nil, err
-	}
-	return state, nil
-}
-
-type PancakeChainReader struct{ inner *PoolsChainReaders }
-
-func (r PancakeChainReader) ReadV3BaseState(ctx context.Context, poolAddress common.Address, blockNumber uint64) (*domainchain.BasePoolState, error) {
-	return r.inner.readCLV3BaseState(ctx, r.inner.pancake, poolAddress, blockNumber)
-}
-
-func (r PancakeChainReader) ReadManyV3BaseStates(
-	ctx context.Context,
-	poolAddresses []common.Address,
-	blockNumber uint64,
-) (map[common.Address]*domainchain.BasePoolState, error) {
-	return r.inner.readManyCLV3BaseStates(ctx, r.inner.pancake, poolAddresses, blockNumber)
+	return r.reader.ReadManyBootstrapData(ctx, inputs, blockNumber)
 }

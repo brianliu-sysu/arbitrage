@@ -35,23 +35,7 @@ type BalancerSubgraphRegistry struct {
 }
 
 func NewBalancerSubgraphRegistry(cfg config.BalancerSubgraphPoolConfig, defaultVault, defaultVaultV3 common.Address) *BalancerSubgraphRegistry {
-	if cfg.First <= 0 {
-		cfg.First = 100
-	}
 	cfg.OrderBy = normalizeBalancerOrderBy(cfg.OrderBy, cfg.ResolvedSchema())
-	if cfg.OrderBy == "" {
-		if cfg.ResolvedSchema() == "v3" {
-			cfg.OrderBy = "id"
-		} else {
-			cfg.OrderBy = "totalLiquidity"
-		}
-	}
-	if cfg.OrderDirection == "" {
-		cfg.OrderDirection = "desc"
-	}
-	if cfg.RefreshInterval <= 0 {
-		cfg.RefreshInterval = 10 * time.Minute
-	}
 	return &BalancerSubgraphRegistry{
 		cfg:            cfg,
 		defaultVault:   defaultVault,
@@ -63,7 +47,7 @@ func NewBalancerSubgraphRegistry(cfg config.BalancerSubgraphPoolConfig, defaultV
 	}
 }
 
-func (r *BalancerSubgraphRegistry) List(ctx context.Context) ([]balancerPoolEntry, error) {
+func (r *BalancerSubgraphRegistry) list(ctx context.Context) ([]balancerPoolEntry, error) {
 	if r.cfg.IsEnabled() {
 		if err := r.refreshIfNeeded(ctx); err != nil {
 			return nil, err

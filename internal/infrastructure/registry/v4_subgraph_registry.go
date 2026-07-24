@@ -31,21 +31,6 @@ type V4SubgraphRegistry struct {
 }
 
 func NewV4SubgraphRegistry(cfg config.V4SubgraphPoolConfig) *V4SubgraphRegistry {
-	if cfg.First <= 0 {
-		cfg.First = 100
-	}
-	if cfg.OrderBy == "" {
-		cfg.OrderBy = "volume24h"
-	}
-	if cfg.OrderDirection == "" {
-		cfg.OrderDirection = "desc"
-	}
-	if cfg.RefreshInterval <= 0 {
-		cfg.RefreshInterval = 10 * time.Minute
-	}
-	if len(cfg.Hooks) == 0 {
-		cfg.Hooks = config.DefaultV4SubgraphHooks()
-	}
 	return &V4SubgraphRegistry{
 		cfg:     cfg,
 		client:  &http.Client{Timeout: defaultGraphQLTimeout},
@@ -55,7 +40,7 @@ func NewV4SubgraphRegistry(cfg config.V4SubgraphPoolConfig) *V4SubgraphRegistry 
 	}
 }
 
-func (r *V4SubgraphRegistry) List(ctx context.Context) ([]v4PoolEntry, error) {
+func (r *V4SubgraphRegistry) list(ctx context.Context) ([]v4PoolEntry, error) {
 	if r.cfg.IsEnabled() {
 		if err := r.refreshIfNeeded(ctx); err != nil {
 			return nil, err

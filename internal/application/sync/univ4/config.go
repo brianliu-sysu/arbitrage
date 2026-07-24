@@ -3,7 +3,7 @@ package syncv4
 import (
 	"context"
 
-	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
+	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync/protocol"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 )
@@ -16,8 +16,6 @@ func DefaultConfig() Config {
 
 type RawLog = syncapp.RawLog
 type BlockReader = syncapp.BlockReader
-type HeadSubscriber = syncapp.HeadSubscriber
-type HealthProbe = syncapp.HealthProbe
 
 type LogFilter = blockchain.V4LogFilter
 type BootstrapData = marketv4.BootstrapData
@@ -60,7 +58,5 @@ type ServiceDeps struct {
 	Parser      EventParser
 	Blocks      BlockReader
 	Bootstrap   PoolBootstrapReader
-	Subscriber  HeadSubscriber
-	Health      []HealthProbe
 	Listener    ChangedPoolsListener
 }

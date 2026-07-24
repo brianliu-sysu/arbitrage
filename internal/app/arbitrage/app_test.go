@@ -2,27 +2,31 @@ package app
 
 import (
 	"context"
-	"errors"
-	"strings"
 	"testing"
 )
 
-func TestRunBootstrapTasksReturnsProtocolFailure(t *testing.T) {
-	err := runBootstrapTasks(context.Background(), []bootstrapTask{
-		{name: "univ3", run: func(context.Context) error { return nil }},
-		{name: "univ4", run: func(context.Context) error { return errors.New("rpc unavailable") }},
-	})
-	if err == nil || !strings.Contains(err.Error(), "univ4 bootstrap") {
-		t.Fatalf("expected named bootstrap failure, got %v", err)
+func TestApplicationLifecycleIsIdempotent(t *testing.T) {
+	application := &Application{}
+	if err := application.Start(context.Background()); err != nil {
+		t.Fatalf("start application: %v", err)
+	}
+	if err := application.Start(context.Background()); err != nil {
+		t.Fatalf("start application twice: %v", err)
+	}
+	if err := application.Stop(context.Background()); err != nil {
+		t.Fatalf("stop application: %v", err)
+	}
+	if err := application.Stop(context.Background()); err != nil {
+		t.Fatalf("stop application twice: %v", err)
 	}
 }
 
-func TestRunBootstrapTasksConvertsPanicToError(t *testing.T) {
-	err := runBootstrapTasks(context.Background(), []bootstrapTask{{
-		name: "balancer",
-		run:  func(context.Context) error { panic("boom") },
-	}})
-	if err == nil || !strings.Contains(err.Error(), "balancer bootstrap panicked") {
-		t.Fatalf("expected bootstrap panic error, got %v", err)
+func TestApplicationCannotRestartAfterStop(t *testing.T) {
+	application := &Application{}
+	if err := application.Stop(context.Background()); err != nil {
+		t.Fatalf("stop application: %v", err)
+	}
+	if err := application.Start(context.Background()); err == nil {
+		t.Fatal("expected restarting stopped application to fail")
 	}
 }

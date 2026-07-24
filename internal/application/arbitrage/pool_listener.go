@@ -68,25 +68,25 @@ func (s *Services) OnPoolsChanged(ctx context.Context, blockNumber uint64, pools
 	return s.reportApplied(ctx, ProtocolBlockReport{
 		Protocol:    SyncProtocolUniv3,
 		BlockNumber: blockNumber,
-		Univ3Pools:  pools,
+		Changes:     MarketChanges{Univ3: pools},
 	})
 }
 
 // OnPancakePoolsChanged handles PancakeSwap V3 pool updates after a block is applied.
 func (s *Services) OnPancakePoolsChanged(ctx context.Context, blockNumber uint64, pools []common.Address) error {
 	return s.reportApplied(ctx, ProtocolBlockReport{
-		Protocol:     SyncProtocolPancakeV3,
-		BlockNumber:  blockNumber,
-		PancakePools: pools,
+		Protocol:    SyncProtocolPancakeV3,
+		BlockNumber: blockNumber,
+		Changes:     MarketChanges{PancakeV3: pools},
 	})
 }
 
 // OnQuickSwapPoolsChanged handles QuickSwap V3 pool updates after a block is applied.
 func (s *Services) OnQuickSwapPoolsChanged(ctx context.Context, blockNumber uint64, pools []common.Address) error {
 	return s.reportApplied(ctx, ProtocolBlockReport{
-		Protocol:       SyncProtocolQuickSwapV3,
-		BlockNumber:    blockNumber,
-		QuickSwapPools: pools,
+		Protocol:    SyncProtocolQuickSwapV3,
+		BlockNumber: blockNumber,
+		Changes:     MarketChanges{QuickSwapV3: pools},
 	})
 }
 
@@ -95,15 +95,15 @@ func (s *Services) OnV4PoolsChanged(ctx context.Context, blockNumber uint64, poo
 	return s.reportApplied(ctx, ProtocolBlockReport{
 		Protocol:    SyncProtocolUniv4,
 		BlockNumber: blockNumber,
-		Univ4Pools:  pools,
+		Changes:     MarketChanges{Univ4: pools},
 	})
 }
 
 // OnBalancerPoolsChanged handles Balancer pool updates after a block is applied.
 func (s *Services) OnBalancerPoolsChanged(ctx context.Context, blockNumber uint64, pools []marketbalancer.PoolID) error {
 	return s.reportApplied(ctx, ProtocolBlockReport{
-		Protocol:      SyncProtocolBalancer,
-		BlockNumber:   blockNumber,
-		BalancerPools: pools,
+		Protocol:    SyncProtocolBalancer,
+		BlockNumber: blockNumber,
+		Changes:     MarketChanges{Balancer: pools},
 	})
 }

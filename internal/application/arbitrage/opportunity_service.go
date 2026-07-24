@@ -519,6 +519,13 @@ func opportunityQuoteSteps(steps []quoteunified.RouteQuoteStep) []domainarb.Oppo
 	return out
 }
 
+func cloneBigIntOrZero(value *big.Int) *big.Int {
+	if value == nil {
+		return new(big.Int)
+	}
+	return new(big.Int).Set(value)
+}
+
 func (s *OpportunityService) ensureRouteReady(routeRef domainarb.RouteRef) error {
 	if s.readiness == nil {
 		return nil

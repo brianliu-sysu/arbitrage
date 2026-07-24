@@ -10,8 +10,6 @@ type (
 	Config                  = clv3sync.Config
 	RawLog                  = clv3sync.RawLog
 	BlockReader             = clv3sync.BlockReader
-	HeadSubscriber          = clv3sync.HeadSubscriber
-	HealthProbe             = clv3sync.HealthProbe
 	LogFilter               = clv3sync.LogFilter
 	BootstrapData           = clv3sync.BootstrapData
 	LogFetcher              = clv3sync.LogFetcher
@@ -22,13 +20,12 @@ type (
 	SnapshotPolicy          = clv3sync.SnapshotPolicy
 	ReadinessService        = clv3sync.ReadinessService
 	Services                = clv3sync.Services
-	SyncOrchestrator        = clv3sync.SyncOrchestrator
 	BootstrapService        = clv3sync.BootstrapService
 	BlockApplyService       = clv3sync.BlockApplyService
 	ApplyBlockRequest       = clv3sync.ApplyBlockRequest
 	ApplyBlockResult        = clv3sync.ApplyBlockResult
 	CatchupService          = clv3sync.CatchupService
-	HeadSyncService         = clv3sync.HeadSyncService
+	BlockConsumer           = clv3sync.BlockConsumer
 	SnapshotService         = clv3sync.SnapshotService
 	ReorgRecoveryService    = clv3sync.ReorgRecoveryService
 	PoolLifecycleService    = clv3sync.PoolLifecycleService
@@ -50,8 +47,6 @@ type ServiceDeps struct {
 	Parser      EventParser
 	Blocks      BlockReader
 	Bootstrap   PoolBootstrapReader
-	Subscriber  HeadSubscriber
-	Health      []HealthProbe
 	Listener    ChangedPoolsListener
 }
 

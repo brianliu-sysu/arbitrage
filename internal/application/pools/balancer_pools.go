@@ -12,19 +12,36 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-func (s *AppService) appendBalancerPools(ctx context.Context, pools *[]PoolInfo) error {
-	if s.balancerRegistry == nil || s.balancerPools == nil {
-		return nil
+type BalancerAdapter struct {
+	pools    marketbalancer.PoolRepository
+	registry marketbalancer.PoolRegistry
+	reader   BalancerStateReader
+}
+
+func NewBalancerAdapter(
+	pools marketbalancer.PoolRepository,
+	registry marketbalancer.PoolRegistry,
+	reader BalancerStateReader,
+) *BalancerAdapter {
+	return &BalancerAdapter{pools: pools, registry: registry, reader: reader}
+}
+
+func (a *BalancerAdapter) Type() string { return PoolTypeBalancer }
+
+func (a *BalancerAdapter) List(ctx context.Context) ([]PoolInfo, error) {
+	pools := make([]PoolInfo, 0)
+	if a.registry == nil || a.pools == nil {
+		return pools, nil
 	}
 
-	poolIDs, err := s.balancerRegistry.List(ctx)
+	poolIDs, err := a.registry.List(ctx)
 	if err != nil {
-		return fmt.Errorf("list balancer pools: %w", err)
+		return nil, fmt.Errorf("list balancer pools: %w", err)
 	}
 	for _, poolID := range poolIDs {
-		pool, err := s.balancerPools.Get(ctx, poolID)
+		pool, err := a.pools.Get(ctx, poolID)
 		if err != nil {
-			return fmt.Errorf("load balancer pool %s: %w", poolID.String(), err)
+			return nil, fmt.Errorf("load balancer pool %s: %w", poolID.String(), err)
 		}
 		if pool == nil {
 			continue
@@ -34,11 +51,8 @@ func (s *AppService) appendBalancerPools(ctx context.Context, pools *[]PoolInfo)
 			tokens = append(tokens, tokenInfoFromAddress(token))
 		}
 		info := PoolInfo{
-			PoolID:       poolID.String(),
-			PoolAddress:  pool.Address.Hex(),
-			PoolType:     PoolTypeBalancer,
-			BalancerType: string(pool.Type),
-			Tokens:       tokens,
+			PoolID: poolID.String(), PoolAddress: pool.Address.Hex(),
+			PoolType: PoolTypeBalancer, BalancerType: string(pool.Type), Tokens: tokens,
 		}
 		if len(tokens) > 0 {
 			info.Token0 = tokens[0]
@@ -46,9 +60,17 @@ func (s *AppService) appendBalancerPools(ctx context.Context, pools *[]PoolInfo)
 		if len(tokens) > 1 {
 			info.Token1 = tokens[1]
 		}
-		*pools = append(*pools, info)
+		pools = append(pools, info)
 	}
-	return nil
+	return pools, nil
+}
+
+func (a *BalancerAdapter) Diagnostics(ctx context.Context, req DiagnosticsRequest, head uint64, resolve TokenMetadataResolver) (*DiagnosticsResponse, error) {
+	return a.diagnostics(ctx, req.BalancerPoolID, head, resolve)
+}
+
+func (a *BalancerAdapter) AppendMismatches(ctx context.Context, head uint64, resolve TokenMetadataResolver, items *[]DiagnosticsResponse) error {
+	return a.appendMismatches(ctx, head, resolve, items)
 }
 
 func balancerTokenAddresses(pools []PoolInfo) []common.Address {
@@ -66,28 +88,28 @@ func balancerTokenAddresses(pools []PoolInfo) []common.Address {
 	return addresses
 }
 
-func (s *AppService) diagnosticsBalancer(ctx context.Context, poolID marketbalancer.PoolID, head uint64) (*DiagnosticsResponse, error) {
+func (a *BalancerAdapter) diagnostics(ctx context.Context, poolID marketbalancer.PoolID, head uint64, resolve TokenMetadataResolver) (*DiagnosticsResponse, error) {
 	if poolID == (marketbalancer.PoolID{}) {
 		return nil, fmt.Errorf("poolId is required for balancer diagnostics")
 	}
-	if s.balancerPools == nil {
+	if a.pools == nil {
 		return nil, fmt.Errorf("balancer pool repository is not configured")
 	}
-	if s.balancerRegistry == nil {
+	if a.registry == nil {
 		return nil, fmt.Errorf("balancer pool registry is not configured")
 	}
-	if s.chain.Balancer == nil {
+	if a.reader == nil {
 		return nil, fmt.Errorf("balancer chain reader is not configured")
 	}
 
-	pool, err := s.balancerPools.Get(ctx, poolID)
+	pool, err := a.pools.Get(ctx, poolID)
 	if err != nil {
 		return nil, fmt.Errorf("load balancer pool: %w", err)
 	}
 	if pool == nil {
 		return nil, fmt.Errorf("balancer pool %s not found", poolID.String())
 	}
-	spec, err := s.balancerRegistry.GetSpec(ctx, poolID)
+	spec, err := a.registry.GetSpec(ctx, poolID)
 	if err != nil {
 		return nil, fmt.Errorf("load balancer pool spec: %w", err)
 	}
@@ -96,7 +118,7 @@ func (s *AppService) diagnosticsBalancer(ctx context.Context, poolID marketbalan
 	if pool.LastBlockNumber > 0 && pool.LastBlockNumber <= head {
 		chainBlock = pool.LastBlockNumber
 	}
-	chainState, err := s.chain.Balancer.ReadBalancerState(ctx, poolID, spec, chainBlock)
+	chainState, err := a.reader.ReadBalancerState(ctx, poolID, spec, chainBlock)
 	if err != nil {
 		return nil, fmt.Errorf("read chain balancer state: %w", err)
 	}
@@ -104,18 +126,19 @@ func (s *AppService) diagnosticsBalancer(ctx context.Context, poolID marketbalan
 		return nil, fmt.Errorf("read chain balancer state: empty response for pool %s", poolID.String())
 	}
 
-	tokenInfos, tokenMeta, err := s.enrichBalancerTokens(ctx, pool.Tokens)
+	tokenMeta, err := resolve(ctx, pool.Tokens...)
 	if err != nil {
 		return nil, err
 	}
+	tokenInfos := enrichBalancerTokenSlice(pool.Tokens, tokenMeta)
 	return buildBalancerDiagnosticsResponse(poolID, pool, tokenInfos, tokenMeta, head, chainState), nil
 }
 
-func (s *AppService) appendMismatchingBalancer(ctx context.Context, head uint64, items *[]DiagnosticsResponse) error {
-	if s.balancerRegistry == nil || s.balancerPools == nil || s.chain.Balancer == nil {
+func (a *BalancerAdapter) appendMismatches(ctx context.Context, head uint64, resolve TokenMetadataResolver, items *[]DiagnosticsResponse) error {
+	if a.registry == nil || a.pools == nil || a.reader == nil {
 		return nil
 	}
-	poolIDs, err := s.balancerRegistry.List(ctx)
+	poolIDs, err := a.registry.List(ctx)
 	if err != nil {
 		return fmt.Errorf("list balancer pools: %w", err)
 	}
@@ -130,11 +153,11 @@ func (s *AppService) appendMismatchingBalancer(ctx context.Context, head uint64,
 	tokenAddresses := make([]common.Address, 0)
 
 	for _, poolID := range poolIDs {
-		pool, err := s.balancerPools.Get(ctx, poolID)
+		pool, err := a.pools.Get(ctx, poolID)
 		if err != nil || pool == nil {
 			continue
 		}
-		spec, err := s.balancerRegistry.GetSpec(ctx, poolID)
+		spec, err := a.registry.GetSpec(ctx, poolID)
 		if err != nil {
 			return fmt.Errorf("load balancer pool spec %s: %w", poolID.String(), err)
 		}
@@ -146,12 +169,12 @@ func (s *AppService) appendMismatchingBalancer(ctx context.Context, head uint64,
 		tokenAddresses = append(tokenAddresses, pool.Tokens...)
 	}
 
-	chainStates, err := readManyBalancerStates(ctx, s.chain.Balancer, inputs, head)
+	chainStates, err := readManyBalancerStates(ctx, a.reader, inputs, head)
 	if err != nil {
 		return fmt.Errorf("read balancer chain states: %w", err)
 	}
 
-	tokenMeta, err := s.resolveTokenMetadata(ctx, tokenAddresses...)
+	tokenMeta, err := resolve(ctx, tokenAddresses...)
 	if err != nil {
 		return err
 	}
@@ -204,14 +227,6 @@ func buildBalancerDiagnosticsResponse(
 		resp.Token1 = tokenInfos[1]
 	}
 	return resp
-}
-
-func (s *AppService) enrichBalancerTokens(ctx context.Context, tokens []common.Address) ([]TokenInfo, map[common.Address]*asset.Token, error) {
-	tokenMeta, err := s.resolveTokenMetadata(ctx, tokens...)
-	if err != nil {
-		return nil, nil, err
-	}
-	return enrichBalancerTokenSlice(tokens, tokenMeta), tokenMeta, nil
 }
 
 func enrichBalancerTokenSlice(tokens []common.Address, tokenMeta map[common.Address]*asset.Token) []TokenInfo {

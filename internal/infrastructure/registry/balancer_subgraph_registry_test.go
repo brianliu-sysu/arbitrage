@@ -40,6 +40,7 @@ func TestBalancerSubgraphRegistryBuildV3Query(t *testing.T) {
 			First:          25,
 		},
 		PoolTypes: []string{"Weighted", "Stable"},
+		Schema:    "v3",
 	}, common.HexToAddress("0xBA12222222228d8Ba445958a75a0704d566BF2C8"), common.HexToAddress("0xbA1333333333a1BA1108E8412f11850A5C319bA9"))
 
 	query, variables, err := registry.buildQuery()
@@ -80,9 +81,10 @@ func TestBalancerSubgraphRegistryQueryV3Endpoint(t *testing.T) {
 			First:          3,
 		},
 		PoolTypes: []string{"Weighted", "Stable"},
+		Schema:    "v3",
 	}, common.HexToAddress("0xBA12222222228d8Ba445958a75a0704d566BF2C8"), common.HexToAddress("0xbA1333333333a1BA1108E8412f11850A5C319bA9"))
 
-	entries, err := registry.List(context.Background())
+	entries, err := registry.list(context.Background())
 	if err != nil {
 		t.Fatalf("list pools: %v", err)
 	}
@@ -162,7 +164,7 @@ func TestBalancerSubgraphRegistryFiltersV3PoolsWithBalancerAPI(t *testing.T) {
 		PoolTypes: []string{"Stable"},
 	}, common.HexToAddress("0xBA12222222228d8Ba445958a75a0704d566BF2C8"), common.HexToAddress("0xbA1333333333a1BA1108E8412f11850A5C319bA9"))
 
-	entries, err := registry.List(context.Background())
+	entries, err := registry.list(context.Background())
 	if err != nil {
 		t.Fatalf("list pools: %v", err)
 	}

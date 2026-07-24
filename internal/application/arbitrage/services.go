@@ -2,6 +2,7 @@ package arbitrageapp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -54,7 +55,7 @@ type ServiceDeps struct {
 	Routes                    []domainarb.RouteRef
 	PoolGraph                 quoteunified.PoolGraph
 	EnabledProtocols          []SyncProtocol
-	MarketView                MarketViewCommitter
+	MarketStore               MarketPublisher
 	MarketVersion             MarketVersionReader
 	OpportunityPools          marketuniv3.PoolRepository
 	OpportunityPancakePools   marketpancake.PoolRepository
@@ -76,12 +77,16 @@ type routeRefreshDeps struct {
 	BalancerPools     marketbalancer.PoolRepository
 }
 
+// PoolGraphUpdater receives the latest routing graph after pool synchronization.
+type PoolGraphUpdater interface {
+	SetPoolGraph(quoteunified.PoolGraph)
+}
+
 // Services bundles arbitrage application services.
 type Services struct {
 	Scan          *ScanService
 	Opportunities *OpportunityService
 	Publish       *PublishService
-	Executor      *OpportunityExecutor
 	Coordinator   *BlockCoordinator
 
 	routeMu               sync.Mutex
@@ -97,7 +102,8 @@ type Services struct {
 	readiness             ReadinessChecker
 	logger                *zap.Logger
 	gasWrappedNative      common.Address
-	settlementGraph       interface{ SetPoolGraph(quoteunified.PoolGraph) }
+	poolGraph             quoteunified.PoolGraph
+	poolGraphUpdaters     []PoolGraphUpdater
 }
 
 func NewServices(deps ServiceDeps) *Services {
@@ -159,6 +165,8 @@ func NewServices(deps ServiceDeps) *Services {
 	if graph, err := loadPoolGraph(context.Background(), deps); err == nil {
 		poolGraph = graph
 		registerMonitoredRoutes(scan, strategies, graph)
+	} else if errors.Is(err, ErrNoPoolsAvailable) {
+		logger.Debug("initial arbitrage pool graph deferred until pool bootstrap")
 	} else {
 		logger.Error("build initial arbitrage pool graph failed", zap.Error(err))
 	}
@@ -167,7 +175,7 @@ func NewServices(deps ServiceDeps) *Services {
 	if deps.Repository != nil {
 		publishers = append(publishers, NewRepositoryPublisher(deps.Repository))
 	}
-	var settlementGraph interface{ SetPoolGraph(quoteunified.PoolGraph) }
+	var poolGraphUpdaters []PoolGraphUpdater
 	if deps.Execution.Enabled {
 		builder := deps.ExecutionBuilder
 		if builder == nil {
@@ -180,8 +188,8 @@ func NewServices(deps ServiceDeps) *Services {
 			))
 			builder = NewLiveExecutionPlanBuilder(deps.LivePlan, encoder, poolGraph)
 		}
-		if updater, ok := builder.(interface{ SetPoolGraph(quoteunified.PoolGraph) }); ok {
-			settlementGraph = updater
+		if updater, ok := builder.(PoolGraphUpdater); ok {
+			poolGraphUpdaters = append(poolGraphUpdaters, updater)
 		}
 		publishers = append(publishers, NewExecutionPublisher(deps.Execution, builder, deps.Executor, deps.Repository, deps.ExecutionHead, logger))
 	}
@@ -235,7 +243,8 @@ func NewServices(deps ServiceDeps) *Services {
 		readiness:             deps.Readiness,
 		logger:                logger,
 		gasWrappedNative:      deps.LivePlan.WETH,
-		settlementGraph:       settlementGraph,
+		poolGraph:             poolGraph,
+		poolGraphUpdaters:     poolGraphUpdaters,
 	}
 	services.Coordinator = NewBlockCoordinator(
 		deps.EnabledProtocols,
@@ -243,10 +252,24 @@ func NewServices(deps ServiceDeps) *Services {
 		services.Scan,
 		services.Opportunities,
 		services.Publish,
-		deps.MarketView,
+		deps.MarketStore,
 		logger,
 	)
 	return services
+}
+
+// RegisterPoolGraphUpdater subscribes an execution-plan builder to graph refreshes.
+func (s *Services) RegisterPoolGraphUpdater(updater PoolGraphUpdater) {
+	if s == nil || updater == nil {
+		return
+	}
+	s.routeMu.Lock()
+	s.poolGraphUpdaters = append(s.poolGraphUpdaters, updater)
+	graph := s.poolGraph
+	s.routeMu.Unlock()
+	if graph != nil {
+		updater.SetPoolGraph(graph)
+	}
 }
 
 func collectStrategyStartTokens(strategies []domainarb.Strategy) []common.Address {
@@ -285,8 +308,9 @@ func (s *Services) RefreshArbitrageRoutes(ctx context.Context) (int, error) {
 	if s.Opportunities != nil {
 		s.Opportunities.SetGasCostConversion(graph, s.gasWrappedNative)
 	}
-	if s.settlementGraph != nil {
-		s.settlementGraph.SetPoolGraph(graph)
+	s.poolGraph = graph
+	for _, updater := range s.poolGraphUpdaters {
+		updater.SetPoolGraph(graph)
 	}
 
 	triangleTokens := ResolveTriangleStartTokens(s.configuredStartTokens, graph.Edges(), autoStartTokenCount)
@@ -441,17 +465,25 @@ func loadPoolGraph(ctx context.Context, deps ServiceDeps) (quoteunified.PoolGrap
 	}
 	return BuildUnifiedPoolGraph(
 		ctx,
-		deps.Registry,
-		deps.Pools,
-		deps.PancakeRegistry,
-		deps.PancakePools,
-		deps.QuickSwapRegistry,
-		deps.QuickSwapPools,
-		deps.V4Registry,
-		deps.V4Pools,
-		deps.BalancerRegistry,
-		deps.BalancerPools,
+		poolEdgeSources(deps)...,
 	)
+}
+
+func poolEdgeSources(deps ServiceDeps) []PoolEdgeSource {
+	candidates := []PoolEdgeSource{
+		NewUniv3PoolEdgeSource(deps.Registry, deps.Pools),
+		NewPancakeV3PoolEdgeSource(deps.PancakeRegistry, deps.PancakePools),
+		NewQuickSwapV3PoolEdgeSource(deps.QuickSwapRegistry, deps.QuickSwapPools),
+		NewUniv4PoolEdgeSource(deps.V4Registry, deps.V4Pools),
+		NewBalancerPoolEdgeSource(deps.BalancerRegistry, deps.BalancerPools),
+	}
+	sources := make([]PoolEdgeSource, 0, len(candidates))
+	for _, source := range candidates {
+		if source != nil {
+			sources = append(sources, source)
+		}
+	}
+	return sources
 }
 
 func registerTriangleRoutes(scan *ScanService, strategies []domainarb.Strategy, graph quoteunified.PoolGraph) {

@@ -171,7 +171,7 @@ chains:
       execution:
         # When enabled, accepted opportunities with an embedded execution payload are sent on-chain.
         enabled: false
-        # Optional dedicated RPC for simulate/broadcast. Empty falls back to chains[].rpc.url.
+        # Required when execution is enabled.
         rpc_url: ""
         executor_address: "0x0000000000000000000000000000000000000000"
         private_key: "{{PRIVATE_KEY}}"
@@ -328,7 +328,7 @@ chains:
         univ4_fee_ppm: "0"
       execution:
         enabled: false
-        # Optional dedicated RPC for simulate/broadcast. Empty falls back to chains[].rpc.url.
+        # Required when execution is enabled.
         rpc_url: ""
         executor_address: "0x0000000000000000000000000000000000000000"
         private_key: ""

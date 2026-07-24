@@ -80,6 +80,61 @@ func TestContractExecutorHandlerBroadcastsExecutionPlan(t *testing.T) {
 	}
 }
 
+func TestContractExecutorHandlerSelectsExecutorByChain(t *testing.T) {
+	ethereum := &fakeContractBroadcaster{txHash: common.HexToHash("0x1")}
+	base := &fakeContractBroadcaster{txHash: common.HexToHash("0x2")}
+	router := httpapi.NewRouter(httpapi.Handlers{
+		ContractExecutor: httpapi.NewContractExecutorChainHandler(
+			[]httpapi.ChainInfo{
+				{Name: "ethereum", ChainID: 1, Primary: true},
+				{Name: "base", ChainID: 8453},
+			},
+			map[string]*contractapp.AppService{
+				"ethereum": contractapp.NewAppService(ethereum),
+				"base":     contractapp.NewAppService(base),
+			},
+		),
+	})
+
+	body := bytes.NewReader([]byte(`{
+		"rpcUrl":"http://127.0.0.1:8545",
+		"privateKey":"0xabc123",
+		"executor":"0x00000000000000000000000000000000000000aa",
+		"execution":{
+			"flashLoan":{
+				"protocol":"uniswapV3",
+				"lender":"0x00000000000000000000000000000000000000bb",
+				"token":"0x00000000000000000000000000000000000000cc",
+				"amount":"1000",
+				"borrowToken0":true
+			},
+			"routes":[{
+				"routerAddress":"0x00000000000000000000000000000000000000dd",
+				"value":"0",
+				"data":"0x1234"
+			}],
+			"profitToken":"0x00000000000000000000000000000000000000cc",
+			"minProfit":"10",
+			"deadline":"999"
+		}
+	}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/contracts/arbitrage/execute?chain=8453", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if ethereum.executeCalls != 0 {
+		t.Fatalf("expected ethereum executor to remain unused, got %d calls", ethereum.executeCalls)
+	}
+	if base.executeCalls != 1 {
+		t.Fatalf("expected base executor once, got %d calls", base.executeCalls)
+	}
+}
+
 func TestContractExecutorHandlerBroadcastsApprovalAndInterrupts(t *testing.T) {
 	broadcaster := &fakeContractBroadcaster{txHash: common.HexToHash("0xdef"), allowance: big.NewInt(0)}
 	router := httpapi.NewRouter(httpapi.Handlers{

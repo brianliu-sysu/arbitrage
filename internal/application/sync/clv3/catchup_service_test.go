@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
+	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync/protocol"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	"github.com/ethereum/go-ethereum/common"
 )

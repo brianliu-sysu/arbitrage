@@ -47,18 +47,6 @@ type SubgraphRegistry struct {
 }
 
 func NewSubgraphRegistry(cfg config.SubgraphPoolConfig) *SubgraphRegistry {
-	if cfg.First <= 0 {
-		cfg.First = 100
-	}
-	if cfg.OrderBy == "" {
-		cfg.OrderBy = "volume24h"
-	}
-	if cfg.OrderDirection == "" {
-		cfg.OrderDirection = "desc"
-	}
-	if cfg.RefreshInterval <= 0 {
-		cfg.RefreshInterval = 10 * time.Minute
-	}
 	return &SubgraphRegistry{
 		cfg:     cfg,
 		client:  &http.Client{Timeout: defaultGraphQLTimeout},
@@ -359,8 +347,8 @@ type graphQLRequest struct {
 
 type graphQLResponse struct {
 	Data struct {
-		Pools        []subgraphPool         `json:"pools"`
-		PoolDayDatas []subgraphPoolDayData  `json:"poolDayDatas"`
+		Pools        []subgraphPool        `json:"pools"`
+		PoolDayDatas []subgraphPoolDayData `json:"poolDayDatas"`
 	} `json:"data"`
 	Errors []graphQLError `json:"errors"`
 }

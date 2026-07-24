@@ -1,33 +1,44 @@
 package blockchain
 
-import (
-	"fmt"
+import "fmt"
 
-	"github.com/ethereum/go-ethereum/common"
-)
-
-// Services bundles blockchain infrastructure adapters for sync wiring.
+// Services owns chain-wide infrastructure shared by every enabled protocol.
 type Services struct {
-	Client              *EthClient
-	Multicall           *Multicall
-	LogFetcher          *LogFetcher
-	PancakeLogFetcher   *LogFetcher
-	QuickSwapLogFetcher *LogFetcher
-	HeadSub             *HeadSubscriber
-	Parser              *ABIParser
-	PancakeParser       *PancakeABIParser
-	QuickSwapParser     *QuickSwapABIParser
-	Factory             *FactoryReader
-	PoolReader          *PoolReader
-	PancakePoolReader   *PoolReader
-	QuickSwapPoolReader *PoolReader
-	V4LogFetcher        *V4LogFetcher
-	V4Parser            *V4ABIParser
-	V4PoolReader        *V4PoolReader
-	BalancerLogFetcher  *BalancerLogFetcher
-	BalancerParser      *BalancerABIParser
-	BalancerPoolReader  *BalancerPoolReader
-	ERC20               *ERC20Reader
+	Client    *EthClient
+	Multicall *Multicall
+	HeadSub   *HeadSubscriber
+	ERC20     *ERC20Reader
+}
+
+type Univ3Services struct {
+	LogFetcher *LogFetcher
+	Parser     *ABIParser
+	Factory    *FactoryReader
+	PoolReader *PoolReader
+}
+
+type PancakeV3Services struct {
+	LogFetcher *LogFetcher
+	Parser     *PancakeABIParser
+	PoolReader *PoolReader
+}
+
+type QuickSwapV3Services struct {
+	LogFetcher *LogFetcher
+	Parser     *QuickSwapABIParser
+	PoolReader *PoolReader
+}
+
+type Univ4Services struct {
+	LogFetcher *V4LogFetcher
+	Parser     *V4ABIParser
+	PoolReader *V4PoolReader
+}
+
+type BalancerServices struct {
+	LogFetcher *BalancerLogFetcher
+	Parser     *BalancerABIParser
+	PoolReader *BalancerPoolReader
 }
 
 func NewServices(cfg Config) (*Services, error) {
@@ -35,114 +46,114 @@ func NewServices(cfg Config) (*Services, error) {
 	if err != nil {
 		return nil, err
 	}
+	closeOnError := func(err error) (*Services, error) {
+		client.Close()
+		return nil, err
+	}
 
 	multicall, err := NewMulticall(client, cfg.MulticallAddress)
 	if err != nil {
-		client.Close()
-		return nil, fmt.Errorf("create multicall: %w", err)
+		return closeOnError(fmt.Errorf("create multicall: %w", err))
 	}
+	erc20, err := NewERC20Reader(multicall)
+	if err != nil {
+		return closeOnError(fmt.Errorf("create erc20 reader: %w", err))
+	}
+	return &Services{
+		Client:    client,
+		Multicall: multicall,
+		HeadSub:   NewHeadSubscriber(client),
+		ERC20:     erc20,
+	}, nil
+}
 
+func NewUniv3Services(chain *Services, cfg Univ3Config) (*Univ3Services, error) {
 	parser, err := NewABIParser()
 	if err != nil {
-		client.Close()
-		return nil, fmt.Errorf("create abi parser: %w", err)
+		return nil, fmt.Errorf("create univ3 abi parser: %w", err)
 	}
-
-	pancakeParser, err := NewPancakeABIParser()
+	factory, err := NewFactoryReader(chain.Client, cfg.FactoryAddress)
 	if err != nil {
-		client.Close()
-		return nil, fmt.Errorf("create pancake abi parser: %w", err)
+		return nil, fmt.Errorf("create univ3 factory reader: %w", err)
 	}
-
-	quickSwapParser, err := NewQuickSwapABIParser()
+	poolReader, err := NewPoolReader(chain.Client, chain.Multicall)
 	if err != nil {
-		client.Close()
-		return nil, fmt.Errorf("create quickswap abi parser: %w", err)
+		return nil, fmt.Errorf("create univ3 pool reader: %w", err)
 	}
+	return &Univ3Services{
+		LogFetcher: NewLogFetcher(chain.Client),
+		Parser:     parser,
+		Factory:    factory,
+		PoolReader: poolReader,
+	}, nil
+}
 
-	factory, err := NewFactoryReader(client, cfg.FactoryAddress)
+func NewPancakeV3Services(chain *Services) (*PancakeV3Services, error) {
+	parser, err := NewPancakeABIParser()
 	if err != nil {
-		client.Close()
-		return nil, fmt.Errorf("create factory reader: %w", err)
+		return nil, fmt.Errorf("create pancakev3 abi parser: %w", err)
 	}
-
-	poolReader, err := NewPoolReader(client, multicall)
+	poolReader, err := NewPancakePoolReader(chain.Client, chain.Multicall)
 	if err != nil {
-		client.Close()
-		return nil, fmt.Errorf("create pool reader: %w", err)
+		return nil, fmt.Errorf("create pancakev3 pool reader: %w", err)
 	}
+	return &PancakeV3Services{
+		LogFetcher: NewPancakeLogFetcher(chain.Client),
+		Parser:     parser,
+		PoolReader: poolReader,
+	}, nil
+}
 
-	pancakePoolReader, err := NewPancakePoolReader(client, multicall)
+func NewQuickSwapV3Services(chain *Services) (*QuickSwapV3Services, error) {
+	parser, err := NewQuickSwapABIParser()
 	if err != nil {
-		client.Close()
-		return nil, fmt.Errorf("create pancake pool reader: %w", err)
+		return nil, fmt.Errorf("create quickswapv3 abi parser: %w", err)
 	}
-
-	quickSwapPoolReader, err := NewQuickSwapPoolReader(client, multicall)
+	poolReader, err := NewQuickSwapPoolReader(chain.Client, chain.Multicall)
 	if err != nil {
-		client.Close()
-		return nil, fmt.Errorf("create quickswap pool reader: %w", err)
+		return nil, fmt.Errorf("create quickswapv3 pool reader: %w", err)
 	}
+	return &QuickSwapV3Services{
+		LogFetcher: NewQuickSwapLogFetcher(chain.Client),
+		Parser:     parser,
+		PoolReader: poolReader,
+	}, nil
+}
 
-	v4Parser, err := NewV4ABIParser()
+func NewUniv4Services(chain *Services, cfg Univ4Config) (*Univ4Services, error) {
+	parser, err := NewV4ABIParser()
 	if err != nil {
-		client.Close()
-		return nil, fmt.Errorf("create v4 abi parser: %w", err)
+		return nil, fmt.Errorf("create univ4 abi parser: %w", err)
 	}
-
-	balancerParser, err := NewBalancerABIParser()
+	poolReader, err := NewV4PoolReader(chain.Client, chain.Multicall, cfg.StateViewAddress)
 	if err != nil {
-		client.Close()
+		return nil, fmt.Errorf("create univ4 pool reader: %w", err)
+	}
+	return &Univ4Services{
+		LogFetcher: NewV4LogFetcher(chain.Client, cfg.PoolManagerAddress),
+		Parser:     parser,
+		PoolReader: poolReader,
+	}, nil
+}
+
+func NewBalancerServices(chain *Services, cfg BalancerConfig) (*BalancerServices, error) {
+	parser, err := NewBalancerABIParser()
+	if err != nil {
 		return nil, fmt.Errorf("create balancer abi parser: %w", err)
 	}
-
-	balancerPoolReader, err := NewBalancerPoolReader(client, multicall)
+	poolReader, err := NewBalancerPoolReader(chain.Client, chain.Multicall)
 	if err != nil {
-		client.Close()
 		return nil, fmt.Errorf("create balancer pool reader: %w", err)
 	}
-
-	var v4PoolReader *V4PoolReader
-	if (cfg.StateViewAddress != common.Address{}) {
-		v4PoolReader, err = NewV4PoolReader(client, multicall, cfg.StateViewAddress)
-		if err != nil {
-			client.Close()
-			return nil, fmt.Errorf("create v4 pool reader: %w", err)
-		}
-	}
-
-	erc20Reader, err := NewERC20Reader(multicall)
-	if err != nil {
-		client.Close()
-		return nil, fmt.Errorf("create erc20 reader: %w", err)
-	}
-
-	return &Services{
-		Client:              client,
-		Multicall:           multicall,
-		LogFetcher:          NewLogFetcher(client),
-		PancakeLogFetcher:   NewPancakeLogFetcher(client),
-		QuickSwapLogFetcher: NewQuickSwapLogFetcher(client),
-		HeadSub:             NewHeadSubscriber(client),
-		Parser:              parser,
-		PancakeParser:       pancakeParser,
-		QuickSwapParser:     quickSwapParser,
-		Factory:             factory,
-		PoolReader:          poolReader,
-		PancakePoolReader:   pancakePoolReader,
-		QuickSwapPoolReader: quickSwapPoolReader,
-		V4LogFetcher:        NewV4LogFetcher(client, cfg.PoolManagerAddress),
-		V4Parser:            v4Parser,
-		V4PoolReader:        v4PoolReader,
-		BalancerLogFetcher:  NewBalancerLogFetcher(client, cfg.BalancerVaultAddress, cfg.BalancerVaultV3Address),
-		BalancerParser:      balancerParser,
-		BalancerPoolReader:  balancerPoolReader,
-		ERC20:               erc20Reader,
+	return &BalancerServices{
+		LogFetcher: NewBalancerLogFetcher(chain.Client, cfg.VaultAddress, cfg.VaultV3Address),
+		Parser:     parser,
+		PoolReader: poolReader,
 	}, nil
 }
 
 func (s *Services) Close() {
-	if s.Client != nil {
+	if s != nil && s.Client != nil {
 		s.Client.Close()
 	}
 }

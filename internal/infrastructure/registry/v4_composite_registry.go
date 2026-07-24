@@ -65,7 +65,7 @@ func (r *CompositeV4Registry) List(ctx context.Context) ([]marketv4.PoolID, erro
 	}
 
 	if subgraphEnabled && subgraph != nil {
-		subgraphEntries, err := subgraph.List(ctx)
+		subgraphEntries, err := subgraph.list(ctx)
 		if err != nil {
 			return nil, err
 		}

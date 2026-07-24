@@ -65,7 +65,7 @@ func (r *CompositeBalancerRegistry) List(ctx context.Context) ([]marketbalancer.
 	}
 
 	if subgraphEnabled && subgraph != nil {
-		subgraphEntries, err := subgraph.List(ctx)
+		subgraphEntries, err := subgraph.list(ctx)
 		if err != nil {
 			return nil, err
 		}

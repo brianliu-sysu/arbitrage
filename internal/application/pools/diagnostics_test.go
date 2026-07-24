@@ -66,9 +66,10 @@ func TestDiagnosticsV4MatchesChainState(t *testing.T) {
 		Liquidity:    new(big.Int).Set(liquidity),
 	}
 
-	service := NewAppService(nil, nil, &diagV4PoolRepo{pool: pool}, nil, nil, nil, nil, nil, nil, &ChainReaders{
-		Head: diagHeadReader{head: 105},
-		V4:   diagV4Reader{state: chainState},
+	v4Reader := diagV4Reader{state: chainState}
+	service := NewAppService(ServiceDeps{
+		Protocols: []ProtocolAdapter{NewUniv4Adapter(&diagV4PoolRepo{pool: pool}, nil, v4Reader)},
+		Head:      diagHeadReader{head: 105},
 	})
 
 	resp, err := service.Diagnostics(context.Background(), DiagnosticsRequest{
@@ -184,11 +185,11 @@ func TestDiagnosticsAllUsesBatchV4ChainReader(t *testing.T) {
 		},
 	}}
 
-	service := NewAppService(nil, nil, repo, nil, nil, nil, &diagV4Registry{
-		poolIDs: []marketuniv4.PoolID{matchedID, mismatchID},
-	}, nil, nil, &ChainReaders{
+	service := NewAppService(ServiceDeps{
+		Protocols: []ProtocolAdapter{NewUniv4Adapter(repo, &diagV4Registry{
+			poolIDs: []marketuniv4.PoolID{matchedID, mismatchID},
+		}, chainReader)},
 		Head: diagHeadReader{head: 200},
-		V4:   chainReader,
 	})
 
 	resp, err := service.DiagnosticsAll(context.Background())
@@ -241,11 +242,10 @@ func TestDiagnosticsAllReturnsMismatchingPoolsAtHead(t *testing.T) {
 		},
 	}
 
-	service := NewAppService(nil, nil, repo, nil, nil, nil, &diagV4Registry{
-		poolIDs: []marketuniv4.PoolID{matchedID, mismatchID},
-	}, nil, nil, &ChainReaders{
-		Head: diagHeadReader{head: 200},
-		V4: diagV4ReaderByPool{
+	service := NewAppService(ServiceDeps{
+		Protocols: []ProtocolAdapter{NewUniv4Adapter(repo, &diagV4Registry{
+			poolIDs: []marketuniv4.PoolID{matchedID, mismatchID},
+		}, diagV4ReaderByPool{
 			matchedID: {
 				SqrtPriceX96: new(big.Int).Set(sqrtPrice),
 				Tick:         100,
@@ -256,7 +256,8 @@ func TestDiagnosticsAllReturnsMismatchingPoolsAtHead(t *testing.T) {
 				Tick:         100,
 				Liquidity:    new(big.Int).Set(liquidity),
 			},
-		},
+		})},
+		Head: diagHeadReader{head: 200},
 	})
 
 	resp, err := service.DiagnosticsAll(context.Background())
@@ -368,16 +369,18 @@ func TestDiagnosticsBalancerComparesChainState(t *testing.T) {
 	pool.Status = market.PoolStatusReady
 
 	spec := diagBalancerSpec(pool)
-	service := NewAppService(nil, nil, nil, &diagBalancerPoolRepo{
+	balancerRepo := &diagBalancerPoolRepo{
 		pools: map[marketbalancer.PoolID]*marketbalancer.Pool{poolID: pool},
-	}, nil, nil, nil, &diagBalancerRegistry{
+	}
+	balancerRegistry := &diagBalancerRegistry{
 		poolIDs: []marketbalancer.PoolID{poolID},
 		specs:   map[marketbalancer.PoolID]marketbalancer.PoolSpec{poolID: spec},
-	}, nil, &ChainReaders{
-		Head: diagHeadReader{head: 105},
-		Balancer: diagBalancerReaderByPool{
+	}
+	service := NewAppService(ServiceDeps{
+		Protocols: []ProtocolAdapter{NewBalancerAdapter(balancerRepo, balancerRegistry, diagBalancerReaderByPool{
 			poolID: diagBalancerBootstrap(pool, spec, 100),
-		},
+		})},
+		Head: diagHeadReader{head: 105},
 	})
 
 	resp, err := service.Diagnostics(context.Background(), DiagnosticsRequest{
@@ -417,20 +420,22 @@ func TestDiagnosticsAllIncludesMismatchingBalancerPools(t *testing.T) {
 		mismatchID: mismatchChain,
 	}}
 
-	service := NewAppService(nil, nil, nil, &diagBalancerPoolRepo{
+	balancerRepo := &diagBalancerPoolRepo{
 		pools: map[marketbalancer.PoolID]*marketbalancer.Pool{
 			matchedID:  matchedPool,
 			mismatchID: mismatchPool,
 		},
-	}, nil, nil, nil, &diagBalancerRegistry{
+	}
+	balancerRegistry := &diagBalancerRegistry{
 		poolIDs: []marketbalancer.PoolID{matchedID, mismatchID},
 		specs: map[marketbalancer.PoolID]marketbalancer.PoolSpec{
 			matchedID:  matchedSpec,
 			mismatchID: mismatchSpec,
 		},
-	}, nil, &ChainReaders{
-		Head:     diagHeadReader{head: 200},
-		Balancer: reader,
+	}
+	service := NewAppService(ServiceDeps{
+		Protocols: []ProtocolAdapter{NewBalancerAdapter(balancerRepo, balancerRegistry, reader)},
+		Head:      diagHeadReader{head: 200},
 	})
 
 	resp, err := service.DiagnosticsAll(context.Background())

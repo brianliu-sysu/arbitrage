@@ -13,6 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/rpc"
 )
 
 // ErrClientClosed is returned when RPC methods are called after the client is closed.
@@ -115,6 +116,43 @@ func (c *EthClient) GetLatestBlockHeader(ctx context.Context) (domainchain.Block
 		return domainchain.BlockHeader{}, fmt.Errorf("latest header: %w", err)
 	}
 	return headerToDomain(header), nil
+}
+
+func (c *EthClient) GetBlockHeaders(ctx context.Context, blockNumbers []uint64) (map[uint64]domainchain.BlockHeader, error) {
+	rpcClient, err := c.rpcClient()
+	if err != nil {
+		return nil, err
+	}
+	headers := make(map[uint64]domainchain.BlockHeader, len(blockNumbers))
+	const batchSize = 64
+	for start := 0; start < len(blockNumbers); start += batchSize {
+		end := min(start+batchSize, len(blockNumbers))
+		results := make([]*types.Header, end-start)
+		batch := make([]rpc.BatchElem, end-start)
+		for index, blockNumber := range blockNumbers[start:end] {
+			results[index] = new(types.Header)
+			batch[index] = rpc.BatchElem{
+				Method: "eth_getBlockByNumber",
+				Args:   []any{fmt.Sprintf("0x%x", blockNumber), false},
+				Result: results[index],
+			}
+		}
+		if err := rpcClient.Client().BatchCallContext(ctx, batch); err != nil {
+			return nil, fmt.Errorf("batch block headers: %w", err)
+		}
+		for index, item := range batch {
+			blockNumber := blockNumbers[start+index]
+			if item.Error != nil {
+				return nil, fmt.Errorf("block header %d: %w", blockNumber, item.Error)
+			}
+			header := results[index]
+			if header == nil || header.Number == nil {
+				return nil, fmt.Errorf("block header %d not found", blockNumber)
+			}
+			headers[blockNumber] = headerToDomain(header)
+		}
+	}
+	return headers, nil
 }
 
 // ResolveBlockNumber returns blockNumber when non-zero, otherwise the latest head.

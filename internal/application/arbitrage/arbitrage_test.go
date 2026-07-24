@@ -629,6 +629,42 @@ func TestRefreshSpreadRoutesRebuildsGraph(t *testing.T) {
 	}
 }
 
+func TestRefreshArbitrageRoutesUpdatesRegisteredPoolGraphUpdater(t *testing.T) {
+	tokenA := testToken(2)
+	tokenB := testToken(3)
+	poolAddress := testToken(10)
+	repo := newMemoryPoolRepo()
+	registry := &staticPoolRegistry{}
+	services := arbitrageapp.NewServices(arbitrageapp.ServiceDeps{
+		Pools:    repo,
+		Registry: registry,
+		Quotes:   unifiedQuotes(),
+	})
+	updater := &recordingPoolGraphUpdater{}
+	services.RegisterPoolGraphUpdater(updater)
+
+	pool := setupQuotedPool(poolAddress, tokenA, tokenB, 100_000_000_000_000_000)
+	if err := repo.Save(context.Background(), pool); err != nil {
+		t.Fatalf("save pool: %v", err)
+	}
+	registry.addresses = []common.Address{poolAddress}
+
+	if _, err := services.RefreshArbitrageRoutes(context.Background()); err != nil {
+		t.Fatalf("refresh routes: %v", err)
+	}
+	if updater.graph == nil || len(updater.graph.Edges()) != 1 {
+		t.Fatal("expected registered updater to receive one-edge graph")
+	}
+}
+
+type recordingPoolGraphUpdater struct {
+	graph quoteunified.PoolGraph
+}
+
+func (u *recordingPoolGraphUpdater) SetPoolGraph(graph quoteunified.PoolGraph) {
+	u.graph = graph
+}
+
 func TestPublishServicePersistsOpportunity(t *testing.T) {
 	repo := newMemoryOpportunityRepo()
 	publish := arbitrageapp.NewPublishService(arbitrageapp.NewRepositoryPublisher(repo))

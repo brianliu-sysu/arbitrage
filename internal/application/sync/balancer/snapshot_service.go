@@ -2,8 +2,9 @@ package balancersync
 
 import (
 	"context"
+	"time"
 
-	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
+	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync/protocol"
 	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 )
 
@@ -11,20 +12,48 @@ type SnapshotPolicy = syncapp.SnapshotPolicy
 
 type SnapshotService = syncapp.SnapshotService[marketbalancer.PoolID, marketbalancer.Pool, marketbalancer.Snapshot]
 
-var balancerSnapshotOps = syncapp.SnapshotOps[marketbalancer.PoolID, marketbalancer.Pool, marketbalancer.Snapshot]{
-	PoolID:        func(pool *marketbalancer.Pool) marketbalancer.PoolID { return pool.ID },
-	NewSnapshot:   marketbalancer.NewSnapshot,
-	RestoreTo:     func(snapshot *marketbalancer.Snapshot, pool *marketbalancer.Pool) { snapshot.RestoreTo(pool) },
-	BlockNumber:   func(snapshot *marketbalancer.Snapshot) uint64 { return snapshot.BlockNumber },
-	LastBlock:     func(pool *marketbalancer.Pool) uint64 { return pool.LastBlockNumber },
-	IsInitialized: func(pool *marketbalancer.Pool) bool { return pool.IsInitialized() },
+type snapshotProtocol struct{}
+
+func (p *snapshotProtocol) PoolID(pool *marketbalancer.Pool) marketbalancer.PoolID { return pool.ID }
+func (p *snapshotProtocol) NewSnapshot(pool *marketbalancer.Pool, block uint64, createdAt time.Time) *marketbalancer.Snapshot {
+	return marketbalancer.NewSnapshot(pool, block, createdAt)
+}
+func (p *snapshotProtocol) RestoreTo(snapshot *marketbalancer.Snapshot, pool *marketbalancer.Pool) {
+	snapshot.RestoreTo(pool)
+}
+func (p *snapshotProtocol) BlockNumber(snapshot *marketbalancer.Snapshot) uint64 {
+	return snapshot.BlockNumber
+}
+func (p *snapshotProtocol) LastBlock(pool *marketbalancer.Pool) uint64 {
+	return pool.LastBlockNumber
+}
+func (p *snapshotProtocol) IsInitialized(pool *marketbalancer.Pool) bool {
+	return pool.IsInitialized()
 }
 
 func NewSnapshotService(snapshots marketbalancer.SnapshotRepository, policy SnapshotPolicy) *SnapshotService {
-	return syncapp.NewSnapshotService(snapshots, policy, balancerSnapshotOps)
+	return syncapp.NewSnapshotService(snapshots, policy, &snapshotProtocol{})
 }
 
 type SnapshotScheduler = syncapp.SnapshotScheduler[marketbalancer.PoolID, marketbalancer.Pool]
+
+type snapshotSchedulerProtocol struct {
+	pools     marketbalancer.PoolRepository
+	snapshots *SnapshotService
+}
+
+func (p *snapshotSchedulerProtocol) LoadPool(ctx context.Context, poolID marketbalancer.PoolID) (*marketbalancer.Pool, error) {
+	return p.pools.Get(ctx, poolID)
+}
+func (p *snapshotSchedulerProtocol) CreateSnapshot(ctx context.Context, pool *marketbalancer.Pool, block uint64) error {
+	return p.snapshots.Create(ctx, pool, block)
+}
+func (p *snapshotSchedulerProtocol) PoolLastBlock(pool *marketbalancer.Pool) uint64 {
+	return pool.LastBlockNumber
+}
+func (p *snapshotSchedulerProtocol) FormatPoolID(poolID marketbalancer.PoolID) string {
+	return poolID.String()
+}
 
 func NewSnapshotScheduler(
 	config Config,
@@ -32,16 +61,9 @@ func NewSnapshotScheduler(
 	snapshots *SnapshotService,
 	lifecycle *PoolLifecycleService,
 ) *SnapshotScheduler {
-	return syncapp.NewSnapshotScheduler(syncapp.SnapshotSchedulerDeps[marketbalancer.PoolID, marketbalancer.Pool]{
-		FallbackInterval: config.SnapshotFallback,
-		Lifecycle:        lifecycle,
-		LoadPool: func(ctx context.Context, poolID marketbalancer.PoolID) (*marketbalancer.Pool, error) {
-			return pools.Get(ctx, poolID)
-		},
-		CreateSnapshot: func(ctx context.Context, pool *marketbalancer.Pool, blockNumber uint64) error {
-			return snapshots.Create(ctx, pool, blockNumber)
-		},
-		PoolLastBlock: func(pool *marketbalancer.Pool) uint64 { return pool.LastBlockNumber },
-		FormatPoolID:  func(poolID marketbalancer.PoolID) string { return poolID.String() },
-	})
+	return syncapp.NewSnapshotScheduler(
+		config.SnapshotFallback,
+		lifecycle,
+		&snapshotSchedulerProtocol{pools: pools, snapshots: snapshots},
+	)
 }

@@ -4,75 +4,62 @@ import (
 	"context"
 	"fmt"
 
-	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
-	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
+	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync/protocol"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
 	"github.com/ethereum/go-ethereum/common"
 )
 
-type ReorgRecoveryService = syncapp.ReorgRecoveryService[common.Address, marketclv3.PoolEvent, *marketclv3.Pool]
+type ReorgRecoveryService = syncapp.ReorgRecoveryService[common.Address, *marketclv3.Pool]
+
+type reorgRecoveryProtocol struct {
+	snapshots *SnapshotService
+	bootstrap PoolBootstrapReader
+}
+
+func (p *reorgRecoveryProtocol) FormatPoolID(poolID common.Address) string {
+	return poolID.Hex()
+}
+
+func (p *reorgRecoveryProtocol) IsNilPool(pool *marketclv3.Pool) bool {
+	return pool == nil
+}
+
+func (p *reorgRecoveryProtocol) DeleteSnapshotsAfter(
+	ctx context.Context,
+	poolID common.Address,
+	blockNumber uint64,
+) error {
+	return p.snapshots.DeleteAfterBlock(ctx, poolID, blockNumber)
+}
+
+func (p *reorgRecoveryProtocol) RestorePoolState(
+	ctx context.Context,
+	pool *marketclv3.Pool,
+	poolID common.Address,
+	ancestor uint64,
+) (uint64, error) {
+	return restoreCLV3PoolState(ctx, p.snapshots, p.bootstrap, pool, poolID, ancestor)
+}
+
+func (p *reorgRecoveryProtocol) SetPoolStatus(pool *marketclv3.Pool, status market.PoolStatus) {
+	pool.Status = status
+}
 
 func NewReorgRecoveryService(
-	config Config,
-	blocks BlockReader,
-	checkpoints blockchain.CheckpointRepository,
 	pools PoolRepository,
 	bootstrap PoolBootstrapReader,
 	snapshots *SnapshotService,
-	fetcher LogFetcher,
-	parser EventParser,
 	blockApply *BlockApplyService,
 	readiness *ReadinessService,
 ) *ReorgRecoveryService {
 	return syncapp.NewReorgRecoveryService(
-		config.ReorgMaxDepth,
-		blocks,
-		syncapp.ReorgRecoveryHooks[common.Address, marketclv3.PoolEvent, *marketclv3.Pool]{
-			FormatPoolID: func(address common.Address) string { return address.Hex() },
-			DeleteSnapshotsAfter: func(ctx context.Context, poolAddress common.Address, ancestor uint64) error {
-				return snapshots.DeleteAfterBlock(ctx, poolAddress, ancestor)
-			},
-			LoadPool:  pools.Get,
-			SavePool:  pools.Save,
-			IsNilPool: func(pool *marketclv3.Pool) bool { return pool == nil },
-			RestorePoolState: func(ctx context.Context, pool *marketclv3.Pool, poolAddress common.Address, ancestor uint64) (uint64, error) {
-				return restoreCLV3PoolState(ctx, snapshots, bootstrap, pool, poolAddress, ancestor)
-			},
-			SetPoolStatus: func(pool *marketclv3.Pool, status market.PoolStatus) { pool.Status = status },
-			SetPoolReady:  readiness.SetPoolReady,
-			FetchReplayLogs: func(ctx context.Context, poolAddress common.Address, fromBlock, toBlock uint64) ([]syncapp.RawLog, error) {
-				if fetcher == nil {
-					return nil, fmt.Errorf("log fetcher is not configured")
-				}
-				return fetcher.FetchLogs(ctx, LogFilter{
-					PoolAddresses: []common.Address{poolAddress},
-					FromBlock:     fromBlock,
-					ToBlock:       toBlock,
-				})
-			},
-			ParseEvents: func(logs []syncapp.RawLog) ([]marketclv3.PoolEvent, error) {
-				if parser == nil {
-					return nil, fmt.Errorf("event parser is not configured")
-				}
-				return parser.ParsePoolEvents(logs)
-			},
-			EventBlockNumber: func(event marketclv3.PoolEvent) uint64 { return event.Meta.BlockNumber },
-			ApplyBlock: func(ctx context.Context, blockNumber uint64, blockHash common.Hash, events []marketclv3.PoolEvent, tracked []common.Address, suppressListener bool) error {
-				if blockApply == nil {
-					return fmt.Errorf("block apply service is not configured")
-				}
-				_, err := blockApply.ApplyBlock(ctx, ApplyBlockRequest{
-					BlockNumber:      blockNumber,
-					BlockHash:        blockHash,
-					Events:           events,
-					TrackedPools:     tracked,
-					SuppressListener: suppressListener,
-				})
-				return err
-			},
-			NotifyRecovered: blockApply.NotifyPoolsChanged,
+		syncapp.ReorgRecoveryDeps[common.Address, *marketclv3.Pool]{
+			Pools:       pools,
+			Coordinator: blockApply,
+			Readiness:   readiness,
 		},
+		&reorgRecoveryProtocol{snapshots: snapshots, bootstrap: bootstrap},
 	)
 }
 

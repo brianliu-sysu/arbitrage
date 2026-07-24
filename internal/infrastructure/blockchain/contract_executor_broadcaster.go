@@ -132,7 +132,10 @@ type ContractExecutorBroadcaster struct {
 	multicallAddress common.Address
 }
 
-func NewContractExecutorBroadcaster(multicallAddresses ...common.Address) (*ContractExecutorBroadcaster, error) {
+func NewContractExecutorBroadcaster(multicallAddress common.Address) (*ContractExecutorBroadcaster, error) {
+	if multicallAddress == (common.Address{}) {
+		return nil, fmt.Errorf("multicall address is required")
+	}
 	parsedABI, err := abi.JSON(strings.NewReader(arbitrageExecutorABI))
 	if err != nil {
 		return nil, fmt.Errorf("parse arbitrage executor abi: %w", err)
@@ -140,10 +143,6 @@ func NewContractExecutorBroadcaster(multicallAddresses ...common.Address) (*Cont
 	erc20ABI, err := abi.JSON(strings.NewReader(erc20AllowanceABI))
 	if err != nil {
 		return nil, fmt.Errorf("parse erc20 abi: %w", err)
-	}
-	multicallAddress := DefaultConfig("").MulticallAddress
-	if len(multicallAddresses) > 0 && multicallAddresses[0] != (common.Address{}) {
-		multicallAddress = multicallAddresses[0]
 	}
 	return &ContractExecutorBroadcaster{
 		parsedABI:        parsedABI,

@@ -46,12 +46,3 @@ type BalancerStateReader interface {
 type BalancerStateBatchReader interface {
 	ReadManyBalancerStates(ctx context.Context, inputs []marketbalancer.BootstrapInput, blockNumber uint64) (map[marketbalancer.PoolID]*marketbalancer.BootstrapData, error)
 }
-
-// ChainReaders provides optional on-chain readers for pool diagnostics.
-type ChainReaders struct {
-	Head     HeadBlockReader
-	V4       V4BaseStateReader
-	V3       V3BaseStateReader
-	Pancake  V3BaseStateReader
-	Balancer BalancerStateReader
-}

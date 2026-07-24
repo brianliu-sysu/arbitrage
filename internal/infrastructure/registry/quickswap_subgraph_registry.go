@@ -40,18 +40,6 @@ type QuickSwapSubgraphRegistry struct {
 }
 
 func NewQuickSwapSubgraphRegistry(cfg config.SubgraphPoolConfig) *QuickSwapSubgraphRegistry {
-	if cfg.First <= 0 {
-		cfg.First = 100
-	}
-	if cfg.OrderBy == "" {
-		cfg.OrderBy = "volume24h"
-	}
-	if cfg.OrderDirection == "" {
-		cfg.OrderDirection = "desc"
-	}
-	if cfg.RefreshInterval <= 0 {
-		cfg.RefreshInterval = 10 * time.Minute
-	}
 	return &QuickSwapSubgraphRegistry{
 		cfg:     cfg,
 		client:  &http.Client{Timeout: defaultGraphQLTimeout},

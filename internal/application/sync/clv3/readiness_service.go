@@ -1,7 +1,7 @@
 package clv3sync
 
 import (
-	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
+	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync/protocol"
 	"github.com/ethereum/go-ethereum/common"
 )
 

@@ -8,6 +8,8 @@ dist
 
 logs/
 docs/
+!docs/architecture/
+!docs/architecture/*.md
 
 # Foundry
 contract/cache/

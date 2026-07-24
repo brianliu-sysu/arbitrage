@@ -14,9 +14,8 @@ func TestBalancerPoolReaderReadBootstrapDataV3(t *testing.T) {
 	}
 
 	client, err := NewEthClient(Config{
-		RPCURL:                 "https://eth-mainnet.g.alchemy.com/v2/7NCmH4mP28eUd1BkVLMA8",
-		MulticallAddress:       common.HexToAddress("0xcA11bde05977b3631167028862bE2a173976CA11"),
-		BalancerVaultV3Address: common.HexToAddress("0xbA1333333333a1BA1108E8412f11850A5C319bA9"),
+		RPCURL:           "https://eth-mainnet.g.alchemy.com/v2/7NCmH4mP28eUd1BkVLMA8",
+		MulticallAddress: common.HexToAddress("0xcA11bde05977b3631167028862bE2a173976CA11"),
 	})
 	if err != nil {
 		t.Fatalf("new eth client: %v", err)
@@ -63,9 +62,8 @@ func TestBalancerPoolReaderReadManyBootstrapDataV3(t *testing.T) {
 	}
 
 	client, err := NewEthClient(Config{
-		RPCURL:                 "https://eth-mainnet.g.alchemy.com/v2/7NCmH4mP28eUd1BkVLMA8",
-		MulticallAddress:       common.HexToAddress("0xcA11bde05977b3631167028862bE2a173976CA11"),
-		BalancerVaultV3Address: common.HexToAddress("0xbA1333333333a1BA1108E8412f11850A5C319bA9"),
+		RPCURL:           "https://eth-mainnet.g.alchemy.com/v2/7NCmH4mP28eUd1BkVLMA8",
+		MulticallAddress: common.HexToAddress("0xcA11bde05977b3631167028862bE2a173976CA11"),
 	})
 	if err != nil {
 		t.Fatalf("new eth client: %v", err)

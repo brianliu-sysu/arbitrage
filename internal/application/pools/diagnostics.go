@@ -82,27 +82,20 @@ func (s *AppService) Diagnostics(ctx context.Context, req DiagnosticsRequest) (*
 	if s == nil {
 		return nil, fmt.Errorf("pools service is nil")
 	}
-	if s.chain == nil || s.chain.Head == nil {
+	if s.head == nil {
 		return nil, fmt.Errorf("chain readers are not configured")
 	}
 
-	head, err := s.chain.Head.LatestBlockNumber(ctx)
+	head, err := s.head.LatestBlockNumber(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("latest block: %w", err)
 	}
 
-	switch req.PoolType {
-	case PoolTypeUniv4:
-		return s.diagnosticsV4(ctx, req.PoolID, head)
-	case PoolTypeUniv3:
-		return s.diagnosticsCLV3(ctx, PoolTypeUniv3, "univ3", req.PoolAddress, head, univ3CLV3Pools(s), s.chain.V3)
-	case PoolTypePancakeV3:
-		return s.diagnosticsCLV3(ctx, PoolTypePancakeV3, "pancakev3", req.PoolAddress, head, pancakeCLV3Pools(s), s.chain.Pancake)
-	case PoolTypeBalancer:
-		return s.diagnosticsBalancer(ctx, req.BalancerPoolID, head)
-	default:
+	protocol := s.protocol(req.PoolType)
+	if protocol == nil {
 		return nil, fmt.Errorf("unsupported poolType %q", req.PoolType)
 	}
+	return protocol.Diagnostics(ctx, req, head, s.resolveTokenMetadata)
 }
 
 // DiagnosticsAll returns tracked pools at chain head whose local slot0 state differs from chain.
@@ -110,27 +103,20 @@ func (s *AppService) DiagnosticsAll(ctx context.Context) (*DiagnosticsListRespon
 	if s == nil {
 		return nil, fmt.Errorf("pools service is nil")
 	}
-	if s.chain == nil || s.chain.Head == nil {
+	if s.head == nil {
 		return nil, fmt.Errorf("chain readers are not configured")
 	}
 
-	head, err := s.chain.Head.LatestBlockNumber(ctx)
+	head, err := s.head.LatestBlockNumber(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("latest block: %w", err)
 	}
 
 	items := make([]DiagnosticsResponse, 0)
-	if err := appendMismatchingCLV3Pools(ctx, s, univ3CLV3Source(s), head, &items); err != nil {
-		return nil, err
-	}
-	if err := appendMismatchingCLV3Pools(ctx, s, pancakeCLV3Source(s), head, &items); err != nil {
-		return nil, err
-	}
-	if err := s.appendMismatchingV4(ctx, head, &items); err != nil {
-		return nil, err
-	}
-	if err := s.appendMismatchingBalancer(ctx, head, &items); err != nil {
-		return nil, err
+	for _, protocol := range s.protocols {
+		if err := protocol.AppendMismatches(ctx, head, s.resolveTokenMetadata, &items); err != nil {
+			return nil, err
+		}
 	}
 
 	sortDiagnostics(items)
@@ -141,11 +127,20 @@ func (s *AppService) DiagnosticsAll(ctx context.Context) (*DiagnosticsListRespon
 	}, nil
 }
 
-func (s *AppService) appendMismatchingV4(ctx context.Context, head uint64, items *[]DiagnosticsResponse) error {
-	if s.v4Registry == nil || s.v4Pools == nil || s.chain.V4 == nil {
+func (s *AppService) protocol(poolType string) ProtocolAdapter {
+	for _, protocol := range s.protocols {
+		if protocol.Type() == poolType {
+			return protocol
+		}
+	}
+	return nil
+}
+
+func (a *Univ4Adapter) appendMismatches(ctx context.Context, head uint64, resolve TokenMetadataResolver, items *[]DiagnosticsResponse) error {
+	if a.registry == nil || a.pools == nil || a.reader == nil {
 		return nil
 	}
-	poolIDs, err := s.v4Registry.List(ctx)
+	poolIDs, err := a.registry.List(ctx)
 	if err != nil {
 		return fmt.Errorf("list univ4 pools: %w", err)
 	}
@@ -159,7 +154,7 @@ func (s *AppService) appendMismatchingV4(ctx context.Context, head uint64, items
 	tokenAddresses := make([]common.Address, 0, len(poolIDs)*2)
 
 	for _, poolID := range poolIDs {
-		pool, err := s.v4Pools.Get(ctx, poolID)
+		pool, err := a.pools.Get(ctx, poolID)
 		if err != nil || pool == nil {
 			continue
 		}
@@ -171,12 +166,12 @@ func (s *AppService) appendMismatchingV4(ctx context.Context, head uint64, items
 		tokenAddresses = append(tokenAddresses, pool.Key.Currency0, pool.Key.Currency1)
 	}
 
-	chainStates, err := readManyV4BaseStates(ctx, s.chain.V4, atHead, head)
+	chainStates, err := readManyV4BaseStates(ctx, a.reader, atHead, head)
 	if err != nil {
 		return fmt.Errorf("read univ4 chain states: %w", err)
 	}
 
-	tokenMeta, err := s.resolveTokenMetadata(ctx, tokenAddresses...)
+	tokenMeta, err := resolve(ctx, tokenAddresses...)
 	if err != nil {
 		return err
 	}
@@ -250,18 +245,18 @@ func sortDiagnostics(items []DiagnosticsResponse) {
 	})
 }
 
-func (s *AppService) diagnosticsV4(ctx context.Context, poolID marketuniv4.PoolID, head uint64) (*DiagnosticsResponse, error) {
+func (a *Univ4Adapter) diagnostics(ctx context.Context, poolID marketuniv4.PoolID, head uint64, resolve TokenMetadataResolver) (*DiagnosticsResponse, error) {
 	if poolID == (marketuniv4.PoolID{}) {
 		return nil, fmt.Errorf("poolId is required for univ4 diagnostics")
 	}
-	if s.v4Pools == nil {
+	if a.pools == nil {
 		return nil, fmt.Errorf("v4 pool repository is not configured")
 	}
-	if s.chain.V4 == nil {
+	if a.reader == nil {
 		return nil, fmt.Errorf("v4 chain reader is not configured")
 	}
 
-	pool, err := s.v4Pools.Get(ctx, poolID)
+	pool, err := a.pools.Get(ctx, poolID)
 	if err != nil {
 		return nil, fmt.Errorf("load v4 pool: %w", err)
 	}
@@ -269,17 +264,19 @@ func (s *AppService) diagnosticsV4(ctx context.Context, poolID marketuniv4.PoolI
 		return nil, fmt.Errorf("v4 pool %s not found", poolID.String())
 	}
 
-	token0, token1, err := s.enrichPair(ctx, pool.Key.Currency0, pool.Key.Currency1)
+	tokenMeta, err := resolve(ctx, pool.Key.Currency0, pool.Key.Currency1)
 	if err != nil {
 		return nil, err
 	}
+	token0 := enrichToken(tokenInfoFromAddress(pool.Key.Currency0), tokenMeta)
+	token1 := enrichToken(tokenInfoFromAddress(pool.Key.Currency1), tokenMeta)
 
 	chainBlock := head
 	if pool.LastBlockNumber > 0 && pool.LastBlockNumber <= head {
 		chainBlock = pool.LastBlockNumber
 	}
 
-	chainState, err := s.chain.V4.ReadV4BaseState(ctx, poolID, chainBlock)
+	chainState, err := a.reader.ReadV4BaseState(ctx, poolID, chainBlock)
 	if err != nil {
 		return nil, fmt.Errorf("read chain v4 state: %w", err)
 	}
@@ -430,59 +427,6 @@ func uniqueAddresses(addresses []common.Address) []common.Address {
 		unique = append(unique, address)
 	}
 	return unique
-}
-
-func (s *AppService) buildV3Diagnostics(
-	ctx context.Context,
-	poolType string,
-	poolAddress, token0Addr, token1Addr common.Address,
-	fee uint32,
-	sqrtPrice *big.Int,
-	tick int32,
-	liquidity *big.Int,
-	lastBlock uint64,
-	status string,
-	head uint64,
-	reader V3BaseStateReader,
-) (*DiagnosticsResponse, error) {
-	token0, token1, err := s.enrichPair(ctx, token0Addr, token1Addr)
-	if err != nil {
-		return nil, err
-	}
-
-	chainState, err := reader.ReadV3BaseState(ctx, poolAddress, head)
-	if err != nil {
-		return nil, fmt.Errorf("read chain v3 state: %w", err)
-	}
-
-	return buildV3DiagnosticsResponse(
-		poolType,
-		poolAddress,
-		token0,
-		token1,
-		fee,
-		sqrtPrice,
-		tick,
-		liquidity,
-		lastBlock,
-		status,
-		head,
-		chainState,
-	), nil
-}
-
-func (s *AppService) enrichPair(ctx context.Context, token0Addr, token1Addr common.Address) (TokenInfo, TokenInfo, error) {
-	tokenMeta := map[common.Address]*asset.Token{}
-	if s.tokens != nil {
-		var err error
-		tokenMeta, err = s.tokens.Resolve(ctx, []common.Address{token0Addr, token1Addr})
-		if err != nil {
-			return TokenInfo{}, TokenInfo{}, err
-		}
-	}
-	token0 := enrichToken(tokenInfoFromAddress(token0Addr), tokenMeta)
-	token1 := enrichToken(tokenInfoFromAddress(token1Addr), tokenMeta)
-	return token0, token1, nil
 }
 
 func snapshotFromState(sqrtPrice *big.Int, tick int32, liquidity *big.Int, blockNumber uint64, status string, decimals0, decimals1 uint8) StateSnapshot {

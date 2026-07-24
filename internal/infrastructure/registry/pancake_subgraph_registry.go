@@ -40,18 +40,6 @@ type PancakeSubgraphRegistry struct {
 }
 
 func NewPancakeSubgraphRegistry(cfg config.SubgraphPoolConfig) *PancakeSubgraphRegistry {
-	if cfg.First <= 0 {
-		cfg.First = 100
-	}
-	if cfg.OrderBy == "" {
-		cfg.OrderBy = "volume24h"
-	}
-	if cfg.OrderDirection == "" {
-		cfg.OrderDirection = "desc"
-	}
-	if cfg.RefreshInterval <= 0 {
-		cfg.RefreshInterval = 10 * time.Minute
-	}
 	return &PancakeSubgraphRegistry{
 		cfg:     cfg,
 		client:  &http.Client{Timeout: defaultGraphQLTimeout},
@@ -381,14 +369,14 @@ func parsePancakeFeePercentage(value string) (float64, error) {
 
 type pancakeGraphQLResponse struct {
 	Data struct {
-		LiquidityPools              []pancakeSubgraphPool         `json:"liquidityPools"`
+		LiquidityPools              []pancakeSubgraphPool          `json:"liquidityPools"`
 		LiquidityPoolDailySnapshots []pancakeSubgraphDailySnapshot `json:"liquidityPoolDailySnapshots"`
 	} `json:"data"`
 	Errors []graphQLError `json:"errors"`
 }
 
 type pancakeSubgraphPool struct {
-	ID   string              `json:"id"`
+	ID   string               `json:"id"`
 	Fees []pancakeSubgraphFee `json:"fees"`
 }
 

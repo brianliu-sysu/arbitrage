@@ -17,23 +17,43 @@ persistence:
   memory: false
   database:
     url: postgres://localhost/univ3
-sync:
-  univ3:
-    enabled: true
-    pools:
-      - address: "0x88e6A0c2dDD26FEEb64F039a2c41296Fb728693B"
-        fee: 500
-    subgraph:
-      enabled: true
-      endpoint: "https://example.com/subgraph"
-      first: 50
-      fee_tiers: [500, 3000]
-  univ4:
-    enabled: false
-    poolmanager:
-      pools: []
-    subgraph:
-      enabled: false
+chains:
+  - name: ethereum
+    chain_id: 1
+    rpc:
+      url: "https://eth.example"
+      ws_url: "wss://eth.example"
+    blockchain:
+      factory_address: "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+      multicall_address: "0xcA11bde05977b3631167028862bE2a173976CA11"
+    sync:
+      catchup_batch_size: 2000
+      catchup_pool_group_size: 100
+      catchup_block_span: 100
+      catchup_header_concurrency: 16
+      bootstrap_stale_block_threshold: 1000
+      snapshot_interval: 5000
+      snapshot_fallback: 10m
+      reorg_max_depth: 128
+      univ3:
+        enabled: true
+        pools:
+          - address: "0x88e6A0c2dDD26FEEb64F039a2c41296Fb728693B"
+            fee: 500
+        subgraph:
+          enabled: true
+          endpoint: "https://example.com/subgraph"
+          refresh_interval: 10m
+          first: 50
+          order_by: volume24h
+          order_direction: desc
+          fee_tiers: [500, 3000]
+      univ4:
+        enabled: false
+        poolmanager:
+          pools: []
+        subgraph:
+          enabled: false
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -43,17 +63,18 @@ sync:
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if len(cfg.StaticPoolAddresses()) != 1 {
+	runtime := cfg.NormalizedChains()[0]
+	if len(runtime.StaticPoolAddresses()) != 1 {
 		t.Fatalf("expected 1 static pool")
 	}
-	if !cfg.Sync.Univ3.IsActive() {
+	if !runtime.Sync.Univ3.IsActive() {
 		t.Fatal("expected univ3 sync active")
 	}
-	if !cfg.SubgraphPoolSource().IsEnabled() {
+	if !runtime.SubgraphPoolSource().IsEnabled() {
 		t.Fatal("expected subgraph source enabled")
 	}
-	if cfg.SubgraphPoolSource().First != 50 {
-		t.Fatalf("expected subgraph first=50, got %d", cfg.SubgraphPoolSource().First)
+	if runtime.SubgraphPoolSource().First != 50 {
+		t.Fatalf("expected subgraph first=50, got %d", runtime.SubgraphPoolSource().First)
 	}
 }
 
@@ -63,18 +84,35 @@ func TestLoadMemoryModeConfig(t *testing.T) {
 	content := `
 persistence:
   memory: true
-sync:
-  univ3:
-    enabled: true
-    pools:
-      - address: "0x88e6A0c2dDD26FEEb64F039a2c41296Fb728693B"
-        fee: 500
-  univ4:
-    enabled: false
-    poolmanager:
-      pools: []
-    subgraph:
-      enabled: false
+chains:
+  - name: ethereum
+    chain_id: 1
+    rpc:
+      url: "https://eth.example"
+      ws_url: "wss://eth.example"
+    blockchain:
+      factory_address: "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+      multicall_address: "0xcA11bde05977b3631167028862bE2a173976CA11"
+    sync:
+      catchup_batch_size: 2000
+      catchup_pool_group_size: 100
+      catchup_block_span: 100
+      catchup_header_concurrency: 16
+      bootstrap_stale_block_threshold: 1000
+      snapshot_interval: 5000
+      snapshot_fallback: 10m
+      reorg_max_depth: 128
+      univ3:
+        enabled: true
+        pools:
+          - address: "0x88e6A0c2dDD26FEEb64F039a2c41296Fb728693B"
+            fee: 500
+      univ4:
+        enabled: false
+        poolmanager:
+          pools: []
+        subgraph:
+          enabled: false
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -97,6 +135,55 @@ sync:
 	}
 }
 
+func TestValidateRejectsMissingMulticallAddress(t *testing.T) {
+	cfg := config.Config{
+		Persistence: config.PersistenceConfig{Memory: true},
+		Chains: []config.ChainConfig{{
+			Name:    "ethereum",
+			ChainID: 1,
+			RPC: config.RPCConfig{
+				URL:   "https://eth.example",
+				WSURL: "wss://eth.example",
+			},
+		}},
+	}
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "blockchain.multicall_address") {
+		t.Fatalf("expected missing multicall address error, got %v", err)
+	}
+}
+
+func TestValidateRejectsMissingUniv3FactoryAddress(t *testing.T) {
+	cfg := config.Config{
+		Persistence: config.PersistenceConfig{Memory: true},
+		Chains: []config.ChainConfig{{
+			Name:    "ethereum",
+			ChainID: 1,
+			RPC: config.RPCConfig{
+				URL:   "https://eth.example",
+				WSURL: "wss://eth.example",
+			},
+			Blockchain: config.BlockchainConfig{
+				MulticallAddress: "0xcA11bde05977b3631167028862bE2a173976CA11",
+			},
+			Sync: config.SyncConfig{
+				Univ3: config.Univ3SyncConfig{
+					Enabled: true,
+					Pools: []config.StaticPoolConfig{{
+						Address: "0x88e6A0c2dDD26FEEb64F039a2c41296Fb728693B",
+					}},
+				},
+			},
+		}},
+	}
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "blockchain.factory_address") {
+		t.Fatalf("expected missing factory address error, got %v", err)
+	}
+}
+
 func TestLoadExpandsEnvironmentPlaceholders(t *testing.T) {
 	t.Setenv("ARBITRAGE_TEST_RPC_HOST", "rpc.example")
 	t.Setenv("ARBITRAGE_TEST_RPC_TOKEN", "secret-token")
@@ -105,8 +192,14 @@ func TestLoadExpandsEnvironmentPlaceholders(t *testing.T) {
 	content := `
 persistence:
   memory: true
-rpc:
-  url: "https://{{ ARBITRAGE_TEST_RPC_HOST }}/{{ARBITRAGE_TEST_RPC_TOKEN}}"
+chains:
+  - name: ethereum
+    chain_id: 1
+    rpc:
+      url: "https://{{ ARBITRAGE_TEST_RPC_HOST }}/{{ARBITRAGE_TEST_RPC_TOKEN}}"
+      ws_url: "wss://rpc.example"
+    blockchain:
+      multicall_address: "0xcA11bde05977b3631167028862bE2a173976CA11"
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -116,8 +209,8 @@ rpc:
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if cfg.RPC.URL != "https://rpc.example/secret-token" {
-		t.Fatalf("unexpected expanded rpc url %q", cfg.RPC.URL)
+	if got := cfg.NormalizedChains()[0].RPC.URL; got != "https://rpc.example/secret-token" {
+		t.Fatalf("unexpected expanded rpc url %q", got)
 	}
 }
 
@@ -127,8 +220,11 @@ func TestLoadRejectsMissingEnvironmentPlaceholder(t *testing.T) {
 	content := `
 persistence:
   memory: true
-rpc:
-  url: "{{ARBITRAGE_TEST_MISSING_ENV}}"
+chains:
+  - name: ethereum
+    chain_id: 1
+    rpc:
+      url: "{{ARBITRAGE_TEST_MISSING_ENV}}"
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -146,10 +242,18 @@ func TestLoadFlashLoanFeeConfig(t *testing.T) {
 	content := `
 persistence:
   memory: true
-arbitrage:
-  flash_loan:
-    balancer_fee_ppm: "1"
-    univ4_fee_ppm: "2"
+chains:
+  - name: ethereum
+    chain_id: 1
+    rpc:
+      url: "https://eth.example"
+      ws_url: "wss://eth.example"
+    blockchain:
+      multicall_address: "0xcA11bde05977b3631167028862bE2a173976CA11"
+    arbitrage:
+      flash_loan:
+        balancer_fee_ppm: "1"
+        univ4_fee_ppm: "2"
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -159,23 +263,19 @@ arbitrage:
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if cfg.Arbitrage.FlashLoan.BalancerFee().String() != "1" {
-		t.Fatalf("expected balancer fee 1, got %s", cfg.Arbitrage.FlashLoan.BalancerFee())
+	flashLoan := cfg.NormalizedChains()[0].Arbitrage.FlashLoan
+	if flashLoan.BalancerFee().String() != "1" {
+		t.Fatalf("expected balancer fee 1, got %s", flashLoan.BalancerFee())
 	}
-	if cfg.Arbitrage.FlashLoan.Univ4Fee().String() != "2" {
-		t.Fatalf("expected univ4 fee 2, got %s", cfg.Arbitrage.FlashLoan.Univ4Fee())
+	if flashLoan.Univ4Fee().String() != "2" {
+		t.Fatalf("expected univ4 fee 2, got %s", flashLoan.Univ4Fee())
 	}
 }
 
-func TestExecutionResolveRPCURL(t *testing.T) {
-	cfg := config.ExecutionConfig{}
-	if got := cfg.ResolveRPCURL("https://fallback.example"); got != "https://fallback.example" {
-		t.Fatalf("expected fallback rpc, got %q", got)
-	}
-
-	cfg.RPCURL = " https://execution.example "
-	if got := cfg.ResolveRPCURL("https://fallback.example"); got != "https://execution.example" {
-		t.Fatalf("expected dedicated execution rpc, got %q", got)
+func TestExecutionResolvedRPCURL(t *testing.T) {
+	cfg := config.ExecutionConfig{RPCURL: " https://execution.example "}
+	if got := cfg.ResolvedRPCURL(); got != "https://execution.example" {
+		t.Fatalf("expected configured execution rpc, got %q", got)
 	}
 }
 
@@ -191,6 +291,9 @@ chains:
     chain_id: 1
     rpc:
       url: "https://chain.example"
+      ws_url: "wss://chain.example"
+    blockchain:
+      multicall_address: "0xcA11bde05977b3631167028862bE2a173976CA11"
     arbitrage:
       execution:
         enabled: false
@@ -212,7 +315,7 @@ chains:
 	if execution.RPCURL != "https://execution.example" {
 		t.Fatalf("expected execution rpc_url, got %q", execution.RPCURL)
 	}
-	if got := execution.ResolveRPCURL(chains[0].RPC.URL); got != "https://execution.example" {
+	if got := execution.ResolvedRPCURL(); got != "https://execution.example" {
 		t.Fatalf("expected resolved execution rpc, got %q", got)
 	}
 }
@@ -223,15 +326,24 @@ func TestLoadMultiChainConfig(t *testing.T) {
 	content := `
 persistence:
   memory: true
-blockchain:
-  multicall_address: "0xcA11bde05977b3631167028862bE2a173976CA11"
 chains:
   - name: ethereum
     chain_id: 1
     rpc:
       url: "https://eth.example"
       ws_url: "wss://eth.example"
+    blockchain:
+      factory_address: "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+      multicall_address: "0xcA11bde05977b3631167028862bE2a173976CA11"
     sync:
+      catchup_batch_size: 2000
+      catchup_pool_group_size: 100
+      catchup_block_span: 100
+      catchup_header_concurrency: 16
+      bootstrap_stale_block_threshold: 1000
+      snapshot_interval: 5000
+      snapshot_fallback: 10m
+      reorg_max_depth: 128
       univ3:
         enabled: true
         pools:
@@ -248,6 +360,8 @@ chains:
     rpc:
       url: "https://base.example"
       ws_url: "wss://base.example"
+    blockchain:
+      multicall_address: "0xcA11bde05977b3631167028862bE2a173976CA11"
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -271,7 +385,7 @@ chains:
 		t.Fatalf("unexpected second chain: %+v", chains[1])
 	}
 	if chains[1].Blockchain.MulticallAddress != "0xcA11bde05977b3631167028862bE2a173976CA11" {
-		t.Fatalf("expected inherited multicall address, got %s", chains[1].Blockchain.MulticallAddress)
+		t.Fatalf("expected chain-local multicall address, got %s", chains[1].Blockchain.MulticallAddress)
 	}
 }
 
@@ -288,6 +402,8 @@ chains:
     rpc:
       url: "https://eth.example"
       ws_url: "wss://eth.example"
+    blockchain:
+      multicall_address: "0xcA11bde05977b3631167028862bE2a173976CA11"
   - name: polygon
     enabled: false
     chain_id: 137
@@ -335,6 +451,29 @@ chains:
 	}
 }
 
+func TestLoadRejectsLegacyTopLevelChainConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `
+persistence:
+  memory: true
+chain_id: 1
+rpc:
+  url: "https://eth.example"
+sync:
+  univ3:
+    enabled: true
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := config.Load(path)
+	if err == nil || !strings.Contains(err.Error(), "at least one enabled chain is required") {
+		t.Fatalf("expected legacy top-level config rejection, got %v", err)
+	}
+}
+
 func TestExampleConfigFilesLoad(t *testing.T) {
 	t.Setenv("PRIVATE_KEY", "test-private-key")
 	for _, path := range []string{
@@ -355,11 +494,11 @@ func TestExampleConfigFilesLoad(t *testing.T) {
 			if chain.Name == "" || chain.ChainID == 0 {
 				t.Fatalf("chain[%d] missing identity in %s: %+v", i, path, chain)
 			}
-			if strings.TrimSpace(chain.Arbitrage.Execution.RPCURL) != "" {
+			if !chain.Arbitrage.Execution.Enabled {
 				continue
 			}
-			if got := chain.Arbitrage.Execution.ResolveRPCURL(chain.RPC.URL); got != strings.TrimSpace(chain.RPC.URL) {
-				t.Fatalf("chain %s: empty execution rpc_url should fall back to chain rpc, got %q", chain.Name, got)
+			if got := chain.Arbitrage.Execution.ResolvedRPCURL(); got == "" {
+				t.Fatalf("chain %s: execution rpc_url is required when execution is enabled", chain.Name)
 			}
 		}
 	}
@@ -385,12 +524,25 @@ func TestLogConfigResolvedPaths(t *testing.T) {
 func TestValidateRejectsShortV4PoolManagerAddress(t *testing.T) {
 	cfg := config.Default()
 	cfg.Persistence.Memory = true
-	cfg.Sync.Univ3.Enabled = false
-	cfg.Sync.Univ3.Subgraph.Enabled = false
-	cfg.Sync.Univ4.Enabled = true
-	cfg.Sync.Univ4.Subgraph.Enabled = true
-	cfg.Sync.Univ4.Subgraph.Endpoint = "https://example.com/subgraph"
-	cfg.Blockchain.PoolManagerAddress = "0x000000000004444c5dc75cb35838093bd135961"
+	cfg.Chains = []config.ChainConfig{{
+		Name:    "ethereum",
+		ChainID: 1,
+		Blockchain: config.BlockchainConfig{
+			PoolManagerAddress: "0x000000000004444c5dc75cb35838093bd135961",
+			StateViewAddress:   "0x7ffe42c4a5deea5b0fec41c94c136cf115597227",
+		},
+		Sync: config.SyncConfig{
+			Univ4: config.Univ4SyncConfig{
+				Enabled: true,
+				Subgraph: config.V4SubgraphPoolConfig{
+					SubgraphPoolConfig: config.SubgraphPoolConfig{
+						Enabled:  true,
+						Endpoint: "https://example.com/subgraph",
+					},
+				},
+			},
+		},
+	}}
 
 	err := cfg.Validate()
 	if err == nil {

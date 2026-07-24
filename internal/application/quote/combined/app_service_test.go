@@ -261,16 +261,7 @@ func setupPancakePool(address, token0, token1 common.Address, liquidity int64) *
 
 func newCombinedService(v3Repo *memoryV3PoolRepo, pancakeRepo *memoryPancakePoolRepo, v4Repo *memoryV4PoolRepo, v3Reg staticV3Registry, pancakeReg staticPancakeRegistry, v4Reg staticV4Registry) *quotecombined.AppService {
 	return quotecombined.NewAppService(
-		v3Repo,
-		pancakeRepo,
-		nil,
-		v4Repo,
-		nil,
-		v3Reg,
-		pancakeReg,
-		nil,
-		v4Reg,
-		nil,
+		testProtocolAdapters(v3Repo, pancakeRepo, v4Repo, v3Reg, pancakeReg, v4Reg),
 		quoteunified.NewQuoteService(
 			quoteuniv3domain.NewQuoteService(),
 			quotepancakev3domain.NewQuoteService(),
@@ -279,6 +270,27 @@ func newCombinedService(v3Repo *memoryV3PoolRepo, pancakeRepo *memoryPancakePool
 		alwaysReady{},
 		3,
 	)
+}
+
+func testProtocolAdapters(
+	v3Repo *memoryV3PoolRepo,
+	pancakeRepo *memoryPancakePoolRepo,
+	v4Repo *memoryV4PoolRepo,
+	v3Reg staticV3Registry,
+	pancakeReg staticPancakeRegistry,
+	v4Reg staticV4Registry,
+) []quotecombined.ProtocolAdapter {
+	protocols := make([]quotecombined.ProtocolAdapter, 0, 3)
+	if v3Repo != nil {
+		protocols = append(protocols, quotecombined.NewUniv3ProtocolAdapter(v3Repo, v3Reg, alwaysReady{}))
+	}
+	if pancakeRepo != nil {
+		protocols = append(protocols, quotecombined.NewPancakeV3ProtocolAdapter(pancakeRepo, pancakeReg, alwaysReady{}))
+	}
+	if v4Repo != nil {
+		protocols = append(protocols, quotecombined.NewUniv4ProtocolAdapter(v4Repo, v4Reg, alwaysReady{}))
+	}
+	return protocols
 }
 
 func TestAppServiceFindsMixedV3V4Route(t *testing.T) {

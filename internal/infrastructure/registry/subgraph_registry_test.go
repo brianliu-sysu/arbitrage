@@ -85,12 +85,12 @@ func TestSubgraphRegistryBuildQueryValidation(t *testing.T) {
 func TestSubgraphRegistryBuildPoolDayDataQuery(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	registry := NewSubgraphRegistry(config.SubgraphPoolConfig{
-		Enabled:                  true,
-		Endpoint:                 "http://example.com",
-		OrderBy:                  "volume24h",
-		OrderDirection:           "desc",
-		MinTotalValueLockedUSD:   "1000000",
-		MinVolume24hUSD:          "200000",
+		Enabled:                true,
+		Endpoint:               "http://example.com",
+		OrderBy:                "volume24h",
+		OrderDirection:         "desc",
+		MinTotalValueLockedUSD: "1000000",
+		MinVolume24hUSD:        "200000",
 	})
 	registry.clock = func() time.Time { return now }
 
@@ -142,11 +142,11 @@ func TestSubgraphRegistryUsesCacheUntilRefreshInterval(t *testing.T) {
 
 	now := time.Unix(0, 0)
 	registry := NewSubgraphRegistry(config.SubgraphPoolConfig{
-		Enabled:          true,
-		Endpoint:         server.URL,
-		RefreshInterval:  time.Minute,
-		OrderBy:          "totalValueLockedUSD",
-		OrderDirection:   "desc",
+		Enabled:         true,
+		Endpoint:        server.URL,
+		RefreshInterval: time.Minute,
+		OrderBy:         "totalValueLockedUSD",
+		OrderDirection:  "desc",
 	})
 	registry.client = server.Client()
 	registry.clock = func() time.Time { return now }

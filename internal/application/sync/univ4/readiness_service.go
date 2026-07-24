@@ -1,7 +1,7 @@
 package syncv4
 
 import (
-	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
+	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync/protocol"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 )
 

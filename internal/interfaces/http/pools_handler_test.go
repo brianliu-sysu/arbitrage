@@ -54,18 +54,13 @@ func TestPoolsHandlerList(t *testing.T) {
 	pool := marketuniv3.NewPool(poolAddr, token0, token1, 500, 10)
 	pool.Status = market.PoolStatusReady
 
-	service := poolsapp.NewAppService(
-		&poolsMemoryRepo{pool: pool},
-		nil,
-		nil,
-		nil,
-		&poolsRegistry{addresses: []common.Address{poolAddr}},
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
-	)
+	service := poolsapp.NewAppService(poolsapp.ServiceDeps{
+		Protocols: []poolsapp.ProtocolAdapter{poolsapp.NewUniv3Adapter(
+			&poolsMemoryRepo{pool: pool},
+			&poolsRegistry{addresses: []common.Address{poolAddr}},
+			nil,
+		)},
+	})
 
 	router := httpapi.NewRouter(httpapi.Handlers{
 		Pools: httpapi.NewPoolsHandler(service),
@@ -108,17 +103,18 @@ func TestPoolsHandlerDiagnosticsAll(t *testing.T) {
 	pool.Status = market.PoolStatusReady
 
 	chainSqrt, _ := new(big.Int).SetString("1182815765319608250048300092661", 10)
-	service := poolsapp.NewAppService(nil, nil, &diagHTTPV4PoolRepo{pool: pool}, nil, nil, nil, &diagHTTPV4Registry{
-		poolIDs: []marketuniv4.PoolID{poolID},
-	}, nil, nil, &poolsapp.ChainReaders{
+	service := poolsapp.NewAppService(poolsapp.ServiceDeps{
+		Protocols: []poolsapp.ProtocolAdapter{poolsapp.NewUniv4Adapter(
+			&diagHTTPV4PoolRepo{pool: pool},
+			&diagHTTPV4Registry{poolIDs: []marketuniv4.PoolID{poolID}},
+			diagHTTPV4Chain{
+				state: &poolsapp.BaseState{
+					SqrtPriceX96: chainSqrt,
+					Tick:         100,
+					Liquidity:    big.NewInt(1000),
+				}},
+		)},
 		Head: diagHTTPHead{head: 200},
-		V4: diagHTTPV4Chain{
-			state: &poolsapp.BaseState{
-				SqrtPriceX96: chainSqrt,
-				Tick:         100,
-				Liquidity:    big.NewInt(1000),
-			},
-		},
 	})
 
 	router := httpapi.NewRouter(httpapi.Handlers{
@@ -169,20 +165,21 @@ func TestPoolsHandlerDiagnosticsBalancer(t *testing.T) {
 		Type:         pool.Type,
 		VaultVersion: marketbalancer.VaultV2,
 	}
-	service := poolsapp.NewAppService(nil, nil, nil, &diagHTTPBalancerPoolRepo{pool: pool}, nil, nil, nil, &diagHTTPBalancerRegistry{
-		poolID: poolID,
-		spec:   spec,
-	}, nil, &poolsapp.ChainReaders{
+	service := poolsapp.NewAppService(poolsapp.ServiceDeps{
+		Protocols: []poolsapp.ProtocolAdapter{poolsapp.NewBalancerAdapter(
+			&diagHTTPBalancerPoolRepo{pool: pool},
+			&diagHTTPBalancerRegistry{poolID: poolID, spec: spec},
+			diagHTTPBalancerChain{state: &marketbalancer.BootstrapData{
+				Spec:              spec,
+				Tokens:            []common.Address{token0, token1},
+				Balances:          map[common.Address]*big.Int{token0: big.NewInt(100), token1: big.NewInt(200)},
+				Weights:           map[common.Address]*big.Int{token0: big.NewInt(50), token1: big.NewInt(50)},
+				Amplification:     big.NewInt(0),
+				SwapFeePercentage: big.NewInt(1),
+				BlockNumber:       200,
+			}},
+		)},
 		Head: diagHTTPHead{head: 200},
-		Balancer: diagHTTPBalancerChain{state: &marketbalancer.BootstrapData{
-			Spec:              spec,
-			Tokens:            []common.Address{token0, token1},
-			Balances:          map[common.Address]*big.Int{token0: big.NewInt(100), token1: big.NewInt(200)},
-			Weights:           map[common.Address]*big.Int{token0: big.NewInt(50), token1: big.NewInt(50)},
-			Amplification:     big.NewInt(0),
-			SwapFeePercentage: big.NewInt(1),
-			BlockNumber:       200,
-		}},
 	})
 
 	router := httpapi.NewRouter(httpapi.Handlers{

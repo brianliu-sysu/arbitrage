@@ -2,23 +2,17 @@ package poolsapp
 
 import (
 	"context"
-	"fmt"
 	"sort"
 
-	assetapp "github.com/brianliu-sysu/uniswapv3/internal/application/asset"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/asset"
-	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
-	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
-	marketuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
-	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
 
 const (
-	PoolTypeUniv3      = "univ3"
-	PoolTypeUniv4      = "univ4"
-	PoolTypePancakeV3  = "pancakev3"
-	PoolTypeBalancer   = "balancer"
+	PoolTypeUniv3     = "univ3"
+	PoolTypeUniv4     = "univ4"
+	PoolTypePancakeV3 = "pancakev3"
+	PoolTypeBalancer  = "balancer"
 )
 
 // TokenInfo is token metadata exposed by the pools API.
@@ -49,41 +43,29 @@ type ListResponse struct {
 
 // AppService lists tracked pool metadata across protocols.
 type AppService struct {
-	univ3Pools        marketuniv3.PoolRepository
-	pancakePools      marketpancake.PoolRepository
-	v4Pools           marketuniv4.PoolRepository
-	balancerPools     marketbalancer.PoolRepository
-	univ3Registry     marketuniv3.PoolRegistry
-	pancakeRegistry   marketpancake.PoolRegistry
-	v4Registry        marketuniv4.PoolRegistry
-	balancerRegistry  marketbalancer.PoolRegistry
-	tokens            *assetapp.TokenMetadataService
-	chain             *ChainReaders
+	protocols []ProtocolAdapter
+	tokens    TokenService
+	head      HeadBlockReader
 }
 
-func NewAppService(
-	univ3Pools marketuniv3.PoolRepository,
-	pancakePools marketpancake.PoolRepository,
-	v4Pools marketuniv4.PoolRepository,
-	balancerPools marketbalancer.PoolRepository,
-	univ3Registry marketuniv3.PoolRegistry,
-	pancakeRegistry marketpancake.PoolRegistry,
-	v4Registry marketuniv4.PoolRegistry,
-	balancerRegistry marketbalancer.PoolRegistry,
-	tokens *assetapp.TokenMetadataService,
-	chain *ChainReaders,
-) *AppService {
+func NewAppService(deps ServiceDeps) *AppService {
+	seen := make(map[string]struct{}, len(deps.Protocols))
+	protocols := make([]ProtocolAdapter, 0, len(deps.Protocols))
+	for _, protocol := range deps.Protocols {
+		if protocol == nil {
+			continue
+		}
+		poolType := protocol.Type()
+		if _, exists := seen[poolType]; exists {
+			continue
+		}
+		seen[poolType] = struct{}{}
+		protocols = append(protocols, protocol)
+	}
 	return &AppService{
-		univ3Pools:       univ3Pools,
-		pancakePools:     pancakePools,
-		v4Pools:          v4Pools,
-		balancerPools:    balancerPools,
-		univ3Registry:    univ3Registry,
-		pancakeRegistry:  pancakeRegistry,
-		v4Registry:       v4Registry,
-		balancerRegistry: balancerRegistry,
-		tokens:           tokens,
-		chain:            chain,
+		protocols: protocols,
+		tokens:    deps.Tokens,
+		head:      deps.Head,
 	}
 }
 
@@ -94,17 +76,12 @@ func (s *AppService) List(ctx context.Context) (*ListResponse, error) {
 	}
 
 	pools := make([]PoolInfo, 0)
-	if err := appendCLV3PoolInfos(ctx, univ3CLV3Source(s), &pools); err != nil {
-		return nil, err
-	}
-	if err := appendCLV3PoolInfos(ctx, pancakeCLV3Source(s), &pools); err != nil {
-		return nil, err
-	}
-	if err := s.appendV4Pools(ctx, &pools); err != nil {
-		return nil, err
-	}
-	if err := s.appendBalancerPools(ctx, &pools); err != nil {
-		return nil, err
+	for _, protocol := range s.protocols {
+		items, err := protocol.List(ctx)
+		if err != nil {
+			return nil, err
+		}
+		pools = append(pools, items...)
 	}
 
 	tokenAddresses := make([]common.Address, 0, len(pools)*2)
@@ -165,39 +142,6 @@ func (s *AppService) List(ctx context.Context) (*ListResponse, error) {
 	})
 
 	return &ListResponse{Items: pools, Count: len(pools)}, nil
-}
-
-func (s *AppService) appendV4Pools(ctx context.Context, pools *[]PoolInfo) error {
-	if s.v4Registry == nil || s.v4Pools == nil {
-		return nil
-	}
-
-	poolIDs, err := s.v4Registry.List(ctx)
-	if err != nil {
-		return fmt.Errorf("list univ4 pools: %w", err)
-	}
-	for _, poolID := range poolIDs {
-		pool, err := s.v4Pools.Get(ctx, poolID)
-		if err != nil {
-			return fmt.Errorf("load univ4 pool %s: %w", poolID.String(), err)
-		}
-		if pool == nil {
-			continue
-		}
-		hooks := ""
-		if pool.Key.Hooks != (common.Address{}) {
-			hooks = pool.Key.Hooks.Hex()
-		}
-		*pools = append(*pools, PoolInfo{
-			PoolID:   poolID.String(),
-			PoolType: PoolTypeUniv4,
-			Token0:   tokenInfoFromAddress(pool.Key.Currency0),
-			Token1:   tokenInfoFromAddress(pool.Key.Currency1),
-			Fee:      pool.Key.Fee,
-			Hooks:    hooks,
-		})
-	}
-	return nil
 }
 
 func tokenInfoFromAddress(address common.Address) TokenInfo {

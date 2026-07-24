@@ -3,28 +3,40 @@ package clv3sync
 import (
 	"context"
 
-	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync"
+	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync/protocol"
 	"github.com/ethereum/go-ethereum/common"
 )
 
 type PoolLifecycleService = syncapp.PoolLifecycleService[common.Address]
+
+type poolLifecycleProtocol struct {
+	registry  PoolRegistry
+	bootstrap *BootstrapService
+}
+
+func (p *poolLifecycleProtocol) Bootstrap(ctx context.Context, poolID common.Address, blockNumber uint64) error {
+	_, err := p.bootstrap.Bootstrap(ctx, poolID, blockNumber)
+	return err
+}
+
+func (p *poolLifecycleProtocol) ListTracked(ctx context.Context) ([]common.Address, error) {
+	return p.registry.List(ctx)
+}
+
+func (p *poolLifecycleProtocol) Register(ctx context.Context, poolID common.Address) error {
+	return p.registry.Add(ctx, poolID)
+}
+
+func (p *poolLifecycleProtocol) Unregister(ctx context.Context, poolID common.Address) error {
+	return p.registry.Remove(ctx, poolID)
+}
 
 func NewPoolLifecycleService(
 	registry PoolRegistry,
 	bootstrap *BootstrapService,
 	readiness *ReadinessService,
 ) *PoolLifecycleService {
-	return syncapp.NewPoolLifecycleService(readiness, syncapp.LifecycleHooks[common.Address]{
-		Bootstrap: func(ctx context.Context, poolAddress common.Address, blockNumber uint64) error {
-			_, err := bootstrap.Bootstrap(ctx, poolAddress, blockNumber)
-			return err
-		},
-		ListTracked: registry.List,
-		Register: func(ctx context.Context, poolAddress common.Address) error {
-			return registry.Add(ctx, poolAddress)
-		},
-		Unregister: func(ctx context.Context, poolAddress common.Address) error {
-			return registry.Remove(ctx, poolAddress)
-		},
+	return syncapp.NewPoolLifecycleService(readiness, &poolLifecycleProtocol{
+		registry: registry, bootstrap: bootstrap,
 	})
 }

@@ -78,16 +78,7 @@ func (s *Services) LogDiagnostics(ctx context.Context, logger *zap.Logger, event
 func (s *Services) countGraphEdges(ctx context.Context) (int, error) {
 	graph, err := BuildUnifiedPoolGraph(
 		ctx,
-		s.routeDeps.Registry,
-		s.routeDeps.Pools,
-		s.routeDeps.PancakeRegistry,
-		s.routeDeps.PancakePools,
-		s.routeDeps.QuickSwapRegistry,
-		s.routeDeps.QuickSwapPools,
-		s.routeDeps.V4Registry,
-		s.routeDeps.V4Pools,
-		s.routeDeps.BalancerRegistry,
-		s.routeDeps.BalancerPools,
+		poolEdgeSources(routeRefreshDepsToServiceDeps(s.routeDeps))...,
 	)
 	if err != nil {
 		return 0, err

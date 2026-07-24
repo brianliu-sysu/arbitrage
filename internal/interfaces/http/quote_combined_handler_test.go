@@ -41,16 +41,10 @@ func TestQuoteCombinedHandlerReturnsMixedRouteJSON(t *testing.T) {
 	}
 
 	combined := quotecombined.NewAppService(
-		v3Repo,
-		nil,
-		nil,
-		v4Repo,
-		nil,
-		staticRegistry{addresses: []common.Address{poolAB}},
-		nil,
-		nil,
-		staticV4Registry{entries: map[marketv4.PoolID]marketv4.PoolKey{poolBCID: poolBC.Key}},
-		nil,
+		[]quotecombined.ProtocolAdapter{
+			quotecombined.NewUniv3ProtocolAdapter(v3Repo, staticRegistry{addresses: []common.Address{poolAB}}, combinedAlwaysReady{}),
+			quotecombined.NewUniv4ProtocolAdapter(v4Repo, staticV4Registry{entries: map[marketv4.PoolID]marketv4.PoolKey{poolBCID: poolBC.Key}}, combinedAlwaysReady{}),
+		},
 		quoteunified.NewQuoteService(
 			quoteuniv3domain.NewQuoteService(),
 			nil,

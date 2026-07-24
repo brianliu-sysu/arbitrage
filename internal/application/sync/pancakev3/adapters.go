@@ -73,8 +73,6 @@ func adaptPancakeDeps(deps ServiceDeps) clv3sync.ServiceDeps {
 		Parser:      deps.Parser,
 		Blocks:      deps.Blocks,
 		Bootstrap:   deps.Bootstrap,
-		Subscriber:  deps.Subscriber,
-		Health:      deps.Health,
 		Listener:    deps.Listener,
 	}
 }

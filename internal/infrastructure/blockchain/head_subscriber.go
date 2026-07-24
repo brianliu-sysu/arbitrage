@@ -8,6 +8,8 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
+const headSubscriptionBuffer = 128
+
 // HeadSubscriber streams canonical block headers.
 type HeadSubscriber struct {
 	client *EthClient
@@ -18,13 +20,13 @@ func NewHeadSubscriber(client *EthClient) *HeadSubscriber {
 }
 
 func (s *HeadSubscriber) SubscribeNewHead(ctx context.Context) (<-chan domainchain.BlockHeader, error) {
-	source := make(chan *types.Header)
+	source := make(chan *types.Header, headSubscriptionBuffer)
 	subscription, err := s.client.SubscribeNewHead(ctx, source)
 	if err != nil {
 		return nil, fmt.Errorf("subscribe new head: %w", err)
 	}
 
-	headers := make(chan domainchain.BlockHeader)
+	headers := make(chan domainchain.BlockHeader, headSubscriptionBuffer)
 	go func() {
 		defer close(headers)
 		defer subscription.Unsubscribe()
@@ -32,8 +34,8 @@ func (s *HeadSubscriber) SubscribeNewHead(ctx context.Context) (<-chan domaincha
 			select {
 			case <-ctx.Done():
 				return
-			case err := <-subscription.Err():
-				if err != nil {
+			case err, ok := <-subscription.Err():
+				if !ok || err != nil {
 					return
 				}
 			case header, ok := <-source:

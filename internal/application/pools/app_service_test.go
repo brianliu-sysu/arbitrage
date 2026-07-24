@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	poolsapp "github.com/brianliu-sysu/uniswapv3/internal/application/pools"
 	assetapp "github.com/brianliu-sysu/uniswapv3/internal/application/asset"
+	poolsapp "github.com/brianliu-sysu/uniswapv3/internal/application/pools"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/asset"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
@@ -65,7 +65,7 @@ func (r *staticRegistry) List(context.Context) ([]common.Address, error) {
 	return append([]common.Address(nil), r.addresses...), nil
 }
 
-func (r *staticRegistry) Add(context.Context, common.Address) error   { return nil }
+func (r *staticRegistry) Add(context.Context, common.Address) error    { return nil }
 func (r *staticRegistry) Remove(context.Context, common.Address) error { return nil }
 
 type memoryTokenRepo struct {
@@ -124,18 +124,10 @@ func TestAppServiceListPools(t *testing.T) {
 		},
 	}
 
-	service := poolsapp.NewAppService(
-		repo,
-		nil,
-		nil,
-		nil,
-		&staticRegistry{addresses: []common.Address{poolAddr}},
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
-	)
+	adapter := poolsapp.NewUniv3Adapter(repo, &staticRegistry{addresses: []common.Address{poolAddr}}, nil)
+	service := poolsapp.NewAppService(poolsapp.ServiceDeps{
+		Protocols: []poolsapp.ProtocolAdapter{adapter},
+	})
 
 	resp, err := service.List(context.Background())
 	if err != nil {
@@ -152,18 +144,10 @@ func TestAppServiceListPools(t *testing.T) {
 		t.Fatalf("expected fee 3000, got %d", item.Fee)
 	}
 
-	service = poolsapp.NewAppService(
-		repo,
-		nil,
-		nil,
-		nil,
-		&staticRegistry{addresses: []common.Address{poolAddr}},
-		nil,
-		nil,
-		nil,
-		assetapp.NewTokenMetadataService(tokenRepo, nil),
-		nil,
-	)
+	service = poolsapp.NewAppService(poolsapp.ServiceDeps{
+		Protocols: []poolsapp.ProtocolAdapter{adapter},
+		Tokens:    assetapp.NewTokenMetadataService(tokenRepo, nil),
+	})
 	resp, err = service.List(context.Background())
 	if err != nil {
 		t.Fatalf("list pools with tokens: %v", err)
@@ -188,12 +172,13 @@ func TestAppServiceListBalancerPools(t *testing.T) {
 		t.Fatalf("save balancer pool: %v", err)
 	}
 
-	service := poolsapp.NewAppService(
-		nil, nil, nil, balancerRepo,
-		nil, nil, nil,
-		&balancerStaticRegistry{poolIDs: []marketbalancer.PoolID{poolID}},
-		nil, nil,
-	)
+	service := poolsapp.NewAppService(poolsapp.ServiceDeps{
+		Protocols: []poolsapp.ProtocolAdapter{poolsapp.NewBalancerAdapter(
+			balancerRepo,
+			&balancerStaticRegistry{poolIDs: []marketbalancer.PoolID{poolID}},
+			nil,
+		)},
+	})
 
 	resp, err := service.List(context.Background())
 	if err != nil {

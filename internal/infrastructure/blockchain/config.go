@@ -1,25 +1,24 @@
 package blockchain
 
-import (
-	"github.com/ethereum/go-ethereum/common"
-)
+import "github.com/ethereum/go-ethereum/common"
 
-// Config holds RPC and Uniswap contract addresses.
+// Config holds chain-wide RPC and multicall settings.
 type Config struct {
-	RPCURL               string
-	WSURL                string
-	FactoryAddress       common.Address
-	MulticallAddress     common.Address
-	PoolManagerAddress   common.Address
-	StateViewAddress     common.Address
-	BalancerVaultAddress   common.Address
-	BalancerVaultV3Address common.Address
+	RPCURL           string
+	WSURL            string
+	MulticallAddress common.Address
 }
 
-func DefaultConfig(rpcURL string) Config {
-	return Config{
-		RPCURL:           rpcURL,
-		FactoryAddress:   common.HexToAddress("0x1F98431c8aD98523631AE4a59f267346ea31F984"),
-		MulticallAddress: common.HexToAddress("0xcA11bde05977b3631167028862bE2a173976CA11"),
-	}
+type Univ3Config struct {
+	FactoryAddress common.Address
+}
+
+type Univ4Config struct {
+	PoolManagerAddress common.Address
+	StateViewAddress   common.Address
+}
+
+type BalancerConfig struct {
+	VaultAddress   common.Address
+	VaultV3Address common.Address
 }

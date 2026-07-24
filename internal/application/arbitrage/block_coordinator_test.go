@@ -7,11 +7,16 @@ import (
 
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
 	domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
-	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
-	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
+	"github.com/brianliu-sysu/uniswapv3/internal/domain/marketchange"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	"github.com/ethereum/go-ethereum/common"
 )
+
+type blockScanExecutorFunc func(context.Context, domainchain.MarketVersion, MarketChanges) error
+
+func (f blockScanExecutorFunc) Execute(ctx context.Context, version domainchain.MarketVersion, changes MarketChanges) error {
+	return f(ctx, version, changes)
+}
 
 func TestBlockCoordinatorWaitsForEnabledProtocols(t *testing.T) {
 	tokenA := common.HexToAddress("0x0000000000000000000000000000000000000001")
@@ -44,16 +49,16 @@ func TestBlockCoordinatorWaitsForEnabledProtocols(t *testing.T) {
 	if err := coord.ReportApplied(context.Background(), ProtocolBlockReport{
 		Protocol:    SyncProtocolUniv3,
 		BlockNumber: 100,
-		Univ3Pools:  []common.Address{poolAB},
+		Changes:     MarketChanges{Univ3: []common.Address{poolAB}},
 	}); err != nil {
 		t.Fatalf("report univ3: %v", err)
 	}
-	coord.mu.Lock()
-	flushed := coord.lastFlushed
-	pending := len(coord.pending)
-	coord.mu.Unlock()
-	if flushed != 0 {
-		t.Fatalf("expected barrier to wait, lastFlushed=%d", flushed)
+	coord.barrier.mu.Lock()
+	lastVersionNumber := coord.barrier.lastVersion.Number
+	pending := len(coord.barrier.pending)
+	coord.barrier.mu.Unlock()
+	if lastVersionNumber != 0 {
+		t.Fatalf("expected barrier to wait, last version=%d", lastVersionNumber)
 	}
 	if pending != 1 {
 		t.Fatalf("expected one pending block, got %d", pending)
@@ -65,15 +70,18 @@ func TestBlockCoordinatorWaitsForEnabledProtocols(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("report univ4: %v", err)
 	}
+	if err := coord.FinalizeHead(context.Background(), domainchain.BlockHeader{Number: 100}); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
 	if err := coord.waitForIdle(context.Background()); err != nil {
 		t.Fatalf("wait for scan: %v", err)
 	}
-	coord.mu.Lock()
-	flushed = coord.lastFlushed
-	pending = len(coord.pending)
-	coord.mu.Unlock()
-	if flushed != 100 {
-		t.Fatalf("expected flush at block 100, got %d", flushed)
+	coord.barrier.mu.Lock()
+	lastVersionNumber = coord.barrier.lastVersion.Number
+	pending = len(coord.barrier.pending)
+	coord.barrier.mu.Unlock()
+	if lastVersionNumber != 100 {
+		t.Fatalf("expected committed version at block 100, got %d", lastVersionNumber)
 	}
 	if pending != 0 {
 		t.Fatalf("expected pending cleared, got %d", pending)
@@ -83,39 +91,45 @@ func TestBlockCoordinatorWaitsForEnabledProtocols(t *testing.T) {
 func TestBlockCoordinatorCommitsOnlyAfterSuccessfulFlush(t *testing.T) {
 	coord := NewBlockCoordinator([]SyncProtocol{SyncProtocolUniv3}, nil, nil, nil, nil, nil, nil)
 	attempts := 0
-	coord.flushFn = func(context.Context, uint64, []common.Address, []common.Address, []common.Address, []marketuniv4.PoolID, []marketbalancer.PoolID) error {
+	coord.executor = blockScanExecutorFunc(func(context.Context, domainchain.MarketVersion, MarketChanges) error {
 		attempts++
 		if attempts == 1 {
 			return errors.New("publish failed")
 		}
 		return nil
-	}
+	})
 	report := ProtocolBlockReport{Protocol: SyncProtocolUniv3, BlockNumber: 100}
 	if err := coord.ReportApplied(context.Background(), report); err != nil {
 		t.Fatalf("report first attempt: %v", err)
 	}
+	if err := coord.FinalizeHead(context.Background(), domainchain.BlockHeader{Number: 100}); err != nil {
+		t.Fatalf("finalize first attempt: %v", err)
+	}
 	if err := coord.waitForIdle(context.Background()); err != nil {
 		t.Fatalf("wait first attempt: %v", err)
 	}
-	coord.mu.Lock()
-	lastFlushed := coord.lastFlushed
-	_, pending := coord.pending[100]
-	coord.mu.Unlock()
-	if lastFlushed != 0 || !pending {
-		t.Fatalf("failed flush must remain pending, lastFlushed=%d pending=%t", lastFlushed, pending)
+	coord.barrier.mu.Lock()
+	lastVersionNumber := coord.barrier.lastVersion.Number
+	_, pending := coord.barrier.pending[100]
+	coord.barrier.mu.Unlock()
+	if lastVersionNumber != 0 || !pending {
+		t.Fatalf("failed scan must remain pending, last version=%d pending=%t", lastVersionNumber, pending)
 	}
 	if err := coord.ReportApplied(context.Background(), report); err != nil {
 		t.Fatalf("retry flush: %v", err)
 	}
+	if err := coord.FinalizeHead(context.Background(), domainchain.BlockHeader{Number: 100}); err != nil {
+		t.Fatalf("finalize retry: %v", err)
+	}
 	if err := coord.waitForIdle(context.Background()); err != nil {
 		t.Fatalf("wait retry: %v", err)
 	}
-	coord.mu.Lock()
-	lastFlushed = coord.lastFlushed
-	_, pending = coord.pending[100]
-	coord.mu.Unlock()
-	if lastFlushed != 100 || pending {
-		t.Fatalf("successful retry must commit, lastFlushed=%d pending=%t", lastFlushed, pending)
+	coord.barrier.mu.Lock()
+	lastVersionNumber = coord.barrier.lastVersion.Number
+	_, pending = coord.barrier.pending[100]
+	coord.barrier.mu.Unlock()
+	if lastVersionNumber != 100 || pending {
+		t.Fatalf("successful retry must commit, last version=%d pending=%t", lastVersionNumber, pending)
 	}
 }
 
@@ -123,17 +137,20 @@ func TestBlockCoordinatorCancelsOlderScanBeforeNewBlock(t *testing.T) {
 	coord := NewBlockCoordinator([]SyncProtocol{SyncProtocolUniv3}, nil, nil, nil, nil, nil, nil)
 	started := make(chan struct{})
 	canceled := make(chan struct{})
-	coord.flushFn = func(ctx context.Context, blockNumber uint64, _ []common.Address, _ []common.Address, _ []common.Address, _ []marketuniv4.PoolID, _ []marketbalancer.PoolID) error {
-		if blockNumber == 100 {
+	coord.executor = blockScanExecutorFunc(func(ctx context.Context, version domainchain.MarketVersion, _ MarketChanges) error {
+		if version.Number == 100 {
 			close(started)
 			<-ctx.Done()
 			close(canceled)
 			return ctx.Err()
 		}
 		return nil
-	}
+	})
 	if err := coord.ReportApplied(context.Background(), ProtocolBlockReport{Protocol: SyncProtocolUniv3, BlockNumber: 100}); err != nil {
 		t.Fatalf("report block 100: %v", err)
+	}
+	if err := coord.FinalizeHead(context.Background(), domainchain.BlockHeader{Number: 100}); err != nil {
+		t.Fatalf("finalize block 100: %v", err)
 	}
 	<-started
 	if err := coord.CancelBefore(context.Background(), 101); err != nil {
@@ -144,11 +161,11 @@ func TestBlockCoordinatorCancelsOlderScanBeforeNewBlock(t *testing.T) {
 	default:
 		t.Fatal("old scan was not canceled before returning")
 	}
-	coord.mu.Lock()
-	lastFlushed := coord.lastFlushed
-	coord.mu.Unlock()
-	if lastFlushed != 0 {
-		t.Fatalf("canceled block must not commit, got %d", lastFlushed)
+	coord.barrier.mu.Lock()
+	lastVersionNumber := coord.barrier.lastVersion.Number
+	coord.barrier.mu.Unlock()
+	if lastVersionNumber != 0 {
+		t.Fatalf("canceled block must not commit, got %d", lastVersionNumber)
 	}
 }
 
@@ -160,14 +177,17 @@ func TestBlockCoordinatorFlushesImmediatelyWithoutEnabledSet(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("report: %v", err)
 	}
+	if err := coord.FinalizeHead(context.Background(), domainchain.BlockHeader{Number: 42}); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
 	if err := coord.waitForIdle(context.Background()); err != nil {
 		t.Fatalf("wait for scan: %v", err)
 	}
-	coord.mu.Lock()
-	flushed := coord.lastFlushed
-	coord.mu.Unlock()
-	if flushed != 42 {
-		t.Fatalf("expected immediate flush at 42, got %d", flushed)
+	coord.barrier.mu.Lock()
+	lastVersionNumber := coord.barrier.lastVersion.Number
+	coord.barrier.mu.Unlock()
+	if lastVersionNumber != 42 {
+		t.Fatalf("expected immediate commit at 42, got %d", lastVersionNumber)
 	}
 }
 
@@ -179,40 +199,43 @@ func TestBlockCoordinatorIgnoresDisabledProtocol(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("report disabled protocol: %v", err)
 	}
-	coord.mu.Lock()
-	flushed := coord.lastFlushed
-	pending := len(coord.pending)
-	coord.mu.Unlock()
-	if flushed != 0 || pending != 0 {
-		t.Fatalf("disabled protocol should be ignored, flushed=%d pending=%d", flushed, pending)
+	coord.barrier.mu.Lock()
+	lastVersionNumber := coord.barrier.lastVersion.Number
+	pending := len(coord.barrier.pending)
+	coord.barrier.mu.Unlock()
+	if lastVersionNumber != 0 || pending != 0 {
+		t.Fatalf("disabled protocol should be ignored, last version=%d pending=%d", lastVersionNumber, pending)
 	}
 }
 
-type testMarketViewCommitter struct {
+type testMarketPublisher struct {
 	blocks   []uint64
 	versions []domainchain.MarketVersion
 	err      error
 }
 
-func (c *testMarketViewCommitter) Commit(_ context.Context, version domainchain.MarketVersion, _ []common.Address, _ []common.Address, _ []common.Address, _ []marketuniv4.PoolID, _ []marketbalancer.PoolID) error {
+func (c *testMarketPublisher) Publish(_ context.Context, version domainchain.MarketVersion, _ marketchange.Changes) error {
 	c.blocks = append(c.blocks, version.Number)
 	c.versions = append(c.versions, version)
 	return c.err
 }
 
 func TestBlockCoordinatorCommitsMarketViewBeforeStartingScan(t *testing.T) {
-	committer := &testMarketViewCommitter{}
+	committer := &testMarketPublisher{}
 	coord := NewBlockCoordinator([]SyncProtocol{SyncProtocolUniv3}, nil, nil, nil, nil, committer, nil)
 	scanned := make(chan struct{}, 1)
-	coord.flushFn = func(context.Context, uint64, []common.Address, []common.Address, []common.Address, []marketuniv4.PoolID, []marketbalancer.PoolID) error {
+	coord.executor = blockScanExecutorFunc(func(context.Context, domainchain.MarketVersion, MarketChanges) error {
 		if len(committer.blocks) != 1 || committer.blocks[0] != 12 {
 			t.Fatalf("scan started before market view commit: %+v", committer.blocks)
 		}
 		scanned <- struct{}{}
 		return nil
-	}
+	})
 	if err := coord.ReportApplied(context.Background(), ProtocolBlockReport{Protocol: SyncProtocolUniv3, BlockNumber: 12}); err != nil {
 		t.Fatalf("report: %v", err)
+	}
+	if err := coord.FinalizeHead(context.Background(), domainchain.BlockHeader{Number: 12}); err != nil {
+		t.Fatalf("finalize: %v", err)
 	}
 	if err := coord.waitForIdle(context.Background()); err != nil {
 		t.Fatalf("wait scan: %v", err)
@@ -224,30 +247,60 @@ func TestBlockCoordinatorCommitsMarketViewBeforeStartingScan(t *testing.T) {
 	}
 }
 
+func TestBlockCoordinatorUnifiedPublishWaitsForFinalizeHead(t *testing.T) {
+	publisher := &testMarketPublisher{}
+	coord := NewBlockCoordinator(
+		[]SyncProtocol{SyncProtocolUniv3, SyncProtocolPancakeV3},
+		nil, nil, nil, nil, publisher, nil,
+	)
+	head := domainchain.BlockHeader{Number: 15, Hash: common.HexToHash("0x15")}
+	if err := coord.PrepareHead(context.Background(), head); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if err := coord.ReportApplied(context.Background(), ProtocolBlockReport{Protocol: SyncProtocolUniv3, BlockNumber: 15}); err != nil {
+		t.Fatalf("report univ3: %v", err)
+	}
+	if err := coord.ReportApplied(context.Background(), ProtocolBlockReport{Protocol: SyncProtocolPancakeV3, BlockNumber: 15}); err != nil {
+		t.Fatalf("report pancake: %v", err)
+	}
+	if len(publisher.versions) != 0 {
+		t.Fatalf("published before unified finalize: %+v", publisher.versions)
+	}
+	if err := coord.FinalizeHead(context.Background(), head); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if len(publisher.versions) != 1 || !publisher.versions[0].SameBlock(domainchain.MarketVersion{Number: head.Number, Hash: head.Hash}) {
+		t.Fatalf("unexpected published versions: %+v", publisher.versions)
+	}
+}
+
 func TestBlockCoordinatorKeepsOldViewWhenCommitFails(t *testing.T) {
-	committer := &testMarketViewCommitter{err: errors.New("pool block mismatch")}
+	committer := &testMarketPublisher{err: errors.New("pool block mismatch")}
 	coord := NewBlockCoordinator([]SyncProtocol{SyncProtocolUniv3}, nil, nil, nil, nil, committer, nil)
 	started := false
-	coord.flushFn = func(context.Context, uint64, []common.Address, []common.Address, []common.Address, []marketuniv4.PoolID, []marketbalancer.PoolID) error {
+	coord.executor = blockScanExecutorFunc(func(context.Context, domainchain.MarketVersion, MarketChanges) error {
 		started = true
 		return nil
-	}
+	})
 	if err := coord.ReportApplied(context.Background(), ProtocolBlockReport{Protocol: SyncProtocolUniv3, BlockNumber: 13}); err != nil {
 		t.Fatalf("commit failure should not stop shared-head notify: %v", err)
+	}
+	if err := coord.FinalizeHead(context.Background(), domainchain.BlockHeader{Number: 13}); err != nil {
+		t.Fatalf("finalize: %v", err)
 	}
 	if started {
 		t.Fatal("scan started after market view commit failed")
 	}
-	coord.mu.Lock()
-	flushing := coord.flushing[13]
-	coord.mu.Unlock()
+	coord.barrier.mu.Lock()
+	_, flushing := coord.barrier.flushing[13]
+	coord.barrier.mu.Unlock()
 	if flushing {
 		t.Fatal("expected flushing flag cleared after commit failure")
 	}
 }
 
 func TestBlockCoordinatorRecommitsSameHeightDifferentHash(t *testing.T) {
-	committer := &testMarketViewCommitter{}
+	committer := &testMarketPublisher{}
 	coord := NewBlockCoordinator([]SyncProtocol{SyncProtocolUniv3}, nil, nil, nil, nil, committer, nil)
 	headA := domainchain.BlockHeader{Number: 20, Hash: common.HexToHash("0xaa")}
 	headB := domainchain.BlockHeader{Number: 20, Hash: common.HexToHash("0xbb")}
@@ -257,6 +310,9 @@ func TestBlockCoordinatorRecommitsSameHeightDifferentHash(t *testing.T) {
 	if err := coord.ReportApplied(context.Background(), ProtocolBlockReport{Protocol: SyncProtocolUniv3, BlockNumber: 20}); err != nil {
 		t.Fatalf("report A: %v", err)
 	}
+	if err := coord.FinalizeHead(context.Background(), headA); err != nil {
+		t.Fatalf("finalize A: %v", err)
+	}
 	if err := coord.waitForIdle(context.Background()); err != nil {
 		t.Fatalf("wait A: %v", err)
 	}
@@ -265,6 +321,9 @@ func TestBlockCoordinatorRecommitsSameHeightDifferentHash(t *testing.T) {
 	}
 	if err := coord.ReportApplied(context.Background(), ProtocolBlockReport{Protocol: SyncProtocolUniv3, BlockNumber: 20}); err != nil {
 		t.Fatalf("report B: %v", err)
+	}
+	if err := coord.FinalizeHead(context.Background(), headB); err != nil {
+		t.Fatalf("finalize B: %v", err)
 	}
 	if err := coord.waitForIdle(context.Background()); err != nil {
 		t.Fatalf("wait B: %v", err)

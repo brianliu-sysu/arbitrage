@@ -16,75 +16,50 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// ReadinessChecker gates quoting on pool and system readiness across protocols.
-type ReadinessChecker interface {
-	IsSystemReady() bool
-	IsV3PoolReady(poolAddress common.Address) bool
-	IsPancakeV3PoolReady(poolAddress common.Address) bool
-	IsQuickSwapV3PoolReady(poolAddress common.Address) bool
-	IsV4PoolReady(poolID marketuniv4.PoolID) bool
-	IsBalancerPoolReady(poolID marketbalancer.PoolID) bool
-}
-
-type poolRegistry[PoolID comparable] interface {
+// PoolRegistry lists pools available to the combined quote service.
+type PoolRegistry[PoolID comparable] interface {
 	List(context.Context) ([]PoolID, error)
 }
 
-type balancerPoolRegistry interface {
-	poolRegistry[marketbalancer.PoolID]
+// BalancerPoolRegistry lists Balancer pools and resolves their specifications.
+type BalancerPoolRegistry interface {
+	PoolRegistry[marketbalancer.PoolID]
 	GetSpec(context.Context, marketbalancer.PoolID) (marketbalancer.PoolSpec, error)
 }
 
-// AppService orchestrates unified V3/PancakeV3/V4 route discovery and quoting.
+// AppService orchestrates route discovery and quoting across protocol adapters.
 type AppService struct {
-	univ3Pools        marketuniv3.PoolRepository
-	pancakePools      marketpancake.PoolRepository
-	quickSwapPools    marketquick.PoolRepository
-	univ4Pools        marketuniv4.PoolRepository
-	balancerPools     marketbalancer.PoolRepository
-	v3Registry        poolRegistry[common.Address]
-	pancakeRegistry   poolRegistry[common.Address]
-	quickSwapRegistry poolRegistry[common.Address]
-	v4Registry        poolRegistry[marketuniv4.PoolID]
-	balancerRegistry  balancerPoolRegistry
-	quotes            *quoteunified.QuoteService
-	readiness         ReadinessChecker
-	maxHops           int
+	protocols []ProtocolAdapter
+	quotes    *quoteunified.QuoteService
+	readiness SystemReadinessChecker
+	maxHops   int
 }
 
 func NewAppService(
-	univ3Pools marketuniv3.PoolRepository,
-	pancakePools marketpancake.PoolRepository,
-	quickSwapPools marketquick.PoolRepository,
-	univ4Pools marketuniv4.PoolRepository,
-	balancerPools marketbalancer.PoolRepository,
-	v3Registry poolRegistry[common.Address],
-	pancakeRegistry poolRegistry[common.Address],
-	quickSwapRegistry poolRegistry[common.Address],
-	v4Registry poolRegistry[marketuniv4.PoolID],
-	balancerRegistry balancerPoolRegistry,
+	protocols []ProtocolAdapter,
 	quotes *quoteunified.QuoteService,
-	readiness ReadinessChecker,
+	readiness SystemReadinessChecker,
 	maxHops int,
 ) *AppService {
 	if maxHops <= 0 {
 		maxHops = 3
 	}
 	return &AppService{
-		univ3Pools:        univ3Pools,
-		pancakePools:      pancakePools,
-		quickSwapPools:    quickSwapPools,
-		univ4Pools:        univ4Pools,
-		balancerPools:     balancerPools,
-		v3Registry:        v3Registry,
-		pancakeRegistry:   pancakeRegistry,
-		quickSwapRegistry: quickSwapRegistry,
-		v4Registry:        v4Registry,
-		balancerRegistry:  balancerRegistry,
-		quotes:            quotes,
-		readiness:         readiness,
-		maxHops:           maxHops,
+		protocols: compactProtocolAdapters(protocols),
+		quotes:    quotes,
+		readiness: readiness,
+		maxHops:   maxHops,
 	}
+}
+
+func compactProtocolAdapters(candidates []ProtocolAdapter) []ProtocolAdapter {
+	protocols := make([]ProtocolAdapter, 0, len(candidates))
+	for _, protocol := range candidates {
+		if protocol != nil {
+			protocols = append(protocols, protocol)
+		}
+	}
+	return protocols
 }
 
 // Quote executes the unified quote use case for the given request.
@@ -124,7 +99,7 @@ func (s *AppService) quoteCurrentView(ctx context.Context, req Request) (Respons
 	return s.quoteBestRoute(ctx, req)
 }
 
-func quoteViewBlock(readiness ReadinessChecker) uint64 {
+func quoteViewBlock(readiness SystemReadinessChecker) uint64 {
 	if versioned, ok := readiness.(interface{ Generation() uint64 }); ok {
 		return versioned.Generation()
 	}
@@ -175,195 +150,31 @@ func isCombinedQuoteToken(address common.Address) bool {
 }
 
 func (s *AppService) quoteSinglePoolByAddress(ctx context.Context, req Request, poolAddress common.Address) (Response, error) {
-	if s.univ3Pools != nil {
-		pool, err := s.univ3Pools.Get(ctx, poolAddress)
-		if err != nil {
-			return Response{}, fmt.Errorf("load pool %s: %w", poolAddress.Hex(), err)
-		}
-		if pool != nil {
-			return s.quoteSingleV3Pool(ctx, req, poolAddress, pool)
-		}
-	}
-
-	if s.pancakePools != nil {
-		pool, err := s.pancakePools.Get(ctx, poolAddress)
-		if err != nil {
-			return Response{}, fmt.Errorf("load pool %s: %w", poolAddress.Hex(), err)
-		}
-		if pool != nil {
-			return s.quoteSinglePancakeV3Pool(ctx, req, poolAddress, pool)
-		}
-	}
-
-	if s.quickSwapPools != nil {
-		pool, err := s.quickSwapPools.Get(ctx, poolAddress)
-		if err != nil {
-			return Response{}, fmt.Errorf("load pool %s: %w", poolAddress.Hex(), err)
-		}
-		if pool != nil {
-			return s.quoteSingleQuickSwapV3Pool(ctx, req, poolAddress, pool)
-		}
-	}
-
-	if s.balancerPools != nil && s.balancerRegistry != nil {
-		poolID, ok, err := s.findBalancerPoolIDByAddress(ctx, poolAddress)
-		if err != nil {
-			return Response{}, err
-		}
-		if ok {
-			return s.quoteSingleBalancerPool(ctx, req, poolID)
-		}
-	}
-
-	return Response{}, fmt.Errorf("pool %s not found", poolAddress.Hex())
-}
-
-func (s *AppService) findBalancerPoolIDByAddress(ctx context.Context, poolAddress common.Address) (marketbalancer.PoolID, bool, error) {
-	poolIDs, err := s.balancerRegistry.List(ctx)
-	if err != nil {
-		return marketbalancer.PoolID{}, false, fmt.Errorf("list balancer pools: %w", err)
-	}
-	for _, poolID := range poolIDs {
-		spec, err := s.balancerRegistry.GetSpec(ctx, poolID)
-		if err != nil {
-			return marketbalancer.PoolID{}, false, fmt.Errorf("load balancer pool spec %s: %w", poolID.String(), err)
-		}
-		if spec.Address == poolAddress {
-			return poolID, true, nil
-		}
-	}
-	return marketbalancer.PoolID{}, false, nil
-}
-
-func (s *AppService) quoteSingleV3Pool(ctx context.Context, req Request, poolAddress common.Address, pool *marketuniv3.Pool) (Response, error) {
-	if s.readiness != nil && !s.readiness.IsV3PoolReady(poolAddress) {
-		return Response{}, fmt.Errorf("pool %s is not ready", poolAddress.Hex())
-	}
-
-	var result quoteshared.QuoteResult
-	var err error
-	if req.IsExactInput() {
-		result, err = s.quotes.QuoteExactInputV3(pool, req.TokenIn, req.TokenOut, req.AmountIn)
-	} else {
-		result, err = s.quotes.QuoteExactOutputV3(pool, req.TokenIn, req.TokenOut, req.AmountOut)
-	}
-	if err != nil {
-		return Response{}, fmt.Errorf("quote pool %s: %w", poolAddress.Hex(), err)
-	}
-
-	route := quoteunified.NewDirectV3Route(poolAddress, req.TokenIn, req.TokenOut)
-	return newSinglePoolResponse(req, route, result), nil
-}
-
-func (s *AppService) quoteSinglePancakeV3Pool(ctx context.Context, req Request, poolAddress common.Address, pool *marketpancake.Pool) (Response, error) {
-	_ = ctx
-	if s.readiness != nil && !s.readiness.IsPancakeV3PoolReady(poolAddress) {
-		return Response{}, fmt.Errorf("pool %s is not ready", poolAddress.Hex())
-	}
-
-	var result quoteshared.QuoteResult
-	var err error
-	if req.IsExactInput() {
-		result, err = s.quotes.QuoteExactInputPancakeV3(pool, req.TokenIn, req.TokenOut, req.AmountIn)
-	} else {
-		result, err = s.quotes.QuoteExactOutputPancakeV3(pool, req.TokenIn, req.TokenOut, req.AmountOut)
-	}
-	if err != nil {
-		return Response{}, fmt.Errorf("quote pool %s: %w", poolAddress.Hex(), err)
-	}
-
-	route := quoteunified.NewDirectPancakeV3Route(poolAddress, req.TokenIn, req.TokenOut)
-	return newSinglePoolResponse(req, route, result), nil
-}
-
-func (s *AppService) quoteSingleQuickSwapV3Pool(ctx context.Context, req Request, poolAddress common.Address, pool *marketquick.Pool) (Response, error) {
-	_ = ctx
-	if s.readiness != nil && !s.readiness.IsQuickSwapV3PoolReady(poolAddress) {
-		return Response{}, fmt.Errorf("pool %s is not ready", poolAddress.Hex())
-	}
-
-	var result quoteshared.QuoteResult
-	var err error
-	if req.IsExactInput() {
-		result, err = s.quotes.QuoteExactInputQuickSwapV3(pool, req.TokenIn, req.TokenOut, req.AmountIn)
-	} else {
-		result, err = s.quotes.QuoteExactOutputQuickSwapV3(pool, req.TokenIn, req.TokenOut, req.AmountOut)
-	}
-	if err != nil {
-		return Response{}, fmt.Errorf("quote pool %s: %w", poolAddress.Hex(), err)
-	}
-
-	route := quoteunified.NewDirectQuickSwapV3Route(poolAddress, req.TokenIn, req.TokenOut)
-	return newSinglePoolResponse(req, route, result), nil
-}
-
-func (s *AppService) quoteSingleV4Pool(ctx context.Context, req Request, poolID marketuniv4.PoolID) (Response, error) {
-	if s.readiness != nil && !s.readiness.IsV4PoolReady(poolID) {
-		return Response{}, fmt.Errorf("pool %s is not ready", poolID.String())
-	}
-
-	pool, err := s.univ4Pools.Get(ctx, poolID)
-	if err != nil {
-		return Response{}, fmt.Errorf("load pool %s: %w", poolID.String(), err)
-	}
-	if pool == nil {
-		return Response{}, fmt.Errorf("pool %s not found", poolID.String())
-	}
-
-	var result quoteshared.QuoteResult
-	if req.IsExactInput() {
-		result, err = s.quotes.QuoteExactInputV4(pool, req.TokenIn, req.TokenOut, req.AmountIn)
-	} else {
-		result, err = s.quotes.QuoteExactOutputV4(pool, req.TokenIn, req.TokenOut, req.AmountOut)
-	}
-	if err != nil {
-		return Response{}, fmt.Errorf("quote pool %s: %w", poolID.String(), err)
-	}
-
-	route := quoteunified.NewDirectV4Route(poolID, req.TokenIn, req.TokenOut)
-	return newSinglePoolResponse(req, route, result), nil
+	return s.quoteDirect(ctx, req, DirectPoolSelector{Address: &poolAddress}, poolAddress.Hex())
 }
 
 func (s *AppService) quoteSinglePoolByID(ctx context.Context, req Request, poolID marketuniv4.PoolID) (Response, error) {
-	if s.univ4Pools != nil {
-		pool, err := s.univ4Pools.Get(ctx, poolID)
-		if err != nil {
-			return Response{}, fmt.Errorf("load pool %s: %w", poolID.String(), err)
-		}
-		if pool != nil {
-			return s.quoteSingleV4Pool(ctx, req, poolID)
-		}
-	}
-	return s.quoteSingleBalancerPool(ctx, req, marketbalancer.PoolID(poolID.Hash()))
+	return s.quoteDirect(ctx, req, DirectPoolSelector{Univ4ID: &poolID}, poolID.String())
 }
 
 func (s *AppService) quoteSingleBalancerPool(ctx context.Context, req Request, poolID marketbalancer.PoolID) (Response, error) {
-	if s.readiness != nil && !s.readiness.IsBalancerPoolReady(poolID) {
-		return Response{}, fmt.Errorf("pool %s is not ready", poolID.String())
-	}
-	if s.balancerPools == nil {
-		return Response{}, fmt.Errorf("balancer pool repository is nil")
-	}
-	pool, err := s.balancerPools.Get(ctx, poolID)
-	if err != nil {
-		return Response{}, fmt.Errorf("load pool %s: %w", poolID.String(), err)
-	}
-	if pool == nil {
-		return Response{}, fmt.Errorf("pool %s not found", poolID.String())
-	}
+	return s.quoteDirect(ctx, req, DirectPoolSelector{BalancerPoolID: &poolID}, poolID.String())
+}
 
-	var result quoteshared.QuoteResult
-	if req.IsExactInput() {
-		result, err = s.quotes.QuoteExactInputBalancer(pool, req.TokenIn, req.TokenOut, req.AmountIn)
-	} else {
-		result, err = s.quotes.QuoteExactOutputBalancer(pool, req.TokenIn, req.TokenOut, req.AmountOut)
+func (s *AppService) quoteDirect(ctx context.Context, req Request, selector DirectPoolSelector, selectorName string) (Response, error) {
+	for _, protocol := range s.protocols {
+		if protocol == nil {
+			continue
+		}
+		response, handled, err := protocol.QuoteDirect(ctx, selector, req, s.quotes)
+		if err != nil {
+			return Response{}, fmt.Errorf("%s direct quote: %w", protocol.Name(), err)
+		}
+		if handled {
+			return response, nil
+		}
 	}
-	if err != nil {
-		return Response{}, fmt.Errorf("quote pool %s: %w", poolID.String(), err)
-	}
-
-	route := quoteunified.NewDirectBalancerRoute(poolID, req.TokenIn, req.TokenOut)
-	return newSinglePoolResponse(req, route, result), nil
+	return Response{}, fmt.Errorf("pool %s not found", selectorName)
 }
 
 func newSinglePoolResponse(req Request, route quoteunified.Route, result quoteshared.QuoteResult) Response {
@@ -447,119 +258,15 @@ func (s *AppService) quoteBestRoute(ctx context.Context, req Request) (Response,
 
 func (s *AppService) buildPoolGraph(ctx context.Context) (quoteunified.PoolGraph, error) {
 	edges := make([]quoteunified.PoolEdge, 0)
-
-	if s.v3Registry != nil && s.univ3Pools != nil {
-		addresses, err := s.v3Registry.List(ctx)
+	for _, protocol := range s.protocols {
+		if protocol == nil {
+			continue
+		}
+		protocolEdges, err := protocol.LoadEdges(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("list univ3 pools: %w", err)
+			return nil, fmt.Errorf("load %s pool graph edges: %w", protocol.Name(), err)
 		}
-		for _, address := range addresses {
-			pool, err := s.univ3Pools.Get(ctx, address)
-			if err != nil {
-				return nil, fmt.Errorf("load univ3 pool %s: %w", address.Hex(), err)
-			}
-			if pool == nil {
-				continue
-			}
-			edges = append(edges, quoteunified.PoolEdge{
-				Version: quoteunified.PoolVersionV3,
-				PoolV3:  pool.Address,
-				Token0:  pool.Token0,
-				Token1:  pool.Token1,
-			})
-		}
-	}
-
-	if s.pancakeRegistry != nil && s.pancakePools != nil {
-		addresses, err := s.pancakeRegistry.List(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("list pancakev3 pools: %w", err)
-		}
-		for _, address := range addresses {
-			pool, err := s.pancakePools.Get(ctx, address)
-			if err != nil {
-				return nil, fmt.Errorf("load pancakev3 pool %s: %w", address.Hex(), err)
-			}
-			if pool == nil {
-				continue
-			}
-			edges = append(edges, quoteunified.PoolEdge{
-				Version:       quoteunified.PoolVersionPancakeV3,
-				PoolPancakeV3: pool.Address,
-				Token0:        pool.Token0,
-				Token1:        pool.Token1,
-			})
-		}
-	}
-
-	if s.quickSwapRegistry != nil && s.quickSwapPools != nil {
-		addresses, err := s.quickSwapRegistry.List(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("list quickswapv3 pools: %w", err)
-		}
-		for _, address := range addresses {
-			pool, err := s.quickSwapPools.Get(ctx, address)
-			if err != nil {
-				return nil, fmt.Errorf("load quickswapv3 pool %s: %w", address.Hex(), err)
-			}
-			if pool == nil {
-				continue
-			}
-			edges = append(edges, quoteunified.PoolEdge{
-				Version:         quoteunified.PoolVersionQuickSwapV3,
-				PoolQuickSwapV3: pool.Address,
-				Token0:          pool.Token0,
-				Token1:          pool.Token1,
-			})
-		}
-	}
-
-	if s.v4Registry != nil && s.univ4Pools != nil {
-		poolIDs, err := s.v4Registry.List(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("list univ4 pools: %w", err)
-		}
-		for _, poolID := range poolIDs {
-			pool, err := s.univ4Pools.Get(ctx, poolID)
-			if err != nil {
-				return nil, fmt.Errorf("load univ4 pool %s: %w", poolID.String(), err)
-			}
-			if pool == nil {
-				continue
-			}
-			edges = append(edges, quoteunified.PoolEdge{
-				Version: quoteunified.PoolVersionV4,
-				PoolV4:  pool.ID,
-				Token0:  pool.Key.Currency0,
-				Token1:  pool.Key.Currency1,
-			})
-		}
-	}
-
-	if s.balancerRegistry != nil && s.balancerPools != nil {
-		poolIDs, err := s.balancerRegistry.List(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("list balancer pools: %w", err)
-		}
-		for _, poolID := range poolIDs {
-			pool, err := s.balancerPools.Get(ctx, poolID)
-			if err != nil {
-				return nil, fmt.Errorf("load balancer pool %s: %w", poolID.String(), err)
-			}
-			if pool == nil || len(pool.Tokens) < 2 {
-				continue
-			}
-			for i := 0; i < len(pool.Tokens); i++ {
-				for j := i + 1; j < len(pool.Tokens); j++ {
-					edges = append(edges, quoteunified.PoolEdge{
-						Version:      quoteunified.PoolVersionBalancer,
-						PoolBalancer: pool.ID,
-						Token0:       pool.Tokens[i],
-						Token1:       pool.Tokens[j],
-					})
-				}
-			}
-		}
+		edges = append(edges, protocolEdges...)
 	}
 
 	if len(edges) == 0 {
@@ -579,70 +286,24 @@ func (s *AppService) loadRoutePools(ctx context.Context, route quoteunified.Rout
 	}
 
 	for _, hop := range route.Hops {
-		switch hop.Version {
-		case quoteunified.PoolVersionV3:
-			if _, ok := pools.V3[hop.PoolV3]; ok {
-				continue
-			}
-			pool, err := s.univ3Pools.Get(ctx, hop.PoolV3)
-			if err != nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("load univ3 pool %s: %w", hop.PoolV3.Hex(), err)
-			}
-			if pool == nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("univ3 pool %s not found", hop.PoolV3.Hex())
-			}
-			pools.V3[hop.PoolV3] = pool
-		case quoteunified.PoolVersionPancakeV3:
-			if _, ok := pools.PancakeV3[hop.PoolPancakeV3]; ok {
-				continue
-			}
-			pool, err := s.pancakePools.Get(ctx, hop.PoolPancakeV3)
-			if err != nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("load pancakev3 pool %s: %w", hop.PoolPancakeV3.Hex(), err)
-			}
-			if pool == nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("pancakev3 pool %s not found", hop.PoolPancakeV3.Hex())
-			}
-			pools.PancakeV3[hop.PoolPancakeV3] = pool
-		case quoteunified.PoolVersionQuickSwapV3:
-			if _, ok := pools.QuickSwapV3[hop.PoolQuickSwapV3]; ok {
-				continue
-			}
-			pool, err := s.quickSwapPools.Get(ctx, hop.PoolQuickSwapV3)
-			if err != nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("load quickswapv3 pool %s: %w", hop.PoolQuickSwapV3.Hex(), err)
-			}
-			if pool == nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("quickswapv3 pool %s not found", hop.PoolQuickSwapV3.Hex())
-			}
-			pools.QuickSwapV3[hop.PoolQuickSwapV3] = pool
-		case quoteunified.PoolVersionV4:
-			if _, ok := pools.V4[hop.PoolV4]; ok {
-				continue
-			}
-			pool, err := s.univ4Pools.Get(ctx, hop.PoolV4)
-			if err != nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("load univ4 pool %s: %w", hop.PoolV4.String(), err)
-			}
-			if pool == nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("univ4 pool %s not found", hop.PoolV4.String())
-			}
-			pools.V4[hop.PoolV4] = pool
-		case quoteunified.PoolVersionBalancer:
-			if _, ok := pools.Balancer[hop.PoolBalancer]; ok {
-				continue
-			}
-			pool, err := s.balancerPools.Get(ctx, hop.PoolBalancer)
-			if err != nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("load balancer pool %s: %w", hop.PoolBalancer.String(), err)
-			}
-			if pool == nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("balancer pool %s not found", hop.PoolBalancer.String())
-			}
-			pools.Balancer[hop.PoolBalancer] = pool
-		case quoteunified.PoolVersionWrapWETH, quoteunified.PoolVersionUnwrapWETH:
+		if hop.Version == quoteunified.PoolVersionWrapWETH || hop.Version == quoteunified.PoolVersionUnwrapWETH {
 			continue
-		default:
+		}
+		handled := false
+		for _, protocol := range s.protocols {
+			if protocol == nil {
+				continue
+			}
+			matched, err := protocol.LoadRoutePool(ctx, hop, &pools)
+			if err != nil {
+				return quoteunified.RoutePools{}, fmt.Errorf("load %s route pool: %w", protocol.Name(), err)
+			}
+			if matched {
+				handled = true
+				break
+			}
+		}
+		if !handled {
 			return quoteunified.RoutePools{}, fmt.Errorf("unsupported pool version %d", hop.Version)
 		}
 	}
@@ -651,34 +312,25 @@ func (s *AppService) loadRoutePools(ctx context.Context, route quoteunified.Rout
 }
 
 func (s *AppService) ensureRouteReady(route quoteunified.Route) error {
-	if s.readiness == nil {
-		return nil
-	}
 	for _, hop := range route.Hops {
-		switch hop.Version {
-		case quoteunified.PoolVersionV3:
-			if !s.readiness.IsV3PoolReady(hop.PoolV3) {
-				return fmt.Errorf("univ3 pool %s is not ready", hop.PoolV3.Hex())
-			}
-		case quoteunified.PoolVersionPancakeV3:
-			if !s.readiness.IsPancakeV3PoolReady(hop.PoolPancakeV3) {
-				return fmt.Errorf("pancakev3 pool %s is not ready", hop.PoolPancakeV3.Hex())
-			}
-		case quoteunified.PoolVersionQuickSwapV3:
-			if !s.readiness.IsQuickSwapV3PoolReady(hop.PoolQuickSwapV3) {
-				return fmt.Errorf("quickswapv3 pool %s is not ready", hop.PoolQuickSwapV3.Hex())
-			}
-		case quoteunified.PoolVersionV4:
-			if !s.readiness.IsV4PoolReady(hop.PoolV4) {
-				return fmt.Errorf("univ4 pool %s is not ready", hop.PoolV4.String())
-			}
-		case quoteunified.PoolVersionBalancer:
-			if !s.readiness.IsBalancerPoolReady(hop.PoolBalancer) {
-				return fmt.Errorf("balancer pool %s is not ready", hop.PoolBalancer.String())
-			}
-		case quoteunified.PoolVersionWrapWETH, quoteunified.PoolVersionUnwrapWETH:
+		if hop.Version == quoteunified.PoolVersionWrapWETH || hop.Version == quoteunified.PoolVersionUnwrapWETH {
 			continue
-		default:
+		}
+		handled := false
+		for _, protocol := range s.protocols {
+			if protocol == nil {
+				continue
+			}
+			matched, err := protocol.CheckRouteHopReady(hop)
+			if err != nil {
+				return fmt.Errorf("%s route readiness: %w", protocol.Name(), err)
+			}
+			if matched {
+				handled = true
+				break
+			}
+		}
+		if !handled {
 			return fmt.Errorf("unsupported pool version %d", hop.Version)
 		}
 	}

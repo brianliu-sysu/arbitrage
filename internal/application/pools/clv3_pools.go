@@ -8,34 +8,19 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// CLV3PoolRegistry lists tracked concentrated-liquidity V3 pool addresses.
-type CLV3PoolRegistry interface {
+type clv3PoolRegistry interface {
 	List(ctx context.Context) ([]common.Address, error)
 }
 
-// CLV3PoolRepository loads concentrated-liquidity V3 pool state.
-type CLV3PoolRepository interface {
+type clv3PoolRepository interface {
 	Get(ctx context.Context, address common.Address) (*marketclv3.Pool, error)
-}
-
-type clv3PoolRegistryFunc func(context.Context) ([]common.Address, error)
-
-func (f clv3PoolRegistryFunc) List(ctx context.Context) ([]common.Address, error) {
-	return f(ctx)
-}
-
-type clv3PoolRepoFunc func(context.Context, common.Address) (*marketclv3.Pool, error)
-
-func (f clv3PoolRepoFunc) Get(ctx context.Context, address common.Address) (*marketclv3.Pool, error) {
-	return f(ctx, address)
 }
 
 type clv3PoolSource struct {
 	poolType  string
 	listLabel string
-	readLabel string
-	registry  CLV3PoolRegistry
-	pools     CLV3PoolRepository
+	registry  clv3PoolRegistry
+	pools     clv3PoolRepository
 	reader    V3BaseStateReader
 }
 
@@ -68,9 +53,9 @@ func appendCLV3PoolInfos(ctx context.Context, src clv3PoolSource, out *[]PoolInf
 
 func appendMismatchingCLV3Pools(
 	ctx context.Context,
-	s *AppService,
 	src clv3PoolSource,
 	head uint64,
+	resolve TokenMetadataResolver,
 	items *[]DiagnosticsResponse,
 ) error {
 	if src.registry == nil || src.pools == nil || src.reader == nil {
@@ -104,10 +89,10 @@ func appendMismatchingCLV3Pools(
 
 	chainStates, err := readManyV3BaseStates(ctx, src.reader, atHead, head)
 	if err != nil {
-		return fmt.Errorf("read %s chain states: %w", src.readLabel, err)
+		return fmt.Errorf("read %s chain states: %w", src.listLabel, err)
 	}
 
-	tokenMeta, err := s.resolveTokenMetadata(ctx, tokenAddresses...)
+	tokenMeta, err := resolve(ctx, tokenAddresses...)
 	if err != nil {
 		return err
 	}
@@ -143,46 +128,42 @@ func appendMismatchingCLV3Pools(
 	return nil
 }
 
-func (s *AppService) diagnosticsCLV3(
+func diagnosticsCLV3(
 	ctx context.Context,
-	poolType string,
-	label string,
+	src clv3PoolSource,
 	poolAddress common.Address,
 	head uint64,
-	pools CLV3PoolRepository,
-	reader V3BaseStateReader,
+	resolve TokenMetadataResolver,
 ) (*DiagnosticsResponse, error) {
 	if poolAddress == (common.Address{}) {
-		return nil, fmt.Errorf("poolAddress is required for %s diagnostics", label)
+		return nil, fmt.Errorf("poolAddress is required for %s diagnostics", src.listLabel)
 	}
-	if pools == nil {
-		return nil, fmt.Errorf("%s pool repository is not configured", label)
+	if src.pools == nil {
+		return nil, fmt.Errorf("%s pool repository is not configured", src.listLabel)
 	}
-	if reader == nil {
-		return nil, fmt.Errorf("%s chain reader is not configured", label)
+	if src.reader == nil {
+		return nil, fmt.Errorf("%s chain reader is not configured", src.listLabel)
 	}
 
-	pool, err := pools.Get(ctx, poolAddress)
+	pool, err := src.pools.Get(ctx, poolAddress)
 	if err != nil {
-		return nil, fmt.Errorf("load %s pool: %w", label, err)
+		return nil, fmt.Errorf("load %s pool: %w", src.listLabel, err)
 	}
 	if pool == nil {
-		return nil, fmt.Errorf("%s pool %s not found", label, poolAddress.Hex())
+		return nil, fmt.Errorf("%s pool %s not found", src.listLabel, poolAddress.Hex())
 	}
 
-	return s.buildV3Diagnostics(
-		ctx,
-		poolType,
-		poolAddress,
-		pool.Token0,
-		pool.Token1,
-		pool.Fee,
-		pool.State.SqrtPriceX96,
-		pool.State.Tick,
-		pool.State.Liquidity,
-		pool.LastBlockNumber,
-		string(pool.Status),
-		head,
-		reader,
-	)
+	tokenMeta, err := resolve(ctx, pool.Token0, pool.Token1)
+	if err != nil {
+		return nil, err
+	}
+	token0 := enrichToken(tokenInfoFromAddress(pool.Token0), tokenMeta)
+	token1 := enrichToken(tokenInfoFromAddress(pool.Token1), tokenMeta)
+	chainState, err := src.reader.ReadV3BaseState(ctx, poolAddress, head)
+	if err != nil {
+		return nil, fmt.Errorf("read chain v3 state: %w", err)
+	}
+	return buildV3DiagnosticsResponse(src.poolType, poolAddress, token0, token1, pool.Fee,
+		pool.State.SqrtPriceX96, pool.State.Tick, pool.State.Liquidity,
+		pool.LastBlockNumber, string(pool.Status), head, chainState), nil
 }

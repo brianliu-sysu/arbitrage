@@ -15,11 +15,20 @@ import (
 )
 
 type ContractExecutorHandler struct {
-	executor *contractapp.AppService
+	executor         *contractapp.AppService
+	executorsByChain map[string]*contractapp.AppService
+	chains           chainSelector
 }
 
 func NewContractExecutorHandler(executor *contractapp.AppService) *ContractExecutorHandler {
 	return &ContractExecutorHandler{executor: executor}
+}
+
+func NewContractExecutorChainHandler(chains []ChainInfo, executors map[string]*contractapp.AppService) *ContractExecutorHandler {
+	return &ContractExecutorHandler{
+		executorsByChain: executors,
+		chains:           newChainSelector(chains),
+	}
 }
 
 // Minimal execute request: gas/nonce are resolved internally via EstimateGas / SuggestGasPrice / PendingNonceAt.
@@ -37,7 +46,12 @@ type executeContractHTTPResponse struct {
 }
 
 func (h *ContractExecutorHandler) HandleExecute(c *gin.Context) {
-	if h == nil || h.executor == nil {
+	executor, ok := h.selectExecutor(c.Query("chain"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, errorHTTPResponse{Error: chainNotFoundMessage(c.Query("chain"))})
+		return
+	}
+	if executor == nil {
 		c.JSON(http.StatusInternalServerError, errorHTTPResponse{Error: "contract executor service is not configured"})
 		return
 	}
@@ -65,7 +79,7 @@ func (h *ContractExecutorHandler) HandleExecute(c *gin.Context) {
 		return
 	}
 
-	approvalResp, err := h.executor.EnsureApprovals(c.Request.Context(), domaincontract.EnsureApprovalsRequest{
+	approvalResp, err := executor.EnsureApprovals(c.Request.Context(), domaincontract.EnsureApprovalsRequest{
 		RPCURL:     req.RPCURL,
 		PrivateKey: req.PrivateKey,
 		Executor:   req.Executor,
@@ -83,13 +97,28 @@ func (h *ContractExecutorHandler) HandleExecute(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.executor.Execute(c.Request.Context(), req)
+	resp, err := executor.Execute(c.Request.Context(), req)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, errorHTTPResponse{Error: err.Error()})
 		return
 	}
 
 	c.JSON(http.StatusOK, executeContractHTTPResponse{TxHash: resp.TxHash.Hex()})
+}
+
+func (h *ContractExecutorHandler) selectExecutor(chain string) (*contractapp.AppService, bool) {
+	if h == nil {
+		return nil, false
+	}
+	if h.executor != nil {
+		return h.executor, true
+	}
+	key, ok := h.chains.selectKey(chain)
+	if !ok {
+		return nil, false
+	}
+	executor, ok := h.executorsByChain[key]
+	return executor, ok
 }
 
 func toOpportunity(payload executeContractHTTPRequest) (*domainarb.Opportunity, error) {

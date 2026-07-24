@@ -43,8 +43,6 @@ type Services struct {
 	BalancerCheckpoints  blockchain.BalancerCheckpointRepository
 	Tokens               asset.TokenRepository
 	Postgres             *postgres.DB
-
-	memory *memoryBundle
 }
 
 type memoryBundle struct {
@@ -106,7 +104,6 @@ func MemoryServices() *Services {
 		BalancerSnapshots:    bundle.balancerSnapshots,
 		BalancerCheckpoints:  bundle.balancerCheckpoints,
 		Tokens:               bundle.tokens,
-		memory:               bundle,
 	}
 }
 
