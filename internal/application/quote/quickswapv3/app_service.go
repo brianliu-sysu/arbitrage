@@ -1,44 +1,13 @@
 package quotequickswapv3
 
 import (
-	"context"
-
+	"github.com/brianliu-sysu/uniswapv3/internal/application/committedmarket"
 	quoteappclv3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/clv3"
-	quotecontract "github.com/brianliu-sysu/uniswapv3/internal/application/quote/contract"
-	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
-	marketquick "github.com/brianliu-sysu/uniswapv3/internal/domain/market/quickswapv3"
-	quotequickswapv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/quickswapv3"
-	"github.com/ethereum/go-ethereum/common"
+	quotecombined "github.com/brianliu-sysu/uniswapv3/internal/application/quote/combined"
+	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 )
 
-func NewAppService(
-	pools marketquick.PoolRepository,
-	registry quotecontract.PoolRegistry[common.Address],
-	quotes *quotequickswapv3domain.QuoteService,
-	readiness quotecontract.PoolReadiness[common.Address],
-	maxHops int,
-) *AppService {
-	engine := quotequickswapv3domain.NewQuoteService()
-	if quotes != nil {
-		engine = quotes
-	}
-	return &AppService{AppService: quoteappclv3.NewAppService(
-		clv3PoolRepo{pools},
-		registry,
-		engine.Engine(),
-		readiness,
-		maxHops,
-	)}
-}
-
-type clv3PoolRepo struct {
-	inner marketquick.PoolRepository
-}
-
-func (r clv3PoolRepo) Get(ctx context.Context, address common.Address) (*marketclv3.Pool, error) {
-	pool, err := r.inner.Get(ctx, address)
-	if pool == nil {
-		return nil, err
-	}
-	return pool.Pool.Clone(), nil
+func NewAppService(market committedmarket.Reader, quotes *quoteunified.QuoteService, maxHops int) *AppService {
+	core := quotecombined.NewAppService(market, quotes, maxHops, quoteunified.PoolVersionQuickSwapV3)
+	return &AppService{AppService: quoteappclv3.NewAppService(core)}
 }

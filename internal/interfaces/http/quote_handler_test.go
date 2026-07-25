@@ -10,10 +10,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	quoteapp "github.com/brianliu-sysu/uniswapv3/internal/application/quote"
+	"github.com/brianliu-sysu/uniswapv3/internal/application/marketstore"
 	quoteuniv3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/univ3"
-	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
+	domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
+	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	quoteuniv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
 	httpapi "github.com/brianliu-sysu/uniswapv3/internal/interfaces/http"
 	"github.com/ethereum/go-ethereum/common"
@@ -76,11 +78,6 @@ func (r staticRegistry) List(_ context.Context) ([]common.Address, error) {
 func (r staticRegistry) Add(_ context.Context, _ common.Address) error    { return nil }
 func (r staticRegistry) Remove(_ context.Context, _ common.Address) error { return nil }
 
-type alwaysReady struct{}
-
-func (alwaysReady) IsSystemReady() bool                   { return true }
-func (alwaysReady) IsPoolReady(_ common.Address) bool     { return true }
-
 func testToken(index byte) common.Address {
 	return common.HexToAddress(fmt.Sprintf("0x000000000000000000000000000000000000000%x", index))
 }
@@ -117,13 +114,11 @@ func TestQuoteV3HandlerReturnsQuoteJSON(t *testing.T) {
 		t.Fatalf("save pool: %v", err)
 	}
 
-	app := quoteapp.NewQuoteV3AppService(
-		repo,
-		staticRegistry{addresses: []common.Address{poolAddr}},
-		quoteuniv3domain.NewQuoteService(),
-		alwaysReady{},
-		3,
-	)
+	view := marketstore.NewView(marketstore.Sources{Univ3Pools: repo, Univ3Registry: staticRegistry{addresses: []common.Address{poolAddr}}})
+	if err := view.Publish(context.Background(), domainchain.MarketVersion{Number: 1}, marketstore.Changes{}); err != nil {
+		t.Fatalf("publish market: %v", err)
+	}
+	app := quoteuniv3.NewAppService(view, quoteunified.NewQuoteService(quoteuniv3domain.NewQuoteService(), nil, nil), 3)
 	router := newQuoteRouter(app)
 
 	body, err := json.Marshal(map[string]string{
@@ -157,9 +152,7 @@ func TestQuoteV3HandlerReturnsQuoteJSON(t *testing.T) {
 }
 
 func TestQuoteV3HandlerRejectsInvalidJSON(t *testing.T) {
-	router := newQuoteRouter(quoteapp.NewQuoteV3AppService(
-		nil, nil, quoteuniv3domain.NewQuoteService(), nil, 3,
-	))
+	router := newQuoteRouter(quoteuniv3.NewAppService(nil, nil, 3))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/univ3/quote", bytes.NewReader([]byte("{")))
 	rec := httptest.NewRecorder()

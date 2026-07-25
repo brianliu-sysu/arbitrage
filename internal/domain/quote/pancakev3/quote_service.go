@@ -3,10 +3,9 @@ package pancakev3
 import (
 	"math/big"
 
-	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
-	quoteclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/clv3"
-	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
+	quoteclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/clv3"
+	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -25,19 +24,4 @@ func (s *QuoteService) QuoteExactInput(pool *marketpancake.Pool, tokenIn, tokenO
 
 func (s *QuoteService) QuoteExactOutput(pool *marketpancake.Pool, tokenIn, tokenOut common.Address, amountOut *big.Int) (quoteshared.QuoteResult, error) {
 	return s.inner.QuoteExactOutput(&pool.Pool, tokenIn, tokenOut, amountOut)
-}
-
-func (s *QuoteService) QuoteRoute(pools map[common.Address]*marketpancake.Pool, route Route, amountIn *big.Int) (quoteshared.QuoteResult, error) {
-	clPools := make(map[common.Address]*marketclv3.Pool, len(pools))
-	for address, pool := range pools {
-		if pool != nil {
-			clPools[address] = &pool.Pool
-		}
-	}
-	return s.inner.QuoteRoute(clPools, route, amountIn)
-}
-
-// Engine returns the shared CLV3 quote engine.
-func (s *QuoteService) Engine() *quoteclv3.QuoteService {
-	return s.inner
 }

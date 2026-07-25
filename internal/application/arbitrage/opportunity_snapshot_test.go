@@ -27,6 +27,10 @@ func (s *fixedMarketSnapshot) Version() domainchain.MarketVersion {
 	return s.version
 }
 
+func (s *fixedMarketSnapshot) PoolEdges() []quoteunified.PoolEdge {
+	return nil
+}
+
 func (s *fixedMarketSnapshot) LoadRoutePools(
 	context.Context,
 	quoteunified.Route,

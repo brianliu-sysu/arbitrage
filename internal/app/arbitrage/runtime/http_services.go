@@ -19,7 +19,6 @@ import (
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	quotebalancerdomain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/balancer"
 	quotepancakev3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/pancakev3"
-	quotequickswapv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/quickswapv3"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	quoteuniv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
 	quoteuniv4domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ4"
@@ -43,13 +42,7 @@ func newQuoteV3AppService(
 	if maxHops <= 0 {
 		maxHops = 3
 	}
-	return quoteuniv3.NewAppService(
-		runtime.MarketStore.Univ3Repository(),
-		runtime.MarketStore.Univ3Registry(),
-		quoteuniv3domain.NewQuoteService(),
-		runtime.MarketStore.Univ3Readiness(),
-		maxHops,
-	)
+	return quoteuniv3.NewAppService(runtime.MarketStore, newUnifiedQuoteService(), maxHops)
 }
 
 func newQuotePancakeV3AppService(
@@ -64,13 +57,7 @@ func newQuotePancakeV3AppService(
 	if maxHops <= 0 {
 		maxHops = 3
 	}
-	return quotepancakev3.NewAppService(
-		runtime.MarketStore.PancakeRepository(),
-		runtime.MarketStore.PancakeRegistry(),
-		quotepancakev3domain.NewQuoteService(),
-		runtime.MarketStore.PancakeReadiness(),
-		maxHops,
-	)
+	return quotepancakev3.NewAppService(runtime.MarketStore, newUnifiedQuoteService(), maxHops)
 }
 
 func newQuoteQuickSwapV3AppService(
@@ -85,13 +72,7 @@ func newQuoteQuickSwapV3AppService(
 	if maxHops <= 0 {
 		maxHops = 3
 	}
-	return quotequickswapv3.NewAppService(
-		runtime.MarketStore.QuickSwapRepository(),
-		runtime.MarketStore.QuickSwapRegistry(),
-		quotequickswapv3domain.NewQuoteService(),
-		runtime.MarketStore.QuickSwapReadiness(),
-		maxHops,
-	)
+	return quotequickswapv3.NewAppService(runtime.MarketStore, newUnifiedQuoteService(), maxHops)
 }
 
 func newQuoteV4AppService(
@@ -106,13 +87,7 @@ func newQuoteV4AppService(
 	if maxHops <= 0 {
 		maxHops = 3
 	}
-	return quoteuniv4.NewAppService(
-		runtime.MarketStore.Univ4Repository(),
-		runtime.MarketStore.Univ4Registry(),
-		quoteuniv4domain.NewQuoteService(),
-		runtime.MarketStore.Univ4Readiness(),
-		maxHops,
-	)
+	return quoteuniv4.NewAppService(runtime.MarketStore, newUnifiedQuoteService(), maxHops)
 }
 
 func newQuoteCombinedAppService(
@@ -123,27 +98,15 @@ func newQuoteCombinedAppService(
 	if maxHops <= 0 {
 		maxHops = 3
 	}
-	protocols := []quotecombined.ProtocolAdapter{
-		quotecombined.NewUniv3ProtocolAdapter(runtime.MarketStore.Univ3Repository(), runtime.MarketStore.Univ3Registry(), runtime.MarketStore.Univ3Readiness()),
-		quotecombined.NewPancakeV3ProtocolAdapter(runtime.MarketStore.PancakeRepository(), runtime.MarketStore.PancakeRegistry(), runtime.MarketStore.PancakeReadiness()),
-		quotecombined.NewQuickSwapV3ProtocolAdapter(runtime.MarketStore.QuickSwapRepository(), runtime.MarketStore.QuickSwapRegistry(), runtime.MarketStore.QuickSwapReadiness()),
-		quotecombined.NewUniv4ProtocolAdapter(runtime.MarketStore.Univ4Repository(), runtime.MarketStore.Univ4Registry(), runtime.MarketStore.Univ4Readiness()),
-		quotecombined.NewBalancerProtocolAdapter(
-			runtime.MarketStore.BalancerRepository(),
-			runtime.MarketStore.BalancerRegistry(),
-			runtime.MarketStore.BalancerReadiness(),
-		),
-	}
-	return quotecombined.NewAppService(
-		protocols,
-		quoteunified.NewQuoteService(
-			quoteuniv3domain.NewQuoteService(),
-			quotepancakev3domain.NewQuoteService(),
-			quoteuniv4domain.NewQuoteService(),
-			quotebalancerdomain.NewQuoteService(),
-		),
-		runtime.MarketStore,
-		maxHops,
+	return quotecombined.NewAppService(runtime.MarketStore, newUnifiedQuoteService(), maxHops)
+}
+
+func newUnifiedQuoteService() *quoteunified.QuoteService {
+	return quoteunified.NewQuoteService(
+		quoteuniv3domain.NewQuoteService(),
+		quotepancakev3domain.NewQuoteService(),
+		quoteuniv4domain.NewQuoteService(),
+		quotebalancerdomain.NewQuoteService(),
 	)
 }
 

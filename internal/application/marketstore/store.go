@@ -34,6 +34,10 @@ type Registry[PoolID comparable] interface {
 	List(context.Context) ([]PoolID, error)
 }
 
+type listedIDs[ID comparable] []ID
+
+func (ids listedIDs[ID]) List(context.Context) ([]ID, error) { return ids, nil }
+
 // Changes identifies the pools that must be refreshed for one market version.
 type Changes = marketchange.Changes
 

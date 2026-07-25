@@ -3,10 +3,10 @@ package univ3
 import (
 	"math/big"
 
-	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
-	quoteclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/clv3"
 	marketclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/clv3"
 	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
+	quoteclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/clv3"
+	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -35,9 +35,4 @@ func (s *QuoteService) QuoteRoute(pools map[common.Address]*marketv3.Pool, route
 		}
 	}
 	return s.inner.QuoteRoute(clPools, route, amountIn)
-}
-
-// Engine returns the shared CLV3 quote engine.
-func (s *QuoteService) Engine() *quoteclv3.QuoteService {
-	return s.inner
 }

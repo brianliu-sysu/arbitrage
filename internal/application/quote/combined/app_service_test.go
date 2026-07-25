@@ -6,8 +6,11 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/brianliu-sysu/uniswapv3/internal/application/committedmarket"
+	"github.com/brianliu-sysu/uniswapv3/internal/application/marketstore"
 	quoteapp "github.com/brianliu-sysu/uniswapv3/internal/application/quote"
 	quotecombined "github.com/brianliu-sysu/uniswapv3/internal/application/quote/combined"
+	domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
 	marketuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
@@ -18,6 +21,16 @@ import (
 	quoteuniv4domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
+
+type countingMarketReader struct {
+	inner committedmarket.Reader
+	calls int
+}
+
+func (r *countingMarketReader) Snapshot() committedmarket.Snapshot {
+	r.calls++
+	return r.inner.Snapshot()
+}
 
 type memoryV3PoolRepo struct {
 	pools map[common.Address]*marketuniv3.Pool
@@ -200,11 +213,6 @@ func (r staticV4Registry) Remove(_ context.Context, id marketuniv4.PoolID) error
 	return nil
 }
 
-type alwaysReady[PoolID comparable] struct{}
-
-func (alwaysReady[PoolID]) IsSystemReady() bool     { return true }
-func (alwaysReady[PoolID]) IsPoolReady(PoolID) bool { return true }
-
 func testToken(index byte) common.Address {
 	return common.HexToAddress(fmt.Sprintf("0x000000000000000000000000000000000000000%x", index))
 }
@@ -253,37 +261,39 @@ func setupPancakePool(address, token0, token1 common.Address, liquidity int64) *
 }
 
 func newCombinedService(v3Repo *memoryV3PoolRepo, pancakeRepo *memoryPancakePoolRepo, v4Repo *memoryV4PoolRepo, v3Reg staticV3Registry, pancakeReg staticPancakeRegistry, v4Reg staticV4Registry) *quotecombined.AppService {
+	view := marketstore.NewView(marketstore.Sources{
+		Univ3Pools: v3Repo, PancakePools: pancakeRepo, Univ4Pools: v4Repo,
+		Univ3Registry: v3Reg, PancakeRegistry: pancakeReg, Univ4Registry: v4Reg,
+	})
+	if err := view.Publish(context.Background(), domainchain.MarketVersion{Number: 1}, marketstore.Changes{}); err != nil {
+		panic(err)
+	}
 	return quotecombined.NewAppService(
-		testProtocolAdapters(v3Repo, pancakeRepo, v4Repo, v3Reg, pancakeReg, v4Reg),
+		view,
 		quoteunified.NewQuoteService(
 			quoteuniv3domain.NewQuoteService(),
 			quotepancakev3domain.NewQuoteService(),
 			quoteuniv4domain.NewQuoteService(),
 		),
-		alwaysReady[common.Address]{},
 		3,
 	)
 }
 
-func testProtocolAdapters(
-	v3Repo *memoryV3PoolRepo,
-	pancakeRepo *memoryPancakePoolRepo,
-	v4Repo *memoryV4PoolRepo,
-	v3Reg staticV3Registry,
-	pancakeReg staticPancakeRegistry,
-	v4Reg staticV4Registry,
-) []quotecombined.ProtocolAdapter {
-	protocols := make([]quotecombined.ProtocolAdapter, 0, 3)
-	if v3Repo != nil {
-		protocols = append(protocols, quotecombined.NewUniv3ProtocolAdapter(v3Repo, v3Reg, alwaysReady[common.Address]{}))
+func TestAppServiceCapturesOneSnapshotPerQuote(t *testing.T) {
+	view := marketstore.NewView(marketstore.Sources{})
+	if err := view.Publish(context.Background(), domainchain.MarketVersion{Number: 1}, marketstore.Changes{}); err != nil {
+		t.Fatalf("publish market: %v", err)
 	}
-	if pancakeRepo != nil {
-		protocols = append(protocols, quotecombined.NewPancakeV3ProtocolAdapter(pancakeRepo, pancakeReg, alwaysReady[common.Address]{}))
+	reader := &countingMarketReader{inner: view}
+	service := quotecombined.NewAppService(reader, nil, 3)
+
+	_, _ = service.Quote(context.Background(), quotecombined.Request{
+		TokenIn: testToken(1), TokenOut: testToken(2),
+		Mode: quoteapp.QuoteModeExactInput, AmountIn: big.NewInt(1),
+	})
+	if reader.calls != 1 {
+		t.Fatalf("expected one snapshot capture, got %d", reader.calls)
 	}
-	if v4Repo != nil {
-		protocols = append(protocols, quotecombined.NewUniv4ProtocolAdapter(v4Repo, v4Reg, alwaysReady[marketuniv4.PoolID]{}))
-	}
-	return protocols
 }
 
 func TestAppServiceFindsMixedV3V4Route(t *testing.T) {

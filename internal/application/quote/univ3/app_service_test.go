@@ -6,11 +6,14 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/brianliu-sysu/uniswapv3/internal/application/marketstore"
 	quoteapp "github.com/brianliu-sysu/uniswapv3/internal/application/quote"
 	quoteuniv3 "github.com/brianliu-sysu/uniswapv3/internal/application/quote/univ3"
-	quoteuniv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
-	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
+	domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
+	marketv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
+	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
+	quoteuniv3domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ3"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -71,11 +74,6 @@ func (r staticRegistry) List(_ context.Context) ([]common.Address, error) {
 func (r staticRegistry) Add(_ context.Context, _ common.Address) error    { return nil }
 func (r staticRegistry) Remove(_ context.Context, _ common.Address) error { return nil }
 
-type alwaysReady struct{}
-
-func (alwaysReady) IsSystemReady() bool                   { return true }
-func (alwaysReady) IsPoolReady(_ common.Address) bool     { return true }
-
 func testToken(index byte) common.Address {
 	return common.HexToAddress(fmt.Sprintf("0x000000000000000000000000000000000000000%x", index))
 }
@@ -94,6 +92,14 @@ func setupQuotedPool(address, token0, token1 common.Address) *marketv3.Pool {
 	return pool
 }
 
+func newQuoteService(repo *memoryPoolRepo, registry staticRegistry) *quoteuniv3.AppService {
+	view := marketstore.NewView(marketstore.Sources{Univ3Pools: repo, Univ3Registry: registry})
+	if err := view.Publish(context.Background(), domainchain.MarketVersion{Number: 1}, marketstore.Changes{}); err != nil {
+		panic(err)
+	}
+	return quoteuniv3.NewAppService(view, quoteunified.NewQuoteService(quoteuniv3domain.NewQuoteService(), nil, nil), 3)
+}
+
 func TestAppServiceSinglePoolExactInput(t *testing.T) {
 	token0 := testToken(2)
 	token1 := testToken(3)
@@ -105,13 +111,7 @@ func TestAppServiceSinglePoolExactInput(t *testing.T) {
 		t.Fatalf("save pool: %v", err)
 	}
 
-	service := quoteuniv3.NewAppService(
-		repo,
-		staticRegistry{addresses: []common.Address{poolAddr}},
-		quoteuniv3domain.NewQuoteService(),
-		alwaysReady{},
-		3,
-	)
+	service := newQuoteService(repo, staticRegistry{addresses: []common.Address{poolAddr}})
 
 	resp, err := service.Quote(context.Background(), quoteuniv3.Request{
 		TokenIn:     token0,
@@ -154,13 +154,7 @@ func TestAppServiceFindsBestMultiHopRoute(t *testing.T) {
 		}
 	}
 
-	service := quoteuniv3.NewAppService(
-		repo,
-		staticRegistry{addresses: []common.Address{poolAB, poolBC}},
-		quoteuniv3domain.NewQuoteService(),
-		alwaysReady{},
-		3,
-	)
+	service := newQuoteService(repo, staticRegistry{addresses: []common.Address{poolAB, poolBC}})
 
 	resp, err := service.Quote(context.Background(), quoteuniv3.Request{
 		TokenIn:  tokenA,
@@ -180,13 +174,7 @@ func TestAppServiceFindsBestMultiHopRoute(t *testing.T) {
 }
 
 func TestAppServiceRejectsWhenSystemNotReady(t *testing.T) {
-	service := quoteuniv3.NewAppService(
-		newMemoryPoolRepo(),
-		staticRegistry{},
-		quoteuniv3domain.NewQuoteService(),
-		notReadyChecker{},
-		3,
-	)
+	service := quoteuniv3.NewAppService(marketstore.NewView(marketstore.Sources{}), nil, 3)
 
 	_, err := service.Quote(context.Background(), quoteuniv3.Request{
 		TokenIn:  testToken(2),
@@ -198,8 +186,3 @@ func TestAppServiceRejectsWhenSystemNotReady(t *testing.T) {
 		t.Fatal("expected readiness error")
 	}
 }
-
-type notReadyChecker struct{}
-
-func (notReadyChecker) IsSystemReady() bool               { return false }
-func (notReadyChecker) IsPoolReady(_ common.Address) bool { return false }

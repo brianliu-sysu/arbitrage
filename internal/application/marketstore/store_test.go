@@ -83,28 +83,37 @@ func TestViewKeepsOldSnapshotUntilCompleteBlockCommits(t *testing.T) {
 	}
 
 	source.pools[poolA].LastBlockNumber = 11
-	committedA, err := view.Univ3Repository().Get(context.Background(), poolA)
+	routeA := quoteunified.NewDirectV3Route(poolA, token0, token1)
+	committedPools, err := view.Snapshot().LoadRoutePools(context.Background(), routeA)
 	if err != nil {
 		t.Fatalf("read committed pool: %v", err)
 	}
+	committedA := committedPools.V3[poolA]
 	if committedA.LastBlockNumber != 10 {
 		t.Fatalf("staging mutation leaked into committed view: got block %d", committedA.LastBlockNumber)
 	}
 	if err := view.Publish(context.Background(), domainchain.MarketVersion{Number: 11, Generation: 2}, Changes{Univ3: []common.Address{poolA, poolB}}); err == nil {
 		t.Fatal("expected incomplete block commit to fail")
 	}
-	if view.BlockNumber() != 10 {
-		t.Fatalf("failed commit replaced active view: got block %d", view.BlockNumber())
+	if view.Snapshot().Version().Number != 10 {
+		t.Fatalf("failed commit replaced active view: got block %d", view.Snapshot().Version().Number)
 	}
 
 	if err := view.Publish(context.Background(), domainchain.MarketVersion{Number: 11, Generation: 2}, Changes{Univ3: []common.Address{poolA}}); err != nil {
 		t.Fatalf("commit block 11: %v", err)
 	}
-	committedA, _ = view.Univ3Repository().Get(context.Background(), poolA)
-	committedB, err := view.Univ3Repository().Get(context.Background(), poolB)
+	committedPools, err = view.Snapshot().LoadRoutePools(context.Background(), quoteunified.Route{
+		TokenIn: token0, TokenOut: token1,
+		Hops: []quoteunified.RouteHop{
+			{Version: quoteunified.PoolVersionV3, PoolV3: poolA, TokenIn: token0, TokenOut: token1},
+			{Version: quoteunified.PoolVersionV3, PoolV3: poolB, TokenIn: token0, TokenOut: token1},
+		},
+	})
 	if err != nil {
-		t.Fatalf("read committed pool B: %v", err)
+		t.Fatalf("read committed pools: %v", err)
 	}
+	committedA = committedPools.V3[poolA]
+	committedB := committedPools.V3[poolB]
 	if committedA.LastBlockNumber != 11 || committedB.LastBlockNumber != 10 {
 		t.Fatalf("copy-on-write replaced unchanged pool: A=%d B=%d", committedA.LastBlockNumber, committedB.LastBlockNumber)
 	}
@@ -164,30 +173,24 @@ func TestSnapshotRegistryChangesOnlyAfterPublish(t *testing.T) {
 	}
 	liveRegistry.ids = []common.Address{poolA}
 
-	ids, err := view.Univ3Registry().List(context.Background())
-	if err != nil {
-		t.Fatalf("list committed registry before publish: %v", err)
-	}
-	if !containsAddress(ids, poolA) || !containsAddress(ids, poolB) {
-		t.Fatalf("live registry mutation leaked into committed registry: %v", ids)
+	edges := view.Snapshot().PoolEdges()
+	if !containsV3Pool(edges, poolA) || !containsV3Pool(edges, poolB) {
+		t.Fatalf("live registry mutation leaked into committed graph: %v", edges)
 	}
 
 	source.pools[poolA].LastBlockNumber = 11
 	if err := view.Publish(context.Background(), domainchain.MarketVersion{Number: 11, Generation: 2}, Changes{Univ3: []common.Address{poolA}}); err != nil {
 		t.Fatalf("publish updated snapshot: %v", err)
 	}
-	ids, err = view.Univ3Registry().List(context.Background())
-	if err != nil {
-		t.Fatalf("list committed registry after publish: %v", err)
-	}
-	if len(ids) != 1 || ids[0] != poolA {
-		t.Fatalf("unexpected committed registry after publish: %v", ids)
+	edges = view.Snapshot().PoolEdges()
+	if len(edges) != 1 || !containsV3Pool(edges, poolA) {
+		t.Fatalf("unexpected committed graph after publish: %v", edges)
 	}
 }
 
-func containsAddress(ids []common.Address, target common.Address) bool {
-	for _, id := range ids {
-		if id == target {
+func containsV3Pool(edges []quoteunified.PoolEdge, target common.Address) bool {
+	for _, edge := range edges {
+		if edge.Version == quoteunified.PoolVersionV3 && edge.PoolV3 == target {
 			return true
 		}
 	}

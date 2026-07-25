@@ -37,6 +37,51 @@ func (s *committedSnapshot) Version() domainchain.MarketVersion {
 	return s.state.version
 }
 
+// PoolEdges returns routing metadata from the same immutable version as pool state.
+func (s *committedSnapshot) PoolEdges() []quoteunified.PoolEdge {
+	if s == nil {
+		return nil
+	}
+	edges := make([]quoteunified.PoolEdge, 0,
+		len(s.state.univ3)+len(s.state.pancake)+len(s.state.quickSwap)+len(s.state.univ4)+len(s.state.balancer))
+	for _, pool := range s.state.univ3 {
+		if pool != nil {
+			edges = append(edges, quoteunified.PoolEdge{Version: quoteunified.PoolVersionV3, PoolV3: pool.Address, Token0: pool.Token0, Token1: pool.Token1})
+		}
+	}
+	for _, pool := range s.state.pancake {
+		if pool != nil {
+			edges = append(edges, quoteunified.PoolEdge{Version: quoteunified.PoolVersionPancakeV3, PoolPancakeV3: pool.Address, Token0: pool.Token0, Token1: pool.Token1})
+		}
+	}
+	for _, pool := range s.state.quickSwap {
+		if pool != nil {
+			edges = append(edges, quoteunified.PoolEdge{Version: quoteunified.PoolVersionQuickSwapV3, PoolQuickSwapV3: pool.Address, Token0: pool.Token0, Token1: pool.Token1})
+		}
+	}
+	for _, pool := range s.state.univ4 {
+		if pool != nil {
+			edges = append(edges, quoteunified.PoolEdge{Version: quoteunified.PoolVersionV4, PoolV4: pool.ID, Token0: pool.Key.Currency0, Token1: pool.Key.Currency1})
+		}
+	}
+	for _, pool := range s.state.balancer {
+		if pool != nil {
+			for i := 0; i < len(pool.Tokens); i++ {
+				for j := i + 1; j < len(pool.Tokens); j++ {
+					edges = append(edges, quoteunified.PoolEdge{
+						Version:         quoteunified.PoolVersionBalancer,
+						PoolBalancer:    pool.ID,
+						BalancerAddress: pool.Address,
+						Token0:          pool.Tokens[i],
+						Token1:          pool.Tokens[j],
+					})
+				}
+			}
+		}
+	}
+	return edges
+}
+
 func (s *committedSnapshot) LoadRoutePools(
 	ctx context.Context,
 	route quoteunified.Route,

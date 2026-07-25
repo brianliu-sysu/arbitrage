@@ -17,6 +17,7 @@ type PoolEdge struct {
 	PoolQuickSwapV3 common.Address
 	PoolV4          marketv4.PoolID
 	PoolBalancer    marketbalancer.PoolID
+	BalancerAddress common.Address
 	Token0          common.Address
 	Token1          common.Address
 }

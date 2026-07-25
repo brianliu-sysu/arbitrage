@@ -3,8 +3,8 @@ package clv3
 import (
 	"math/big"
 
-	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
 	quoteclv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/clv3"
+	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -16,14 +16,6 @@ type Request struct {
 	AmountIn    *big.Int
 	AmountOut   *big.Int
 	PoolAddress *common.Address
-}
-
-func (r Request) IsExactInput() bool {
-	return r.Mode == quoteshared.QuoteModeExactInput
-}
-
-func (r Request) IsExactOutput() bool {
-	return r.Mode == quoteshared.QuoteModeExactOutput
 }
 
 // RouteQuote captures the quote outcome for a single route candidate.

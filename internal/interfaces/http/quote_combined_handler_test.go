@@ -10,7 +10,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/brianliu-sysu/uniswapv3/internal/application/marketstore"
 	quotecombined "github.com/brianliu-sysu/uniswapv3/internal/application/quote/combined"
+	domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
@@ -39,17 +41,20 @@ func TestQuoteCombinedHandlerReturnsMixedRouteJSON(t *testing.T) {
 		t.Fatalf("save v4 pool: %v", err)
 	}
 
+	view := marketstore.NewView(marketstore.Sources{
+		Univ3Pools: v3Repo, Univ3Registry: staticRegistry{addresses: []common.Address{poolAB}},
+		Univ4Pools: v4Repo, Univ4Registry: staticV4Registry{entries: map[marketv4.PoolID]marketv4.PoolKey{poolBCID: poolBC.Key}},
+	})
+	if err := view.Publish(context.Background(), domainchain.MarketVersion{Number: 1}, marketstore.Changes{}); err != nil {
+		t.Fatalf("publish market: %v", err)
+	}
 	combined := quotecombined.NewAppService(
-		[]quotecombined.ProtocolAdapter{
-			quotecombined.NewUniv3ProtocolAdapter(v3Repo, staticRegistry{addresses: []common.Address{poolAB}}, combinedAlwaysReady[common.Address]{}),
-			quotecombined.NewUniv4ProtocolAdapter(v4Repo, staticV4Registry{entries: map[marketv4.PoolID]marketv4.PoolKey{poolBCID: poolBC.Key}}, combinedAlwaysReady[marketv4.PoolID]{}),
-		},
+		view,
 		quoteunified.NewQuoteService(
 			quoteuniv3domain.NewQuoteService(),
 			nil,
 			quoteuniv4domain.NewQuoteService(),
 		),
-		combinedAlwaysReady[common.Address]{},
 		3,
 	)
 
@@ -87,11 +92,6 @@ func TestQuoteCombinedHandlerReturnsMixedRouteJSON(t *testing.T) {
 		t.Fatalf("expected 2-hop mixed route, got %#v", bestRoute["hops"])
 	}
 }
-
-type combinedAlwaysReady[PoolID comparable] struct{}
-
-func (combinedAlwaysReady[PoolID]) IsSystemReady() bool     { return true }
-func (combinedAlwaysReady[PoolID]) IsPoolReady(PoolID) bool { return true }
 
 func setupV4Pool(token0, token1 common.Address, liquidity int64) (*marketv4.Pool, marketv4.PoolID) {
 	key := marketv4.PoolKey{

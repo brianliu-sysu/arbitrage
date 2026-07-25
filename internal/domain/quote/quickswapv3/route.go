@@ -6,5 +6,3 @@ type (
 	RouteHop = quoteclv3.RouteHop
 	Route    = quoteclv3.Route
 )
-
-var NewDirectRoute = quoteclv3.NewDirectRoute

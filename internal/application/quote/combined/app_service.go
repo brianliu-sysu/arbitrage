@@ -5,88 +5,73 @@ import (
 	"fmt"
 	"math/big"
 
-	quotecontract "github.com/brianliu-sysu/uniswapv3/internal/application/quote/contract"
+	"github.com/brianliu-sysu/uniswapv3/internal/application/committedmarket"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/asset"
 	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
-	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
-	marketquick "github.com/brianliu-sysu/uniswapv3/internal/domain/market/quickswapv3"
-	marketuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	quoteshared "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/shared"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// AppService orchestrates route discovery and quoting across protocol adapters.
+// AppService quotes against one immutable committed market snapshot per request.
 type AppService struct {
-	protocols []ProtocolAdapter
-	quotes    *quoteunified.QuoteService
-	readiness quotecontract.SystemReadiness
-	maxHops   int
+	market  committedmarket.Reader
+	quotes  *quoteunified.QuoteService
+	maxHops int
+	allowed map[quoteunified.PoolVersion]struct{}
 }
 
+// NewAppService constructs the unified quote service. When versions is empty,
+// every protocol contained in the committed market is available.
 func NewAppService(
-	protocols []ProtocolAdapter,
+	market committedmarket.Reader,
 	quotes *quoteunified.QuoteService,
-	readiness quotecontract.SystemReadiness,
 	maxHops int,
+	versions ...quoteunified.PoolVersion,
 ) *AppService {
 	if maxHops <= 0 {
 		maxHops = 3
 	}
-	return &AppService{
-		protocols: compactProtocolAdapters(protocols),
-		quotes:    quotes,
-		readiness: readiness,
-		maxHops:   maxHops,
+	if quotes == nil {
+		quotes = quoteunified.NewQuoteService(nil, nil, nil)
 	}
+	allowed := make(map[quoteunified.PoolVersion]struct{}, len(versions))
+	for _, version := range versions {
+		allowed[version] = struct{}{}
+	}
+	return &AppService{market: market, quotes: quotes, maxHops: maxHops, allowed: allowed}
 }
 
-func compactProtocolAdapters(candidates []ProtocolAdapter) []ProtocolAdapter {
-	protocols := make([]ProtocolAdapter, 0, len(candidates))
-	for _, protocol := range candidates {
-		if protocol != nil {
-			protocols = append(protocols, protocol)
-		}
-	}
-	return protocols
-}
-
-// Quote executes the unified quote use case for the given request.
+// Quote executes the unified quote use case against a single pinned snapshot.
 func (s *AppService) Quote(ctx context.Context, req Request) (Response, error) {
 	if err := validateQuoteRequest(req); err != nil {
 		return Response{}, err
 	}
-	for {
-		blockBefore := quotecontract.ViewRevision(s.readiness)
-		response, err := s.quoteCurrentView(ctx, req)
-		if blockBefore == quotecontract.ViewRevision(s.readiness) {
-			return response, err
-		}
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return Response{}, ctxErr
-		}
+	if s == nil || s.market == nil {
+		return Response{}, fmt.Errorf("committed market is not configured")
 	}
-}
-
-func (s *AppService) quoteCurrentView(ctx context.Context, req Request) (Response, error) {
-	if s.readiness != nil && !s.readiness.IsSystemReady() {
+	snapshot := s.market.Snapshot()
+	if snapshot == nil || snapshot.Version().IsZero() {
 		return Response{}, fmt.Errorf("system is not ready for quoting")
 	}
+	return s.quoteSnapshot(ctx, snapshot, req)
+}
 
+func (s *AppService) quoteSnapshot(ctx context.Context, snapshot committedmarket.Snapshot, req Request) (Response, error) {
 	if req.PoolAddress != nil {
-		return s.quoteSinglePoolByAddress(ctx, req, *req.PoolAddress)
+		return s.quoteDirect(ctx, snapshot, req, *req.PoolAddress, nil, nil)
 	}
 	if req.PoolID != nil {
-		return s.quoteSinglePoolByID(ctx, req, *req.PoolID)
+		return s.quoteDirect(ctx, snapshot, req, common.Address{}, req.PoolID, nil)
 	}
 	if req.BalancerPoolID != nil {
-		return s.quoteSingleBalancerPool(ctx, req, *req.BalancerPoolID)
+		return s.quoteDirect(ctx, snapshot, req, common.Address{}, nil, req.BalancerPoolID)
 	}
 	if req.IsExactOutput() {
 		return Response{}, fmt.Errorf("multi-hop exact-output quotes are not supported")
 	}
-	return s.quoteBestRoute(ctx, req)
+	return s.quoteBestRoute(ctx, snapshot, req)
 }
 
 func validateQuoteRequest(req Request) error {
@@ -109,7 +94,6 @@ func validateQuoteRequest(req Request) error {
 	if selectors > 1 {
 		return fmt.Errorf("only one pool selector may be provided")
 	}
-
 	switch req.Mode {
 	case quoteshared.QuoteModeExactInput:
 		if req.AmountIn == nil || req.AmountIn.Sign() <= 0 {
@@ -129,62 +113,126 @@ func isCombinedQuoteToken(address common.Address) bool {
 	return address != (common.Address{}) || asset.IsNativeETH(address)
 }
 
-func (s *AppService) quoteSinglePoolByAddress(ctx context.Context, req Request, poolAddress common.Address) (Response, error) {
-	return s.quoteDirect(ctx, req, DirectPoolSelector{Address: &poolAddress}, poolAddress.Hex())
-}
-
-func (s *AppService) quoteSinglePoolByID(ctx context.Context, req Request, poolID marketuniv4.PoolID) (Response, error) {
-	return s.quoteDirect(ctx, req, DirectPoolSelector{Univ4ID: &poolID}, poolID.String())
-}
-
-func (s *AppService) quoteSingleBalancerPool(ctx context.Context, req Request, poolID marketbalancer.PoolID) (Response, error) {
-	return s.quoteDirect(ctx, req, DirectPoolSelector{BalancerPoolID: &poolID}, poolID.String())
-}
-
-func (s *AppService) quoteDirect(ctx context.Context, req Request, selector DirectPoolSelector, selectorName string) (Response, error) {
-	for _, protocol := range s.protocols {
-		if protocol == nil {
-			continue
-		}
-		response, handled, err := protocol.QuoteDirect(ctx, selector, req, s.quotes)
-		if err != nil {
-			return Response{}, fmt.Errorf("%s direct quote: %w", protocol.Name(), err)
-		}
-		if handled {
-			return response, nil
-		}
+func (s *AppService) quoteDirect(
+	ctx context.Context,
+	snapshot committedmarket.Snapshot,
+	req Request,
+	address common.Address,
+	v4ID *marketuniv4.PoolID,
+	balancerID *marketbalancer.PoolID,
+) (Response, error) {
+	edge, ok := s.findDirectEdge(snapshot.PoolEdges(), address, v4ID, balancerID)
+	if !ok {
+		return Response{}, fmt.Errorf("selected pool is not in committed market")
 	}
-	return Response{}, fmt.Errorf("pool %s not found", selectorName)
-}
-
-func newSinglePoolResponse(req Request, route quoteunified.Route, result quoteshared.QuoteResult) Response {
-	return Response{
-		TokenIn:   req.TokenIn,
-		TokenOut:  req.TokenOut,
-		AmountIn:  cloneBigInt(result.AmountIn),
-		AmountOut: cloneBigInt(result.AmountOut),
-		FeeAmount: cloneBigInt(result.FeeAmount),
-		BestRoute: route,
-		RouteQuotes: []RouteQuote{{
-			Route:     route,
-			AmountIn:  cloneBigInt(result.AmountIn),
-			AmountOut: cloneBigInt(result.AmountOut),
-			FeeAmount: cloneBigInt(result.FeeAmount),
-		}},
-	}
-}
-
-func (s *AppService) quoteBestRoute(ctx context.Context, req Request) (Response, error) {
-	graph, err := s.buildPoolGraph(ctx)
+	route := directRoute(edge, req.TokenIn, req.TokenOut)
+	pools, err := snapshot.LoadRoutePools(ctx, route)
 	if err != nil {
 		return Response{}, err
 	}
+	result, err := s.quoteDirectRoute(pools, route.Hops[0], req)
+	if err != nil {
+		return Response{}, fmt.Errorf("quote selected pool: %w", err)
+	}
+	return newSinglePoolResponse(req, route, result), nil
+}
 
-	routeService := quoteunified.NewRouteService(graph, s.maxHops)
-	routes, err := routeService.FindRoutes(req.TokenIn, req.TokenOut)
+func (s *AppService) findDirectEdge(
+	edges []quoteunified.PoolEdge,
+	address common.Address,
+	v4ID *marketuniv4.PoolID,
+	balancerID *marketbalancer.PoolID,
+) (quoteunified.PoolEdge, bool) {
+	for _, edge := range edges {
+		if !s.allows(edge.Version) {
+			continue
+		}
+		switch edge.Version {
+		case quoteunified.PoolVersionV3:
+			if v4ID == nil && balancerID == nil && edge.PoolV3 == address {
+				return edge, true
+			}
+		case quoteunified.PoolVersionPancakeV3:
+			if v4ID == nil && balancerID == nil && edge.PoolPancakeV3 == address {
+				return edge, true
+			}
+		case quoteunified.PoolVersionQuickSwapV3:
+			if v4ID == nil && balancerID == nil && edge.PoolQuickSwapV3 == address {
+				return edge, true
+			}
+		case quoteunified.PoolVersionV4:
+			if v4ID != nil && edge.PoolV4 == *v4ID {
+				return edge, true
+			}
+		case quoteunified.PoolVersionBalancer:
+			if balancerID != nil && edge.PoolBalancer == *balancerID {
+				return edge, true
+			}
+			if v4ID == nil && balancerID == nil && edge.BalancerAddress == address {
+				return edge, true
+			}
+		}
+	}
+	return quoteunified.PoolEdge{}, false
+}
+
+func directRoute(edge quoteunified.PoolEdge, tokenIn, tokenOut common.Address) quoteunified.Route {
+	switch edge.Version {
+	case quoteunified.PoolVersionV3:
+		return quoteunified.NewDirectV3Route(edge.PoolV3, tokenIn, tokenOut)
+	case quoteunified.PoolVersionPancakeV3:
+		return quoteunified.NewDirectPancakeV3Route(edge.PoolPancakeV3, tokenIn, tokenOut)
+	case quoteunified.PoolVersionQuickSwapV3:
+		return quoteunified.NewDirectQuickSwapV3Route(edge.PoolQuickSwapV3, tokenIn, tokenOut)
+	case quoteunified.PoolVersionV4:
+		return quoteunified.NewDirectV4Route(edge.PoolV4, tokenIn, tokenOut)
+	default:
+		return quoteunified.NewDirectBalancerRoute(edge.PoolBalancer, tokenIn, tokenOut)
+	}
+}
+
+func (s *AppService) quoteDirectRoute(pools quoteunified.RoutePools, hop quoteunified.RouteHop, req Request) (quoteshared.QuoteResult, error) {
+	switch hop.Version {
+	case quoteunified.PoolVersionV3:
+		if req.IsExactInput() {
+			return s.quotes.QuoteExactInputV3(pools.V3[hop.PoolV3], req.TokenIn, req.TokenOut, req.AmountIn)
+		}
+		return s.quotes.QuoteExactOutputV3(pools.V3[hop.PoolV3], req.TokenIn, req.TokenOut, req.AmountOut)
+	case quoteunified.PoolVersionPancakeV3:
+		if req.IsExactInput() {
+			return s.quotes.QuoteExactInputPancakeV3(pools.PancakeV3[hop.PoolPancakeV3], req.TokenIn, req.TokenOut, req.AmountIn)
+		}
+		return s.quotes.QuoteExactOutputPancakeV3(pools.PancakeV3[hop.PoolPancakeV3], req.TokenIn, req.TokenOut, req.AmountOut)
+	case quoteunified.PoolVersionQuickSwapV3:
+		if req.IsExactInput() {
+			return s.quotes.QuoteExactInputQuickSwapV3(pools.QuickSwapV3[hop.PoolQuickSwapV3], req.TokenIn, req.TokenOut, req.AmountIn)
+		}
+		return s.quotes.QuoteExactOutputQuickSwapV3(pools.QuickSwapV3[hop.PoolQuickSwapV3], req.TokenIn, req.TokenOut, req.AmountOut)
+	case quoteunified.PoolVersionV4:
+		if req.IsExactInput() {
+			return s.quotes.QuoteExactInputV4(pools.V4[hop.PoolV4], req.TokenIn, req.TokenOut, req.AmountIn)
+		}
+		return s.quotes.QuoteExactOutputV4(pools.V4[hop.PoolV4], req.TokenIn, req.TokenOut, req.AmountOut)
+	case quoteunified.PoolVersionBalancer:
+		if req.IsExactInput() {
+			return s.quotes.QuoteExactInputBalancer(pools.Balancer[hop.PoolBalancer], req.TokenIn, req.TokenOut, req.AmountIn)
+		}
+		return s.quotes.QuoteExactOutputBalancer(pools.Balancer[hop.PoolBalancer], req.TokenIn, req.TokenOut, req.AmountOut)
+	default:
+		return quoteshared.QuoteResult{}, fmt.Errorf("unsupported pool version %d", hop.Version)
+	}
+}
+
+func (s *AppService) quoteBestRoute(ctx context.Context, snapshot committedmarket.Snapshot, req Request) (Response, error) {
+	edges := s.filteredEdges(snapshot.PoolEdges())
+	if len(edges) == 0 {
+		return Response{}, fmt.Errorf("no pools available for routing")
+	}
+	routes, err := quoteunified.NewRouteService(quoteunified.NewStaticPoolGraph(edges), s.maxHops).FindRoutes(req.TokenIn, req.TokenOut)
 	if err != nil {
 		return Response{}, fmt.Errorf("find routes: %w", err)
 	}
+	routes = s.filteredRoutes(routes)
 	if len(routes) == 0 {
 		return Response{}, fmt.Errorf("no route found from %s to %s", req.TokenIn.Hex(), req.TokenOut.Hex())
 	}
@@ -192,129 +240,79 @@ func (s *AppService) quoteBestRoute(ctx context.Context, req Request) (Response,
 	routeQuotes := make([]RouteQuote, 0, len(routes))
 	var best RouteQuote
 	var bestAmountOut *big.Int
-
 	for _, route := range routes {
-		pools, err := s.loadRoutePools(ctx, route)
+		pools, err := snapshot.LoadRoutePools(ctx, route)
 		if err != nil {
 			return Response{}, err
 		}
-		if err := s.ensureRouteReady(route); err != nil {
-			continue
-		}
-
 		result, err := s.quotes.QuoteRoute(pools, route, req.AmountIn)
 		if err != nil {
 			continue
 		}
-
-		candidate := RouteQuote{
-			Route:     route,
-			AmountIn:  cloneBigInt(result.AmountIn),
-			AmountOut: cloneBigInt(result.AmountOut),
-			FeeAmount: cloneBigInt(result.FeeAmount),
-		}
+		candidate := RouteQuote{Route: route, AmountIn: cloneBigInt(result.AmountIn), AmountOut: cloneBigInt(result.AmountOut), FeeAmount: cloneBigInt(result.FeeAmount)}
 		routeQuotes = append(routeQuotes, candidate)
-
 		if bestAmountOut == nil || candidate.AmountOut.Cmp(bestAmountOut) > 0 {
-			best = candidate
-			bestAmountOut = candidate.AmountOut
+			best, bestAmountOut = candidate, candidate.AmountOut
 		}
 	}
-
 	if bestAmountOut == nil {
 		return Response{}, fmt.Errorf("no quotable route found from %s to %s", req.TokenIn.Hex(), req.TokenOut.Hex())
 	}
-
 	return Response{
-		TokenIn:     req.TokenIn,
-		TokenOut:    req.TokenOut,
-		AmountIn:    cloneBigInt(best.AmountIn),
-		AmountOut:   cloneBigInt(best.AmountOut),
-		FeeAmount:   cloneBigInt(best.FeeAmount),
-		BestRoute:   best.Route,
-		RouteQuotes: routeQuotes,
+		TokenIn: req.TokenIn, TokenOut: req.TokenOut,
+		AmountIn: cloneBigInt(best.AmountIn), AmountOut: cloneBigInt(best.AmountOut), FeeAmount: cloneBigInt(best.FeeAmount),
+		BestRoute: best.Route, RouteQuotes: routeQuotes,
 	}, nil
 }
 
-func (s *AppService) buildPoolGraph(ctx context.Context) (quoteunified.PoolGraph, error) {
-	edges := make([]quoteunified.PoolEdge, 0)
-	for _, protocol := range s.protocols {
-		if protocol == nil {
-			continue
-		}
-		protocolEdges, err := protocol.LoadEdges(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("load %s pool graph edges: %w", protocol.Name(), err)
-		}
-		edges = append(edges, protocolEdges...)
+func (s *AppService) filteredRoutes(routes []quoteunified.Route) []quoteunified.Route {
+	if len(s.allowed) == 0 {
+		return routes
 	}
-
-	if len(edges) == 0 {
-		return nil, fmt.Errorf("no pools available for routing")
-	}
-
-	return quoteunified.NewStaticPoolGraph(edges), nil
-}
-
-func (s *AppService) loadRoutePools(ctx context.Context, route quoteunified.Route) (quoteunified.RoutePools, error) {
-	pools := quoteunified.RoutePools{
-		V3:          make(map[common.Address]*marketuniv3.Pool),
-		PancakeV3:   make(map[common.Address]*marketpancake.Pool),
-		QuickSwapV3: make(map[common.Address]*marketquick.Pool),
-		V4:          make(map[marketuniv4.PoolID]*marketuniv4.Pool),
-		Balancer:    make(map[marketbalancer.PoolID]*marketbalancer.Pool),
-	}
-
-	for _, hop := range route.Hops {
-		if hop.Version == quoteunified.PoolVersionWrapWETH || hop.Version == quoteunified.PoolVersionUnwrapWETH {
-			continue
-		}
-		handled := false
-		for _, protocol := range s.protocols {
-			if protocol == nil {
-				continue
-			}
-			matched, err := protocol.LoadRoutePool(ctx, hop, &pools)
-			if err != nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("load %s route pool: %w", protocol.Name(), err)
-			}
-			if matched {
-				handled = true
+	filtered := make([]quoteunified.Route, 0, len(routes))
+	for _, route := range routes {
+		allowed := true
+		for _, hop := range route.Hops {
+			if !s.allows(hop.Version) {
+				allowed = false
 				break
 			}
 		}
-		if !handled {
-			return quoteunified.RoutePools{}, fmt.Errorf("unsupported pool version %d", hop.Version)
+		if allowed {
+			filtered = append(filtered, route)
 		}
 	}
-
-	return pools, nil
+	return filtered
 }
 
-func (s *AppService) ensureRouteReady(route quoteunified.Route) error {
-	for _, hop := range route.Hops {
-		if hop.Version == quoteunified.PoolVersionWrapWETH || hop.Version == quoteunified.PoolVersionUnwrapWETH {
-			continue
-		}
-		handled := false
-		for _, protocol := range s.protocols {
-			if protocol == nil {
-				continue
-			}
-			matched, err := protocol.CheckRouteHopReady(hop)
-			if err != nil {
-				return fmt.Errorf("%s route readiness: %w", protocol.Name(), err)
-			}
-			if matched {
-				handled = true
-				break
-			}
-		}
-		if !handled {
-			return fmt.Errorf("unsupported pool version %d", hop.Version)
+func (s *AppService) filteredEdges(edges []quoteunified.PoolEdge) []quoteunified.PoolEdge {
+	if len(s.allowed) == 0 {
+		return edges
+	}
+	filtered := make([]quoteunified.PoolEdge, 0, len(edges))
+	for _, edge := range edges {
+		if s.allows(edge.Version) {
+			filtered = append(filtered, edge)
 		}
 	}
-	return nil
+	return filtered
+}
+
+func (s *AppService) allows(version quoteunified.PoolVersion) bool {
+	if len(s.allowed) == 0 {
+		return true
+	}
+	_, ok := s.allowed[version]
+	return ok
+}
+
+func newSinglePoolResponse(req Request, route quoteunified.Route, result quoteshared.QuoteResult) Response {
+	return Response{
+		TokenIn: req.TokenIn, TokenOut: req.TokenOut,
+		AmountIn: cloneBigInt(result.AmountIn), AmountOut: cloneBigInt(result.AmountOut), FeeAmount: cloneBigInt(result.FeeAmount),
+		BestRoute:   route,
+		RouteQuotes: []RouteQuote{{Route: route, AmountIn: cloneBigInt(result.AmountIn), AmountOut: cloneBigInt(result.AmountOut), FeeAmount: cloneBigInt(result.FeeAmount)}},
+	}
 }
 
 func cloneBigInt(v *big.Int) *big.Int {
