@@ -63,6 +63,60 @@ func (r testAddressRegistry) List(context.Context) ([]common.Address, error) {
 func (testAddressRegistry) Add(context.Context, common.Address) error    { return nil }
 func (testAddressRegistry) Remove(context.Context, common.Address) error { return nil }
 
+type recordingPublishObserver struct {
+	publications []Publication
+}
+
+func (o *recordingPublishObserver) AfterMarketPublished(_ context.Context, publication Publication) {
+	o.publications = append(o.publications, publication)
+}
+
+func TestTopologyVersionChangesOnlyWithPublishedPoolGraph(t *testing.T) {
+	poolA := common.HexToAddress("0x0000000000000000000000000000000000000011")
+	poolB := common.HexToAddress("0x0000000000000000000000000000000000000022")
+	token0 := common.HexToAddress("0x0000000000000000000000000000000000000001")
+	token1 := common.HexToAddress("0x0000000000000000000000000000000000000002")
+	source := &testUniv3Repository{pools: map[common.Address]*marketuniv3.Pool{
+		poolA: marketuniv3.NewPool(poolA, token0, token1, 500, 10),
+		poolB: marketuniv3.NewPool(poolB, token0, token1, 3000, 60),
+	}}
+	source.pools[poolA].LastBlockNumber = 10
+	source.pools[poolB].LastBlockNumber = 12
+	registry := &testAddressRegistry{ids: []common.Address{poolA}}
+	observer := &recordingPublishObserver{}
+	view := NewView(Sources{Univ3Pools: source, Univ3Registry: registry})
+	view.SetPublishObservers(observer)
+
+	if err := view.Publish(context.Background(), domainchain.MarketVersion{Number: 10}, Changes{}); err != nil {
+		t.Fatalf("publish initial topology: %v", err)
+	}
+	if got := view.Snapshot().TopologyVersion(); got != 1 {
+		t.Fatalf("initial topology version = %d, want 1", got)
+	}
+
+	source.pools[poolA].LastBlockNumber = 11
+	if err := view.Publish(context.Background(), domainchain.MarketVersion{Number: 11}, Changes{Univ3: []common.Address{poolA}}); err != nil {
+		t.Fatalf("publish state-only update: %v", err)
+	}
+	if got := view.Snapshot().TopologyVersion(); got != 1 {
+		t.Fatalf("state-only topology version = %d, want 1", got)
+	}
+
+	registry.ids = append(registry.ids, poolB)
+	if err := view.Publish(context.Background(), domainchain.MarketVersion{Number: 12}, Changes{Univ3: []common.Address{poolB}}); err != nil {
+		t.Fatalf("publish added pool: %v", err)
+	}
+	if got := view.Snapshot().TopologyVersion(); got != 2 {
+		t.Fatalf("added-pool topology version = %d, want 2", got)
+	}
+	if len(observer.publications) != 3 ||
+		!observer.publications[0].TopologyChanged ||
+		observer.publications[1].TopologyChanged ||
+		!observer.publications[2].TopologyChanged {
+		t.Fatalf("unexpected topology publications: %+v", observer.publications)
+	}
+}
+
 func TestViewKeepsOldSnapshotUntilCompleteBlockCommits(t *testing.T) {
 	poolA := common.HexToAddress("0x0000000000000000000000000000000000000011")
 	poolB := common.HexToAddress("0x0000000000000000000000000000000000000022")

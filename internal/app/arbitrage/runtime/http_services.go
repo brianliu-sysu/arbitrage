@@ -271,13 +271,10 @@ func newOpportunityExecutor(
 		logger = zap.NewNop()
 	}
 	livePlan := livePlanConfigFromRuntime(cfg)
-	encoder := arbitrageapp.NewLiveCalldataEncoder(livePlan, arbitrageapp.NewRepositoryRoutePoolLoader(
-		store.Pools,
-		store.PancakePools,
-		store.QuickSwapPools,
-		store.V4Pools,
-		store.BalancerPools,
-	))
+	encoder := arbitrageapp.NewLiveCalldataEncoder(
+		livePlan,
+		arbitrageapp.NewCommittedMarketRoutePoolLoader(runtime.MarketStore),
+	)
 	builder := arbitrageapp.NewLiveExecutionPlanBuilder(livePlan, encoder)
 	if runtime.Arbitrage != nil {
 		runtime.Arbitrage.RegisterPoolGraphUpdater(builder)

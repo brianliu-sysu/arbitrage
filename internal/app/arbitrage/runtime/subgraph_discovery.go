@@ -55,7 +55,6 @@ func reconcileSubgraphPools[PoolID comparable](r *syncLifecycle, name string, re
 	for _, id := range active {
 		activeSet[id] = struct{}{}
 	}
-	added := 0
 	for _, id := range tracked {
 		if _, ok := activeSet[id]; ok {
 			continue
@@ -65,14 +64,6 @@ func reconcileSubgraphPools[PoolID comparable](r *syncLifecycle, name string, re
 			r.logger.Warn("subgraph pool onboarding failed", zap.String("protocol", name), zap.Any("pool", id), zap.Error(err))
 			continue
 		}
-		added++
 		r.logger.Debug("subgraph pool activated", zap.String("protocol", name), zap.Any("pool", id))
-	}
-	if added > 0 && r.runtime != nil && r.runtime.Arbitrage != nil {
-		if routes, err := r.runtime.Arbitrage.RefreshArbitrageRoutes(r.runCtx); err != nil {
-			r.logger.Warn("refresh arbitrage routes after subgraph update failed", zap.String("protocol", name), zap.Error(err))
-		} else {
-			r.logger.Debug("arbitrage routes refreshed after subgraph update", zap.String("protocol", name), zap.Int("new_pools", added), zap.Int("routes", routes))
-		}
 	}
 }

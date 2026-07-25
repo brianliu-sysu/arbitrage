@@ -37,6 +37,14 @@ func (s *committedSnapshot) Version() domainchain.MarketVersion {
 	return s.state.version
 }
 
+// TopologyVersion changes only when the published pool graph changes.
+func (s *committedSnapshot) TopologyVersion() uint64 {
+	if s == nil {
+		return 0
+	}
+	return s.state.topologyVersion
+}
+
 // PoolEdges returns routing metadata from the same immutable version as pool state.
 func (s *committedSnapshot) PoolEdges() []quoteunified.PoolEdge {
 	if s == nil {

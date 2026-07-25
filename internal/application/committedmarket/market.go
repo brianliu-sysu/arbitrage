@@ -10,6 +10,7 @@ import (
 // Snapshot is one immutable, internally consistent market version.
 type Snapshot interface {
 	Version() domainchain.MarketVersion
+	TopologyVersion() uint64
 	PoolEdges() []quoteunified.PoolEdge
 	LoadRoutePools(context.Context, quoteunified.Route) (quoteunified.RoutePools, error)
 }

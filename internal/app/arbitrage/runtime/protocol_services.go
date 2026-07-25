@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"strings"
 
 	"go.uber.org/zap"
 
@@ -406,11 +407,8 @@ func newMarketStore(store *persistence.Services, protocols *protocolServices, lo
 func newArbitrageServices(
 	cfg config.ChainConfig,
 	logger *zap.Logger,
-	runtimeStore *persistence.Services,
 	durableStore *persistence.Services,
 	chain *chaininfra.Services,
-	resources protocolResources,
-	protocols *protocolServices,
 	marketView *marketstore.Store,
 	contractExecutor *contractapp.AppService,
 ) *arbitrageapp.Services {
@@ -438,55 +436,62 @@ func newArbitrageServices(
 		optimizerMaxAmount = spreadCfg.OptimizerMaxAmount()
 		optimizerIterations = spreadCfg.OptimizerIterations
 	}
-	deps := arbitrageapp.ServiceDeps{
-		Logger:         logger,
-		Pools:          runtimeStore.Pools,
-		PancakePools:   runtimeStore.PancakePools,
-		QuickSwapPools: runtimeStore.QuickSwapPools,
-		V4Pools:        runtimeStore.V4Pools,
-		BalancerPools:  runtimeStore.BalancerPools,
+	executionCfg := executionConfigFromRuntime(cfg)
+	livePlan := livePlanConfigFromRuntime(cfg)
+	coinbasePaymentBPS := uint16(0)
+	if strings.TrimSpace(executionCfg.FlashbotsRPCURL) != "" && executionCfg.FlashbotsPaymentBPS > 0 {
+		coinbasePaymentBPS = uint16(executionCfg.FlashbotsPaymentBPS)
+	}
+	publishing := arbitrageapp.PublishingDeps{Repository: durableStore.Opportunities}
+	if executionCfg.Enabled {
+		encoder := arbitrageapp.NewLiveCalldataEncoder(
+			livePlan,
+			arbitrageapp.NewCommittedMarketRoutePoolLoader(marketView),
+		)
+		builder := arbitrageapp.NewLiveExecutionPlanBuilder(livePlan, encoder)
+		publishing.Publishers = append(publishing.Publishers,
+			arbitrageapp.NewExecutionPublisher(
+				executionCfg,
+				builder,
+				contractExecutor,
+				durableStore.Opportunities,
+				chain.Client,
+				logger,
+			),
+		)
+		publishing.PoolGraphUpdaters = append(publishing.PoolGraphUpdaters, builder)
+	}
+
+	return arbitrageapp.NewServices(arbitrageapp.ServiceDeps{
+		Logger: logger,
 		Quotes: quoteunified.NewQuoteService(
 			quoteuniv3domain.NewQuoteService(),
 			quotepancakev3domain.NewQuoteService(),
 			quoteuniv4domain.NewQuoteService(),
 			quotebalancerdomain.NewQuoteService(),
 		),
-		Market:                marketView,
-		Repository:            durableStore.Opportunities,
-		Executor:              contractExecutor,
-		ExecutionHead:         chain.Client,
-		Execution:             executionConfigFromRuntime(cfg),
-		LivePlan:              livePlanConfigFromRuntime(cfg),
-		TriangleEnabled:       triangleEnabled,
-		SpreadEnabled:         spreadEnabled,
-		ConfiguredStartTokens: configuredStartTokens,
-		SpreadStartTokens:     spreadStartTokens,
-		MinNetProfitWei:       minNetProfit,
-		SpreadMinNetProfitWei: spreadMinNetProfit,
-		FlashLoanOptions: []domainarb.FlashLoanOption{
-			{Protocol: domainarb.FlashLoanProtocolBalancer, FeePPM: cfg.Arbitrage.FlashLoan.BalancerFee()},
-			{Protocol: domainarb.FlashLoanProtocolUniv4, FeePPM: cfg.Arbitrage.FlashLoan.Univ4Fee()},
+		Market: marketView,
+		Routing: arbitrageapp.RoutingConfig{
+			TriangleEnabled:       triangleEnabled,
+			SpreadEnabled:         spreadEnabled,
+			ConfiguredStartTokens: configuredStartTokens,
+			SpreadStartTokens:     spreadStartTokens,
+			MinNetProfitWei:       minNetProfit,
+			SpreadMinNetProfitWei: spreadMinNetProfit,
 		},
-		MinAmount:           optimizerMinAmount,
-		MaxAmount:           optimizerMaxAmount,
-		OptimizerIterations: optimizerIterations,
-	}
-	if resources.univ3 != nil {
-		deps.Registry = resources.univ3.registry
-	}
-	if resources.pancakeV3 != nil {
-		deps.PancakeRegistry = resources.pancakeV3.registry.AsPoolRegistry()
-	}
-	if resources.quickSwapV3 != nil {
-		deps.QuickSwapRegistry = resources.quickSwapV3.registry.AsPoolRegistry()
-	}
-	if resources.univ4 != nil {
-		deps.V4Registry = resources.univ4.registry.AsPoolRegistry()
-	}
-	if resources.balancer != nil {
-		deps.BalancerRegistry = resources.balancer.registry.AsPoolRegistry()
-	}
-	return arbitrageapp.NewServices(deps)
+		Opportunity: arbitrageapp.OpportunityConfig{
+			MinAmount:           optimizerMinAmount,
+			MaxAmount:           optimizerMaxAmount,
+			OptimizerIterations: optimizerIterations,
+			WrappedNative:       livePlan.WETH,
+			CoinbasePaymentBPS:  coinbasePaymentBPS,
+			FlashLoanOptions: []domainarb.FlashLoanOption{
+				{Protocol: domainarb.FlashLoanProtocolBalancer, FeePPM: cfg.Arbitrage.FlashLoan.BalancerFee()},
+				{Protocol: domainarb.FlashLoanProtocolUniv4, FeePPM: cfg.Arbitrage.FlashLoan.Univ4Fee()},
+			},
+		},
+		Publishing: publishing,
+	})
 }
 
 func enabledMarketProtocols(cfg config.ChainConfig) []marketpipeline.Protocol {

@@ -10,12 +10,8 @@ import (
 	"github.com/brianliu-sysu/uniswapv3/internal/application/headpipeline"
 	"github.com/brianliu-sysu/uniswapv3/internal/application/marketpipeline"
 	"github.com/brianliu-sysu/uniswapv3/internal/application/marketstore"
-	poolmanager "github.com/brianliu-sysu/uniswapv3/internal/application/poolmanager"
 	"github.com/brianliu-sysu/uniswapv3/internal/config"
-	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
-	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	chaininfra "github.com/brianliu-sysu/uniswapv3/internal/infrastructure/blockchain"
-	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap"
 )
 
@@ -26,7 +22,6 @@ type chainRuntime struct {
 	Arbitrage       *arbitrageapp.Services
 	MarketStore     *marketstore.Store
 	headCoordinator *headpipeline.Coordinator
-	PoolManagers    runtimePoolManagers
 	persistenceWG   sync.WaitGroup
 }
 
@@ -55,14 +50,6 @@ func (r *chainResources) Close() {
 	}
 }
 
-type runtimePoolManagers struct {
-	V3          *poolmanager.PoolManager[common.Address]
-	PancakeV3   *poolmanager.PoolManager[common.Address]
-	QuickSwapV3 *poolmanager.PoolManager[common.Address]
-	V4          *poolmanager.PoolManager[marketv4.PoolID]
-	Balancer    *poolmanager.PoolManager[marketbalancer.PoolID]
-}
-
 type runtimeSet struct {
 	chains []*chainRuntime
 }
@@ -83,11 +70,8 @@ func newChainRuntime(
 	arbitrageServices := newArbitrageServices(
 		cfg,
 		logger,
-		resources.stores.runtime,
 		resources.stores.durable,
 		resources.blockchain,
-		resources.protocols,
-		protocols,
 		marketView,
 		resources.contractExecutor,
 	)
@@ -108,36 +92,9 @@ func newChainRuntime(
 		Arbitrage:       arbitrageServices,
 		MarketStore:     marketView,
 		headCoordinator: headCoordinator,
-		PoolManagers:    newRuntimePoolManagers(protocols, arbitrageServices),
 	}
-	configureAsyncMarketPersistence(runtime, logger.Named("market-persistence"))
+	configureMarketPublishObservers(runtime, logger)
 	return runtime, nil
-}
-
-func newRuntimePoolManagers(
-	protocols *protocolServices,
-	arbitrageServices *arbitrageapp.Services,
-) runtimePoolManagers {
-	if protocols == nil || arbitrageServices == nil {
-		return runtimePoolManagers{}
-	}
-	managers := runtimePoolManagers{}
-	if services := protocols.univ3Services(); services != nil {
-		managers.V3 = poolmanager.NewPoolManager[common.Address](services.Lifecycle, arbitrageServices)
-	}
-	if services := protocols.pancakeServices(); services != nil {
-		managers.PancakeV3 = poolmanager.NewPoolManager[common.Address](services.Lifecycle, arbitrageServices)
-	}
-	if services := protocols.quickSwapServices(); services != nil {
-		managers.QuickSwapV3 = poolmanager.NewPoolManager[common.Address](services.Lifecycle, arbitrageServices)
-	}
-	if services := protocols.univ4Services(); services != nil {
-		managers.V4 = poolmanager.NewPoolManager[marketv4.PoolID](services.Lifecycle, arbitrageServices)
-	}
-	if services := protocols.balancerServices(); services != nil {
-		managers.Balancer = poolmanager.NewPoolManager[marketbalancer.PoolID](services.Lifecycle, arbitrageServices)
-	}
-	return managers
 }
 
 func newRuntimeSet(

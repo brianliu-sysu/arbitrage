@@ -27,6 +27,10 @@ func (s *fixedMarketSnapshot) Version() domainchain.MarketVersion {
 	return s.version
 }
 
+func (s *fixedMarketSnapshot) TopologyVersion() uint64 {
+	return 1
+}
+
 func (s *fixedMarketSnapshot) PoolEdges() []quoteunified.PoolEdge {
 	return nil
 }

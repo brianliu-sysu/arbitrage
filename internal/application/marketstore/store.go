@@ -41,35 +41,44 @@ func (ids listedIDs[ID]) List(context.Context) ([]ID, error) { return ids, nil }
 // Changes identifies the pools that must be refreshed for one market version.
 type Changes = marketchange.Changes
 
-// PublishListener observes a market version after its snapshot becomes visible.
-type PublishListener interface {
-	AfterMarketPublished(domainchain.MarketVersion, Changes)
+// Publication describes a market snapshot after it becomes visible.
+type Publication struct {
+	Version         domainchain.MarketVersion
+	TopologyVersion uint64
+	TopologyChanged bool
+	Changes         Changes
+}
+
+// PublishObserver observes a market snapshot after it becomes visible.
+type PublishObserver interface {
+	AfterMarketPublished(context.Context, Publication)
 }
 
 type snapshot struct {
-	version   domainchain.MarketVersion
-	univ3     map[common.Address]*marketuniv3.Pool
-	pancake   map[common.Address]*marketpancake.Pool
-	quickSwap map[common.Address]*marketquick.Pool
-	univ4     map[marketuniv4.PoolID]*marketuniv4.Pool
-	balancer  map[marketbalancer.PoolID]*marketbalancer.Pool
+	version         domainchain.MarketVersion
+	topologyVersion uint64
+	univ3           map[common.Address]*marketuniv3.Pool
+	pancake         map[common.Address]*marketpancake.Pool
+	quickSwap       map[common.Address]*marketquick.Pool
+	univ4           map[marketuniv4.PoolID]*marketuniv4.Pool
+	balancer        map[marketbalancer.PoolID]*marketbalancer.Pool
 }
 
 // View atomically publishes complete market snapshots for quote readers.
 type View struct {
-	mu       sync.RWMutex
-	sources  Sources
-	active   snapshot
-	logger   *zap.Logger
-	listener PublishListener
+	mu        sync.RWMutex
+	sources   Sources
+	active    snapshot
+	logger    *zap.Logger
+	observers []PublishObserver
 }
 
-// SetPublishListener configures work that starts after the snapshot is visible.
-func (v *View) SetPublishListener(listener PublishListener) {
+// SetPublishObservers configures work that starts after the snapshot is visible.
+func (v *View) SetPublishObservers(observers ...PublishObserver) {
 	if v == nil {
 		return
 	}
-	v.listener = listener
+	v.observers = append([]PublishObserver(nil), observers...)
 }
 
 func NewView(sources Sources) *View {

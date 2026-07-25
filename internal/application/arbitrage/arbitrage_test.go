@@ -8,7 +8,9 @@ import (
 	"time"
 
 	arbitrageapp "github.com/brianliu-sysu/uniswapv3/internal/application/arbitrage"
+	"github.com/brianliu-sysu/uniswapv3/internal/application/committedmarket"
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
+	domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	marketuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
@@ -19,6 +21,34 @@ import (
 	quoteuniv4domain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/univ4"
 	"github.com/ethereum/go-ethereum/common"
 )
+
+type graphMarketReader struct {
+	edges []quoteunified.PoolEdge
+}
+
+func (r *graphMarketReader) Snapshot() committedmarket.Snapshot {
+	return graphMarketSnapshot{edges: append([]quoteunified.PoolEdge(nil), r.edges...)}
+}
+
+type graphMarketSnapshot struct {
+	edges []quoteunified.PoolEdge
+}
+
+func (s graphMarketSnapshot) Version() domainchain.MarketVersion {
+	return domainchain.MarketVersion{Number: 1}
+}
+
+func (s graphMarketSnapshot) TopologyVersion() uint64 {
+	return 1
+}
+
+func (s graphMarketSnapshot) PoolEdges() []quoteunified.PoolEdge {
+	return append([]quoteunified.PoolEdge(nil), s.edges...)
+}
+
+func (s graphMarketSnapshot) LoadRoutePools(context.Context, quoteunified.Route) (quoteunified.RoutePools, error) {
+	return quoteunified.RoutePools{}, nil
+}
 
 type memoryPoolRepo struct {
 	pools map[common.Address]*marketuniv3.Pool
@@ -379,7 +409,7 @@ func TestScanServiceFindsAffectedQuickSwapRoutes(t *testing.T) {
 	}
 }
 
-func TestRefreshTriangleRoutesRebuildsGraph(t *testing.T) {
+func TestRefreshArbitrageRoutesRebuildsTriangleGraph(t *testing.T) {
 	tokenA := testToken(2)
 	tokenB := testToken(3)
 	tokenC := testToken(4)
@@ -387,36 +417,27 @@ func TestRefreshTriangleRoutesRebuildsGraph(t *testing.T) {
 	poolBC := testToken(11)
 	poolCA := testToken(12)
 
-	repo := newMemoryPoolRepo()
-	for _, spec := range []struct {
-		address, token0, token1 common.Address
-	}{
-		{poolAB, tokenA, tokenB},
-		{poolBC, tokenB, tokenC},
-		{poolCA, tokenC, tokenA},
-	} {
-		pool := setupQuotedPool(spec.address, spec.token0, spec.token1, 100_000_000_000_000_000)
-		if err := repo.Save(context.Background(), pool); err != nil {
-			t.Fatalf("save pool: %v", err)
-		}
-	}
-
-	registry := &staticPoolRegistry{}
+	marketReader := &graphMarketReader{}
 	services := arbitrageapp.NewServices(arbitrageapp.ServiceDeps{
-		Pools:                 repo,
-		Registry:              registry,
-		Quotes:                unifiedQuotes(),
-		TriangleEnabled:       true,
-		ConfiguredStartTokens: []common.Address{tokenA},
-		MinNetProfitWei:       big.NewInt(1),
+		Market: marketReader,
+		Quotes: unifiedQuotes(),
+		Routing: arbitrageapp.RoutingConfig{
+			TriangleEnabled:       true,
+			ConfiguredStartTokens: []common.Address{tokenA},
+			MinNetProfitWei:       big.NewInt(1),
+		},
 	})
 
 	if routes := len(services.Scan.Routes()); routes != 0 {
 		t.Fatalf("expected no routes before pools are registered, got %d", routes)
 	}
 
-	registry.addresses = []common.Address{poolAB, poolBC, poolCA}
-	routes, err := services.RefreshTriangleRoutes(context.Background())
+	marketReader.edges = []quoteunified.PoolEdge{
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolAB, Token0: tokenA, Token1: tokenB},
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolBC, Token0: tokenB, Token1: tokenC},
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolCA, Token0: tokenC, Token1: tokenA},
+	}
+	routes, err := services.RefreshArbitrageRoutes(context.Background())
 	if err != nil {
 		t.Fatalf("refresh triangle routes: %v", err)
 	}
@@ -427,7 +448,7 @@ func TestRefreshTriangleRoutesRebuildsGraph(t *testing.T) {
 		t.Fatalf("expected scan service to track 6 routes, got %d", len(services.Scan.Routes()))
 	}
 
-	routes, err = services.RefreshTriangleRoutes(context.Background())
+	routes, err = services.RefreshArbitrageRoutes(context.Background())
 	if err != nil {
 		t.Fatalf("refresh triangle routes again: %v", err)
 	}
@@ -439,7 +460,7 @@ func TestRefreshTriangleRoutesRebuildsGraph(t *testing.T) {
 	}
 }
 
-func TestRefreshTriangleRoutesAddsAutoStartTokens(t *testing.T) {
+func TestRefreshArbitrageRoutesAddsAutoStartTokens(t *testing.T) {
 	tokenA := testToken(2)
 	tokenB := testToken(3)
 	tokenC := testToken(4)
@@ -449,33 +470,22 @@ func TestRefreshTriangleRoutesAddsAutoStartTokens(t *testing.T) {
 	poolCA := testToken(12)
 	poolAD := testToken(13)
 
-	repo := newMemoryPoolRepo()
-	for _, spec := range []struct {
-		address, token0, token1 common.Address
-	}{
-		{poolAB, tokenA, tokenB},
-		{poolBC, tokenB, tokenC},
-		{poolCA, tokenC, tokenA},
-		{poolAD, tokenA, tokenD},
-	} {
-		pool := setupQuotedPool(spec.address, spec.token0, spec.token1, 100_000_000_000_000_000)
-		if err := repo.Save(context.Background(), pool); err != nil {
-			t.Fatalf("save pool: %v", err)
-		}
-	}
-
-	registry := &staticPoolRegistry{
-		addresses: []common.Address{poolAB, poolBC, poolCA, poolAD},
-	}
+	marketReader := &graphMarketReader{edges: []quoteunified.PoolEdge{
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolAB, Token0: tokenA, Token1: tokenB},
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolBC, Token0: tokenB, Token1: tokenC},
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolCA, Token0: tokenC, Token1: tokenA},
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolAD, Token0: tokenA, Token1: tokenD},
+	}}
 	services := arbitrageapp.NewServices(arbitrageapp.ServiceDeps{
-		Pools:           repo,
-		Registry:        registry,
-		Quotes:          unifiedQuotes(),
-		TriangleEnabled: true,
-		MinNetProfitWei: big.NewInt(1),
+		Market: marketReader,
+		Quotes: unifiedQuotes(),
+		Routing: arbitrageapp.RoutingConfig{
+			TriangleEnabled: true,
+			MinNetProfitWei: big.NewInt(1),
+		},
 	})
 
-	if _, err := services.RefreshTriangleRoutes(context.Background()); err != nil {
+	if _, err := services.RefreshArbitrageRoutes(context.Background()); err != nil {
 		t.Fatalf("refresh triangle routes: %v", err)
 	}
 
@@ -487,17 +497,6 @@ func TestRefreshTriangleRoutesAddsAutoStartTokens(t *testing.T) {
 		t.Fatalf("expected tokenA to rank first, got %s", startTokens[0].Hex())
 	}
 }
-
-type staticPoolRegistry struct {
-	addresses []common.Address
-}
-
-func (r *staticPoolRegistry) List(context.Context) ([]common.Address, error) {
-	return append([]common.Address(nil), r.addresses...), nil
-}
-
-func (r *staticPoolRegistry) Add(context.Context, common.Address) error    { return nil }
-func (r *staticPoolRegistry) Remove(context.Context, common.Address) error { return nil }
 
 func TestScanServiceRegistersSpreadRoutes(t *testing.T) {
 	tokenA := testToken(2)
@@ -528,27 +527,18 @@ func TestRefreshSpreadRoutesRebuildsGraph(t *testing.T) {
 	poolAB1 := testToken(10)
 	poolAB2 := testToken(11)
 
-	repo := newMemoryPoolRepo()
-	for _, spec := range []struct {
-		address, token0, token1 common.Address
-	}{
-		{poolAB1, tokenA, tokenB},
-		{poolAB2, tokenA, tokenB},
-	} {
-		pool := setupQuotedPool(spec.address, spec.token0, spec.token1, 100_000_000_000_000_000)
-		if err := repo.Save(context.Background(), pool); err != nil {
-			t.Fatalf("save pool: %v", err)
-		}
-	}
-
-	registry := &staticPoolRegistry{addresses: []common.Address{poolAB1, poolAB2}}
+	marketReader := &graphMarketReader{edges: []quoteunified.PoolEdge{
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolAB1, Token0: tokenA, Token1: tokenB},
+		{Version: quoteunified.PoolVersionV3, PoolV3: poolAB2, Token0: tokenA, Token1: tokenB},
+	}}
 	services := arbitrageapp.NewServices(arbitrageapp.ServiceDeps{
-		Pools:             repo,
-		Registry:          registry,
-		Quotes:            unifiedQuotes(),
-		SpreadEnabled:     true,
-		SpreadStartTokens: []common.Address{tokenA},
-		MinNetProfitWei:   big.NewInt(1),
+		Market: marketReader,
+		Quotes: unifiedQuotes(),
+		Routing: arbitrageapp.RoutingConfig{
+			SpreadEnabled:     true,
+			SpreadStartTokens: []common.Address{tokenA},
+			MinNetProfitWei:   big.NewInt(1),
+		},
 	})
 
 	routes, err := services.RefreshArbitrageRoutes(context.Background())
@@ -564,21 +554,20 @@ func TestRefreshArbitrageRoutesUpdatesRegisteredPoolGraphUpdater(t *testing.T) {
 	tokenA := testToken(2)
 	tokenB := testToken(3)
 	poolAddress := testToken(10)
-	repo := newMemoryPoolRepo()
-	registry := &staticPoolRegistry{}
+	marketReader := &graphMarketReader{}
 	services := arbitrageapp.NewServices(arbitrageapp.ServiceDeps{
-		Pools:    repo,
-		Registry: registry,
-		Quotes:   unifiedQuotes(),
+		Market: marketReader,
+		Quotes: unifiedQuotes(),
 	})
 	updater := &recordingPoolGraphUpdater{}
 	services.RegisterPoolGraphUpdater(updater)
 
-	pool := setupQuotedPool(poolAddress, tokenA, tokenB, 100_000_000_000_000_000)
-	if err := repo.Save(context.Background(), pool); err != nil {
-		t.Fatalf("save pool: %v", err)
-	}
-	registry.addresses = []common.Address{poolAddress}
+	marketReader.edges = []quoteunified.PoolEdge{{
+		Version: quoteunified.PoolVersionV3,
+		PoolV3:  poolAddress,
+		Token0:  tokenA,
+		Token1:  tokenB,
+	}}
 
 	if _, err := services.RefreshArbitrageRoutes(context.Background()); err != nil {
 		t.Fatalf("refresh routes: %v", err)

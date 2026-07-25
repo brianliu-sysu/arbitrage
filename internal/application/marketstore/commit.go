@@ -9,16 +9,18 @@ import (
 	domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
+	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap"
 )
 
 type commitPlan struct {
-	version      domainchain.MarketVersion
-	current      snapshot
-	next         snapshot
-	changes      Changes
-	fullRegistry bool
+	version         domainchain.MarketVersion
+	current         snapshot
+	next            snapshot
+	changes         Changes
+	fullRegistry    bool
+	topologyChanged bool
 }
 
 type commitRegistries struct {
@@ -47,11 +49,20 @@ func (v *View) commit(ctx context.Context, version domainchain.MarketVersion, ch
 	if err := v.buildSnapshot(ctx, &plan); err != nil {
 		return err
 	}
+	plan.updateTopologyVersion()
 
 	v.publishSnapshot(plan.next)
-	v.notifyPublished(plan)
+	v.notifyPublished(ctx, plan)
 	v.logCommitCompleted(plan, started)
 	return nil
+}
+
+func (p *commitPlan) updateTopologyVersion() {
+	p.topologyChanged = !sameTopology(p.current, p.next)
+	p.next.topologyVersion = p.current.topologyVersion
+	if p.topologyChanged {
+		p.next.topologyVersion++
+	}
 }
 
 func validateMarketVersion(version domainchain.MarketVersion) error {
@@ -152,15 +163,43 @@ func (v *View) publishSnapshot(next snapshot) {
 	v.mu.Unlock()
 }
 
-func (v *View) notifyPublished(plan commitPlan) {
-	if v.listener == nil {
+func (v *View) notifyPublished(ctx context.Context, plan commitPlan) {
+	if len(v.observers) == 0 {
 		return
 	}
 	changes := plan.changes
 	if plan.fullRegistry {
 		changes = allSnapshotChanges(plan.next)
 	}
-	v.listener.AfterMarketPublished(plan.version, changes)
+	publication := Publication{
+		Version:         plan.version,
+		TopologyVersion: plan.next.topologyVersion,
+		TopologyChanged: plan.topologyChanged,
+		Changes:         changes,
+	}
+	for _, observer := range v.observers {
+		if observer != nil {
+			observer.AfterMarketPublished(ctx, publication)
+		}
+	}
+}
+
+func sameTopology(left, right snapshot) bool {
+	leftEdges := (&committedSnapshot{state: left}).PoolEdges()
+	rightEdges := (&committedSnapshot{state: right}).PoolEdges()
+	if len(leftEdges) != len(rightEdges) {
+		return false
+	}
+	rightSet := make(map[quoteunified.PoolEdge]struct{}, len(rightEdges))
+	for _, edge := range rightEdges {
+		rightSet[edge] = struct{}{}
+	}
+	for _, edge := range leftEdges {
+		if _, ok := rightSet[edge]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func allSnapshotChanges(value snapshot) Changes {

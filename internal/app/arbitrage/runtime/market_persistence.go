@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/brianliu-sysu/uniswapv3/internal/application/marketstore"
-	domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	"github.com/brianliu-sysu/uniswapv3/internal/infrastructure/persistence"
 	"go.uber.org/zap"
 )
@@ -36,33 +35,27 @@ func persistChangedPools[ID comparable, Pool any](ctx context.Context, ids []ID,
 	return nil
 }
 
-func configureAsyncMarketPersistence(runtime *chainRuntime, logger *zap.Logger) {
-	if runtime == nil || runtime.resources == nil || runtime.MarketStore == nil || runtime.resources.stores == nil || !runtime.resources.stores.hasSeparateRuntime() {
-		return
-	}
-	runtime.MarketStore.SetPublishListener(&marketPersistenceListener{runtime: runtime, logger: logger})
-}
-
-type marketPersistenceListener struct {
+type marketPersistenceObserver struct {
 	runtime *chainRuntime
 	logger  *zap.Logger
 }
 
-func (l *marketPersistenceListener) AfterMarketPublished(
-	version domainchain.MarketVersion,
-	changes marketstore.Changes,
+func (o *marketPersistenceObserver) AfterMarketPublished(
+	_ context.Context,
+	publication marketstore.Publication,
 ) {
-	startSafeGoroutine(&l.runtime.persistenceWG, func(recovered any) {
-		l.logger.Error("market persistence panicked", zap.Uint64("block", version.Number), zap.Any("panic", recovered), zap.Stack("stack"))
+	version := publication.Version
+	startSafeGoroutine(&o.runtime.persistenceWG, func(recovered any) {
+		o.logger.Error("market persistence panicked", zap.Uint64("block", version.Number), zap.Any("panic", recovered), zap.Stack("stack"))
 	}, func() {
-		baseCtx := l.runtime.resources.persistenceCtx
+		baseCtx := o.runtime.resources.persistenceCtx
 		if baseCtx == nil {
 			baseCtx = context.Background()
 		}
 		persistCtx, cancel := context.WithTimeout(baseCtx, marketPersistenceTimeout)
 		defer cancel()
-		if err := persistMarketChanges(persistCtx, l.runtime.resources.stores.runtime, l.runtime.resources.stores.durable, changes); err != nil {
-			l.logger.Error("persist market snapshot failed", zap.Uint64("block", version.Number), zap.Error(err))
+		if err := persistMarketChanges(persistCtx, o.runtime.resources.stores.runtime, o.runtime.resources.stores.durable, publication.Changes); err != nil {
+			o.logger.Error("persist market snapshot failed", zap.Uint64("block", version.Number), zap.Error(err))
 		}
 	})
 }

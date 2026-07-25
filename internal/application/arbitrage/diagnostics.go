@@ -2,9 +2,7 @@ package arbitrageapp
 
 import (
 	"context"
-	"fmt"
 
-	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	"go.uber.org/zap"
 )
 
@@ -54,17 +52,12 @@ func (s *Services) LogDiagnostics(ctx context.Context, logger *zap.Logger, event
 }
 
 func (s *Services) countGraphEdges(ctx context.Context) (int, error) {
-	graph, err := BuildUnifiedPoolGraph(
-		ctx,
-		poolEdgeSources(routeRefreshDepsToServiceDeps(s.routeDeps))...,
-	)
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	graph, err := loadPoolGraph(s.market)
 	if err != nil {
 		return 0, err
 	}
-	if edgeGraph, ok := graph.(interface {
-		Edges() []quoteunified.PoolEdge
-	}); ok {
-		return len(edgeGraph.Edges()), nil
-	}
-	return 0, fmt.Errorf("pool graph does not expose edges")
+	return len(graph.Edges()), nil
 }

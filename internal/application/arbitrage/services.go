@@ -5,36 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"strings"
 	"sync"
 
 	"github.com/brianliu-sysu/uniswapv3/internal/application/committedmarket"
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
-	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
-	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
-	marketquick "github.com/brianliu-sysu/uniswapv3/internal/domain/market/quickswapv3"
-	marketuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
-	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap"
 )
 
-// ServiceDeps contains dependencies for arbitrage application services.
-type ServiceDeps struct {
-	Logger                *zap.Logger
-	Pools                 marketuniv3.PoolRepository
-	PancakePools          marketpancake.PoolRepository
-	QuickSwapPools        marketquick.PoolRepository
-	V4Pools               marketuniv4.PoolRepository
-	BalancerPools         marketbalancer.PoolRepository
-	Registry              marketuniv3.PoolRegistry
-	PancakeRegistry       marketpancake.PoolRegistry
-	QuickSwapRegistry     marketquick.PoolRegistry
-	V4Registry            marketuniv4.PoolRegistry
-	BalancerRegistry      marketbalancer.PoolRegistry
-	Quotes                *quoteunified.QuoteService
-	Gas                   domainarb.GasEstimator
+var ErrNoPoolsAvailable = errors.New("no pools available for routing")
+
+type RoutingConfig struct {
 	Strategies            []domainarb.Strategy
 	TriangleEnabled       bool
 	SpreadEnabled         bool
@@ -42,32 +24,33 @@ type ServiceDeps struct {
 	SpreadStartTokens     []common.Address
 	MinNetProfitWei       *big.Int
 	SpreadMinNetProfitWei *big.Int
-	Market                committedmarket.Reader
-	Repository            domainarb.OpportunityRepository
-	Executor              ContractExecutor
-	ExecutionHead         ExecutionHeadReader
-	ExecutionBuilder      ExecutionPlanBuilder
-	Execution             ExecutionConfig
-	LivePlan              LivePlanConfig
-	FlashLoanOptions      []domainarb.FlashLoanOption
-	MinAmount             *big.Int
-	MaxAmount             *big.Int
-	OptimizerIterations   int
-	Routes                []domainarb.RouteRef
-	PoolGraph             quoteunified.PoolGraph
+	InitialRoutes         []domainarb.RouteRef
 }
 
-type routeRefreshDeps struct {
-	Registry          marketuniv3.PoolRegistry
-	Pools             marketuniv3.PoolRepository
-	PancakeRegistry   marketpancake.PoolRegistry
-	PancakePools      marketpancake.PoolRepository
-	QuickSwapRegistry marketquick.PoolRegistry
-	QuickSwapPools    marketquick.PoolRepository
-	V4Registry        marketuniv4.PoolRegistry
-	V4Pools           marketuniv4.PoolRepository
-	BalancerRegistry  marketbalancer.PoolRegistry
-	BalancerPools     marketbalancer.PoolRepository
+type OpportunityConfig struct {
+	MinAmount           *big.Int
+	MaxAmount           *big.Int
+	OptimizerIterations int
+	FlashLoanOptions    []domainarb.FlashLoanOption
+	WrappedNative       common.Address
+	CoinbasePaymentBPS  uint16
+}
+
+type PublishingDeps struct {
+	Repository        domainarb.OpportunityRepository
+	Publishers        []OpportunityPublisher
+	PoolGraphUpdaters []PoolGraphUpdater
+}
+
+// ServiceDeps contains the cohesive inputs required by arbitrage orchestration.
+type ServiceDeps struct {
+	Logger      *zap.Logger
+	Market      committedmarket.Reader
+	Quotes      *quoteunified.QuoteService
+	Gas         domainarb.GasEstimator
+	Routing     RoutingConfig
+	Opportunity OpportunityConfig
+	Publishing  PublishingDeps
 }
 
 // PoolGraphUpdater receives the latest routing graph after pool synchronization.
@@ -83,7 +66,7 @@ type Services struct {
 
 	routeMu               sync.Mutex
 	mu                    sync.RWMutex
-	routeDeps             routeRefreshDeps
+	market                committedmarket.Reader
 	configuredStartTokens []common.Address
 	spreadStartTokens     []common.Address
 	minNetProfitWei       *big.Int
@@ -98,11 +81,11 @@ type Services struct {
 }
 
 func NewServices(deps ServiceDeps) *Services {
-	minAmount := deps.MinAmount
+	minAmount := deps.Opportunity.MinAmount
 	if minAmount == nil {
 		minAmount = big.NewInt(1_000_000)
 	}
-	maxAmount := deps.MaxAmount
+	maxAmount := deps.Opportunity.MaxAmount
 	if maxAmount == nil {
 		maxAmount = big.NewInt(100_000_000_000_000)
 	}
@@ -112,13 +95,13 @@ func NewServices(deps ServiceDeps) *Services {
 		gas = domainarb.NewStaticGasEstimator(100_000, 80_000, big.NewInt(10))
 	}
 
-	configuredStartTokens := append([]common.Address(nil), deps.ConfiguredStartTokens...)
-	spreadStartTokens := append([]common.Address(nil), deps.SpreadStartTokens...)
-	minNetProfitWei := deps.MinNetProfitWei
+	configuredStartTokens := append([]common.Address(nil), deps.Routing.ConfiguredStartTokens...)
+	spreadStartTokens := append([]common.Address(nil), deps.Routing.SpreadStartTokens...)
+	minNetProfitWei := deps.Routing.MinNetProfitWei
 	if minNetProfitWei == nil {
 		minNetProfitWei = big.NewInt(1)
 	}
-	spreadMinNetProfitWei := deps.SpreadMinNetProfitWei
+	spreadMinNetProfitWei := deps.Routing.SpreadMinNetProfitWei
 	if spreadMinNetProfitWei == nil {
 		spreadMinNetProfitWei = minNetProfitWei
 	}
@@ -128,42 +111,31 @@ func NewServices(deps ServiceDeps) *Services {
 		logger = zap.NewNop()
 	}
 
-	strategies := buildArbitrageStrategies(deps, configuredStartTokens, spreadStartTokens, minNetProfitWei, spreadMinNetProfitWei)
+	var poolGraph quoteunified.PoolGraph
+	graph, graphErr := loadPoolGraph(deps.Market)
+	if graphErr == nil {
+		poolGraph = graph
+	} else {
+		logger.Debug("initial arbitrage pool graph deferred until pool bootstrap")
+	}
+	strategies := buildArbitrageStrategies(
+		deps.Routing,
+		poolGraph,
+		configuredStartTokens,
+		spreadStartTokens,
+		minNetProfitWei,
+		spreadMinNetProfitWei,
+	)
 
 	scan := NewScanService(domainarb.NewDependencyGraph())
-	scan.RegisterRoutes(deps.Routes)
-	var poolGraph quoteunified.PoolGraph
-	if graph, err := loadPoolGraph(context.Background(), deps); err == nil {
-		poolGraph = graph
-		registerMonitoredRoutes(scan, strategies, graph)
-	} else if errors.Is(err, ErrNoPoolsAvailable) {
-		logger.Debug("initial arbitrage pool graph deferred until pool bootstrap")
-	} else {
-		logger.Error("build initial arbitrage pool graph failed", zap.Error(err))
-	}
+	scan.RegisterRoutes(deps.Routing.InitialRoutes)
+	registerMonitoredRoutes(scan, strategies, poolGraph)
 
 	publishers := []OpportunityPublisher{NewLogPublisher(logger)}
-	if deps.Repository != nil {
-		publishers = append(publishers, NewRepositoryPublisher(deps.Repository))
+	if deps.Publishing.Repository != nil {
+		publishers = append(publishers, NewRepositoryPublisher(deps.Publishing.Repository))
 	}
-	var poolGraphUpdaters []PoolGraphUpdater
-	if deps.Execution.Enabled {
-		builder := deps.ExecutionBuilder
-		if builder == nil {
-			encoder := NewLiveCalldataEncoder(deps.LivePlan, NewRepositoryRoutePoolLoader(
-				deps.Pools,
-				deps.PancakePools,
-				deps.QuickSwapPools,
-				deps.V4Pools,
-				deps.BalancerPools,
-			))
-			builder = NewLiveExecutionPlanBuilder(deps.LivePlan, encoder, poolGraph)
-		}
-		if updater, ok := builder.(PoolGraphUpdater); ok {
-			poolGraphUpdaters = append(poolGraphUpdaters, updater)
-		}
-		publishers = append(publishers, NewExecutionPublisher(deps.Execution, builder, deps.Executor, deps.Repository, deps.ExecutionHead, logger))
-	}
+	publishers = append(publishers, deps.Publishing.Publishers...)
 
 	opportunities := NewOpportunityService(
 		deps.Market,
@@ -172,42 +144,38 @@ func NewServices(deps ServiceDeps) *Services {
 		strategies,
 		minAmount,
 		maxAmount,
-		deps.OptimizerIterations,
-		deps.FlashLoanOptions,
+		deps.Opportunity.OptimizerIterations,
+		deps.Opportunity.FlashLoanOptions,
 		logger,
 	)
-	opportunities.SetGasCostConversion(poolGraph, deps.LivePlan.WETH)
-	if strings.TrimSpace(deps.Execution.FlashbotsRPCURL) != "" && deps.Execution.FlashbotsPaymentBPS > 0 {
-		opportunities.SetCoinbasePaymentBPS(uint16(deps.Execution.FlashbotsPaymentBPS))
+	opportunities.SetGasCostConversion(poolGraph, deps.Opportunity.WrappedNative)
+	if deps.Opportunity.CoinbasePaymentBPS > 0 {
+		opportunities.SetCoinbasePaymentBPS(deps.Opportunity.CoinbasePaymentBPS)
 	}
 
 	services := &Services{
-		Scan:          scan,
-		Opportunities: opportunities,
-		Publish:       NewPublishService(publishers...),
-		routeDeps: routeRefreshDeps{
-			Registry:          deps.Registry,
-			Pools:             deps.Pools,
-			PancakeRegistry:   deps.PancakeRegistry,
-			PancakePools:      deps.PancakePools,
-			QuickSwapRegistry: deps.QuickSwapRegistry,
-			QuickSwapPools:    deps.QuickSwapPools,
-			V4Registry:        deps.V4Registry,
-			V4Pools:           deps.V4Pools,
-			BalancerRegistry:  deps.BalancerRegistry,
-			BalancerPools:     deps.BalancerPools,
-		},
+		Scan:                  scan,
+		Opportunities:         opportunities,
+		Publish:               NewPublishService(publishers...),
+		market:                deps.Market,
 		configuredStartTokens: configuredStartTokens,
 		spreadStartTokens:     spreadStartTokens,
 		minNetProfitWei:       minNetProfitWei,
 		spreadMinNetProfitWei: spreadMinNetProfitWei,
-		triangleEnabled:       deps.TriangleEnabled,
-		spreadEnabled:         deps.SpreadEnabled,
+		triangleEnabled:       deps.Routing.TriangleEnabled,
+		spreadEnabled:         deps.Routing.SpreadEnabled,
 		strategies:            append([]domainarb.Strategy(nil), strategies...),
 		logger:                logger,
-		gasWrappedNative:      deps.LivePlan.WETH,
+		gasWrappedNative:      deps.Opportunity.WrappedNative,
 		poolGraph:             poolGraph,
-		poolGraphUpdaters:     poolGraphUpdaters,
+		poolGraphUpdaters:     append([]PoolGraphUpdater(nil), deps.Publishing.PoolGraphUpdaters...),
+	}
+	if poolGraph != nil {
+		for _, updater := range services.poolGraphUpdaters {
+			if updater != nil {
+				updater.SetPoolGraph(poolGraph)
+			}
+		}
 	}
 	return services
 }
@@ -267,7 +235,10 @@ func (s *Services) RefreshArbitrageRoutes(ctx context.Context) (int, error) {
 	s.routeMu.Lock()
 	defer s.routeMu.Unlock()
 
-	graph, err := loadPoolGraph(ctx, routeRefreshDepsToServiceDeps(s.routeDeps))
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	graph, err := loadPoolGraph(s.market)
 	if err != nil {
 		s.rebuildStrategiesOnGraphError()
 		s.Scan.ReplaceMonitoredRoutes(nil)
@@ -278,7 +249,9 @@ func (s *Services) RefreshArbitrageRoutes(ctx context.Context) (int, error) {
 	}
 	s.poolGraph = graph
 	for _, updater := range s.poolGraphUpdaters {
-		updater.SetPoolGraph(graph)
+		if updater != nil {
+			updater.SetPoolGraph(graph)
+		}
 	}
 
 	triangleTokens := ResolveTriangleStartTokens(s.configuredStartTokens, graph.Edges(), autoStartTokenCount)
@@ -287,11 +260,6 @@ func (s *Services) RefreshArbitrageRoutes(ctx context.Context) (int, error) {
 	strategies := s.strategiesSnapshot()
 
 	return registerMonitoredRoutes(s.Scan, strategies, graph), nil
-}
-
-// RefreshTriangleRoutes rebuilds triangle routes only. Prefer RefreshArbitrageRoutes when spread is enabled.
-func (s *Services) RefreshTriangleRoutes(ctx context.Context) (int, error) {
-	return s.RefreshArbitrageRoutes(ctx)
 }
 
 func (s *Services) rebuildStrategiesOnGraphError() {
@@ -321,36 +289,22 @@ func (s *Services) strategiesSnapshot() []domainarb.Strategy {
 	return append([]domainarb.Strategy(nil), s.strategies...)
 }
 
-func routeRefreshDepsToServiceDeps(deps routeRefreshDeps) ServiceDeps {
-	return ServiceDeps{
-		Registry:          deps.Registry,
-		Pools:             deps.Pools,
-		PancakeRegistry:   deps.PancakeRegistry,
-		PancakePools:      deps.PancakePools,
-		QuickSwapRegistry: deps.QuickSwapRegistry,
-		QuickSwapPools:    deps.QuickSwapPools,
-		V4Registry:        deps.V4Registry,
-		V4Pools:           deps.V4Pools,
-		BalancerRegistry:  deps.BalancerRegistry,
-		BalancerPools:     deps.BalancerPools,
-	}
-}
-
 func buildArbitrageStrategies(
-	deps ServiceDeps,
+	cfg RoutingConfig,
+	graph quoteunified.PoolGraph,
 	configured []common.Address,
 	spreadConfigured []common.Address,
 	minNetProfitWei, spreadMinNetProfitWei *big.Int,
 ) []domainarb.Strategy {
-	if len(deps.Strategies) > 0 {
-		return deps.Strategies
+	if len(cfg.Strategies) > 0 {
+		return cfg.Strategies
 	}
-	if graph, err := loadPoolGraph(context.Background(), deps); err == nil {
+	if graph != nil {
 		triangleTokens := ResolveTriangleStartTokens(configured, graph.Edges(), autoStartTokenCount)
 		spreadTokens := ResolveSpreadStartTokens(spreadConfigured, triangleTokens, graph.Edges())
 		return SpreadAndTriangleStrategies(
-			deps.TriangleEnabled,
-			deps.SpreadEnabled,
+			cfg.TriangleEnabled,
+			cfg.SpreadEnabled,
 			triangleTokens,
 			spreadTokens,
 			minNetProfitWei,
@@ -358,8 +312,8 @@ func buildArbitrageStrategies(
 		)
 	}
 	return SpreadAndTriangleStrategies(
-		deps.TriangleEnabled,
-		deps.SpreadEnabled,
+		cfg.TriangleEnabled,
+		cfg.SpreadEnabled,
 		configured,
 		spreadConfigured,
 		minNetProfitWei,
@@ -427,39 +381,19 @@ func SpreadAndTriangleStrategies(
 	return strategies
 }
 
-func loadPoolGraph(ctx context.Context, deps ServiceDeps) (quoteunified.PoolGraph, error) {
-	if deps.PoolGraph != nil {
-		return deps.PoolGraph, nil
+func loadPoolGraph(market committedmarket.Reader) (quoteunified.PoolGraph, error) {
+	if market == nil {
+		return nil, ErrNoPoolsAvailable
 	}
-	return BuildUnifiedPoolGraph(
-		ctx,
-		poolEdgeSources(deps)...,
-	)
-}
-
-func poolEdgeSources(deps ServiceDeps) []PoolEdgeSource {
-	candidates := []PoolEdgeSource{
-		NewUniv3PoolEdgeSource(deps.Registry, deps.Pools),
-		NewPancakeV3PoolEdgeSource(deps.PancakeRegistry, deps.PancakePools),
-		NewQuickSwapV3PoolEdgeSource(deps.QuickSwapRegistry, deps.QuickSwapPools),
-		NewUniv4PoolEdgeSource(deps.V4Registry, deps.V4Pools),
-		NewBalancerPoolEdgeSource(deps.BalancerRegistry, deps.BalancerPools),
+	snapshot := market.Snapshot()
+	if snapshot == nil || snapshot.Version().IsZero() {
+		return nil, ErrNoPoolsAvailable
 	}
-	sources := make([]PoolEdgeSource, 0, len(candidates))
-	for _, source := range candidates {
-		if source != nil {
-			sources = append(sources, source)
-		}
+	edges := snapshot.PoolEdges()
+	if len(edges) == 0 {
+		return nil, ErrNoPoolsAvailable
 	}
-	return sources
-}
-
-func registerTriangleRoutes(scan *ScanService, strategies []domainarb.Strategy, graph quoteunified.PoolGraph) {
-	registerMonitoredRoutes(scan, strategies, graph)
-}
-
-func registerTriangleRoutesOnGraph(scan *ScanService, graph quoteunified.PoolGraph, strategies []domainarb.Strategy) int {
-	return registerMonitoredRoutes(scan, strategies, graph)
+	return quoteunified.NewStaticPoolGraph(edges), nil
 }
 
 // TriangleStrategies builds triangle strategies for the given start tokens.

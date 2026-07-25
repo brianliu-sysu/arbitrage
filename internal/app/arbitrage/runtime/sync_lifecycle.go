@@ -121,9 +121,6 @@ func (r *syncLifecycle) start(ctx context.Context) error {
 		}
 	}
 
-	if r.runtime != nil && r.runtime.Arbitrage != nil && r.runtime.cfg.ArbitrageEnabled() {
-		r.runArbitrageRouteWatcher()
-	}
 	r.runSubgraphDiscoveryWatchers()
 	return nil
 }
