@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	appmetrics "github.com/brianliu-sysu/uniswapv3/internal/application/metrics"
 	domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
@@ -30,15 +31,16 @@ type commitRegistries struct {
 
 // commit builds a complete snapshot and only publishes it after every pool has
 // been validated at the requested market version.
-func (v *View) commit(ctx context.Context, version domainchain.MarketVersion, changes Changes) error {
+func (v *View) commit(ctx context.Context, version domainchain.MarketVersion, changes Changes) (err error) {
 	if v == nil {
 		return nil
 	}
+	started := time.Now()
+	defer func() { appmetrics.ObserveMarketPublish(version.Number, started, err) }()
 	if err := validateMarketVersion(version); err != nil {
 		return err
 	}
 
-	started := time.Now()
 	plan := v.prepareCommit(version, changes)
 	v.logCommitStarted(plan)
 

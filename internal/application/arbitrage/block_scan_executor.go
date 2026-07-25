@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	appmetrics "github.com/brianliu-sysu/uniswapv3/internal/application/metrics"
 	domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	"go.uber.org/zap"
 )
@@ -48,6 +49,10 @@ func (p *blockScanPipeline) Execute(ctx context.Context, version domainchain.Mar
 	}
 	routes := p.scan.FindAffected(changes.Univ3, changes.PancakeV3, changes.QuickSwapV3, changes.Univ4, changes.Balancer)
 	started := time.Now()
+	var generatedStrategies []string
+	defer func() {
+		appmetrics.ObserveScan(started, len(routes), generatedStrategies)
+	}()
 	p.logger.Debug("arbitrage block barrier flushed",
 		zap.Uint64("block", version.Number),
 		zap.Int("univ3_pools", len(changes.Univ3)),
@@ -67,6 +72,12 @@ func (p *blockScanPipeline) Execute(ctx context.Context, version domainchain.Mar
 	})
 	if err != nil {
 		return err
+	}
+	generatedStrategies = make([]string, 0, len(opportunities))
+	for _, opportunity := range opportunities {
+		if opportunity != nil {
+			generatedStrategies = append(generatedStrategies, opportunity.StrategyID)
+		}
 	}
 	p.logger.Debug("arbitrage opportunities generated",
 		zap.Uint64("block", version.Number),

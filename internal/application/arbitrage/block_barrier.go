@@ -3,6 +3,7 @@ package arbitrageapp
 import (
 	"sync"
 
+	appmetrics "github.com/brianliu-sysu/uniswapv3/internal/application/metrics"
 	domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/marketchange"
 )
@@ -67,6 +68,7 @@ func (b *blockBarrier) report(report ProtocolBlockReport) {
 	}
 	state.reported = true
 	state.changes = mergeMarketChanges(state.changes, report.Changes)
+	appmetrics.SetBarrier(len(b.pending), b.lastVersion.Number)
 }
 
 func (b *blockBarrier) prepare(head domainchain.BlockHeader) (domainchain.MarketVersion, bool) {
@@ -118,6 +120,7 @@ func (b *blockBarrier) complete(version domainchain.MarketVersion, err error) {
 			delete(b.pending, number)
 		}
 	}
+	appmetrics.SetBarrier(len(b.pending), b.lastVersion.Number)
 }
 
 func (b *blockBarrier) isReadyLocked(blockNumber uint64) bool {

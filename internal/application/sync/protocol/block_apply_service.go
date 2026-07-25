@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
+	appmetrics "github.com/brianliu-sysu/uniswapv3/internal/application/metrics"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap"
@@ -179,7 +181,10 @@ func (s *BlockApplySnapshot[PoolID, Pool, Checkpoint]) Restore(ctx context.Conte
 func (s *BlockApplyService[PoolID, Event, Pool, Checkpoint]) ApplyBlock(
 	ctx context.Context,
 	req ApplyBlockRequest[PoolID, Event],
-) (ApplyBlockResult[PoolID], error) {
+) (result ApplyBlockResult[PoolID], err error) {
+	started := time.Now()
+	protocol := s.protocol.Label()
+	defer func() { appmetrics.ObserveProtocolApply(protocol, req.BlockNumber, started, err) }()
 	var zero ApplyBlockResult[PoolID]
 	if req.BlockNumber == 0 {
 		return zero, fmt.Errorf("block number must be positive")

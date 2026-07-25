@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	appmetrics "github.com/brianliu-sysu/uniswapv3/internal/application/metrics"
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
 	domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	domaincontract "github.com/brianliu-sysu/uniswapv3/internal/domain/contract"
@@ -96,10 +97,17 @@ func NewExecutionPublisher(
 	}
 }
 
-func (p *ExecutionPublisher) Publish(ctx context.Context, opportunity *domainarb.Opportunity) error {
+func (p *ExecutionPublisher) Publish(ctx context.Context, opportunity *domainarb.Opportunity) (err error) {
 	if p == nil || !p.cfg.Enabled || opportunity == nil {
 		return nil
 	}
+	result := "skipped"
+	defer func() {
+		if err != nil {
+			result = "error"
+		}
+		appmetrics.IncExecution(result)
+	}()
 	if p.builder == nil {
 		return errors.New("arbitrage execution plan builder is not configured")
 	}
@@ -209,6 +217,7 @@ func (p *ExecutionPublisher) Publish(ctx context.Context, opportunity *domainarb
 	}
 	p.finish(opportunity.ID, resp.TxHash)
 	finished = true
+	result = "success"
 	p.logger.Info("arbitrage execution broadcast",
 		zap.String("opportunity", opportunity.ID),
 		zap.String("tx_hash", resp.TxHash.Hex()),

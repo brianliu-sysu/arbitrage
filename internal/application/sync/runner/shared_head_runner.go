@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	appmetrics "github.com/brianliu-sysu/uniswapv3/internal/application/metrics"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	"go.uber.org/zap"
 )
@@ -256,6 +257,7 @@ func (r *SharedHeadRunner) HandleHead(ctx context.Context, head blockchain.Block
 	if r == nil {
 		return nil
 	}
+	appmetrics.ObserveChainHead(head.Number)
 	r.applyMu.Lock()
 	defer r.applyMu.Unlock()
 	return r.handleHeadLocked(ctx, head)
@@ -405,11 +407,14 @@ func (r *SharedHeadRunner) recoverCanonicalBranch(ctx context.Context, reorg blo
 		defer cancel()
 		return errors.Join(cause, recovery.Rollback(rollbackCtx))
 	}
-	branchNumbers := blockRange(reorg.CommonAncestor+1, reorg.RemoteHead.Number)
-	headers, err := r.blocks.GetBlockHeaders(ctx, branchNumbers)
+	branchStart := reorg.CommonAncestor + 1
+	replayStart := recovery.ReplayFrom()
+	headersStart := min(branchStart, replayStart)
+	headers, err := r.blocks.GetBlockHeaders(ctx, blockRange(headersStart, reorg.RemoteHead.Number))
 	if err != nil {
 		return nil, rollback(fmt.Errorf("load recovery block headers: %w", err))
 	}
+	branchNumbers := blockRange(branchStart, reorg.RemoteHead.Number)
 	branch := make([]blockchain.BlockHeader, 0, len(branchNumbers))
 	for _, blockNumber := range branchNumbers {
 		head, ok := headers[blockNumber]

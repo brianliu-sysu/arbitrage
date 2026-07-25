@@ -501,8 +501,8 @@ func TestSharedHeadRunnerDetectsReorgOnceAndRecoversEveryProtocol(t *testing.T) 
 	oldHeaders[10] = blockchain.BlockHeader{Number: 10, Hash: common.HexToHash("0xa10"), ParentHash: oldHeaders[9].Hash}
 	blocks := &sharedBlockReader{headers: oldHeaders}
 	runner := newTestSharedHeadRunner(t, nil, []syncapp.NamedHeadHandler{
-		{Name: "univ3", Handler: &preparingBlockHandler{applied: &applied, recovered: &recovered, replayed: &replayed, replayFrom: 10}},
-		{Name: "univ4", Handler: &preparingBlockHandler{applied: &applied, recovered: &recovered, replayed: &replayed, replayFrom: 10}},
+		{Name: "univ3", Handler: &preparingBlockHandler{applied: &applied, recovered: &recovered, replayed: &replayed, replayFrom: 8}},
+		{Name: "univ4", Handler: &preparingBlockHandler{applied: &applied, recovered: &recovered, replayed: &replayed, replayFrom: 8}},
 	}, fetcher, blocks)
 	if err := runner.InitializeLocalHead(context.Background(), blockchain.BlockHeader{
 		Number: 10,
@@ -527,10 +527,10 @@ func TestSharedHeadRunnerDetectsReorgOnceAndRecoversEveryProtocol(t *testing.T) 
 	if applied.Load() != 0 {
 		t.Fatalf("reorg replay must replace normal apply, got %d applies", applied.Load())
 	}
-	if replayed.Load() != 4 {
-		t.Fatalf("expected two recovery blocks for both protocols, got %d applies", replayed.Load())
+	if replayed.Load() != 8 {
+		t.Fatalf("expected four recovery blocks for both protocols, got %d applies", replayed.Load())
 	}
-	if fetcher.calls != 2 {
+	if fetcher.calls != 4 {
 		t.Fatalf("expected one shared log fetch per recovery block, got %d", fetcher.calls)
 	}
 }

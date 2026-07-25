@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 const apiV1Prefix = "/api/v1"
@@ -27,6 +28,7 @@ func NewRouter(handlers Handlers) *gin.Engine {
 
 	router := gin.New()
 	router.Use(gin.Recovery(), corsMiddleware())
+	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	if handlers.Health != nil {
 		router.GET("/health", handlers.Health.HandleHealth)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	appmetrics "github.com/brianliu-sysu/uniswapv3/internal/application/metrics"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
 	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
@@ -54,6 +55,7 @@ func loadAddressPools[P any](
 			return fmt.Errorf("snapshot %s pool %s: %w", label, id.Hex(), err)
 		}
 		if lastBlock != blockNumber {
+			appmetrics.IncMarketPoolMismatch(label)
 			mismatches++
 			_, inChanged := changed[id]
 			_, inPreviousSnapshot := dst[id]
@@ -143,6 +145,7 @@ func loadIDPools[ID comparable, P any](
 			return fmt.Errorf("snapshot %s pool: %w", label, err)
 		}
 		if lastBlock != blockNumber {
+			appmetrics.IncMarketPoolMismatch(label)
 			mismatches++
 			_, inChanged := changed[id]
 			_, inPreviousSnapshot := dst[id]
