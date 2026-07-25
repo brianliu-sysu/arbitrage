@@ -44,10 +44,6 @@ func newSyncLifecycle(runtime *chainRuntime, logger *zap.Logger) (*syncLifecycle
 		handlers = append(handlers, syncapp.NamedHeadHandler{Name: module.Name(), Handler: module.HeadHandler()})
 	}
 	if len(handlers) > 0 {
-		var coordinator syncapp.HeadCoordinator
-		if runtime.Arbitrage != nil && runtime.Arbitrage.Coordinator != nil {
-			coordinator = runtime.Arbitrage.Coordinator
-		}
 		var subscriber syncapp.HeadSubscriber
 		var blocks syncapp.CanonicalBlockReader
 		if runtime.resources.blockchain != nil {
@@ -59,7 +55,7 @@ func newSyncLifecycle(runtime *chainRuntime, logger *zap.Logger) (*syncLifecycle
 				Subscriber:  subscriber,
 				LogFetcher:  runtime.resources.protocols.headLogFetcher,
 				Blocks:      blocks,
-				Coordinator: coordinator,
+				Coordinator: runtime.headCoordinator,
 			},
 			handlers,
 			runtime.cfg.Sync.ReorgMaxDepth,
@@ -77,10 +73,6 @@ func (r *syncLifecycle) start(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(context.Background())
 	r.runCtx = runCtx
 	r.cancel = cancel
-	if r.runtime != nil && r.runtime.Arbitrage != nil && r.runtime.Arbitrage.Coordinator != nil {
-		r.runtime.Arbitrage.Coordinator.SetScanContext(runCtx)
-	}
-
 	r.logger.Info("starting pool sync",
 		zap.Uint64("chain_id", r.runtime.cfg.ChainID),
 		zap.String("chain", r.runtime.cfg.Name),
@@ -202,6 +194,11 @@ func (r *syncLifecycle) startSafeGoroutine(name string, run func()) {
 func (r *syncLifecycle) stop(ctx context.Context) error {
 	if r.cancel != nil {
 		r.cancel()
+	}
+	if r.runtime != nil && r.runtime.headCoordinator != nil {
+		if err := r.runtime.headCoordinator.Stop(ctx); err != nil {
+			r.logger.Warn("stop head pipeline timed out", zap.Error(err))
+		}
 	}
 
 	shutdownDone := make(chan struct{})

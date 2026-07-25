@@ -7,12 +7,13 @@ import (
 
 	appmetrics "github.com/brianliu-sysu/uniswapv3/internal/application/metrics"
 	domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
+	"github.com/brianliu-sysu/uniswapv3/internal/domain/marketchange"
 	"go.uber.org/zap"
 )
 
 // BlockScanExecutor scans and publishes opportunities for one committed market version.
 type BlockScanExecutor interface {
-	Execute(context.Context, domainchain.MarketVersion, MarketChanges) error
+	Execute(context.Context, domainchain.MarketVersion, marketchange.Changes) error
 }
 
 type blockScanPipeline struct {
@@ -39,7 +40,7 @@ func newBlockScanPipeline(
 	}
 }
 
-func (p *blockScanPipeline) Execute(ctx context.Context, version domainchain.MarketVersion, changes MarketChanges) error {
+func (p *blockScanPipeline) Execute(ctx context.Context, version domainchain.MarketVersion, changes marketchange.Changes) error {
 	if p.scan == nil || p.opportunities == nil || p.publish == nil {
 		return nil
 	}

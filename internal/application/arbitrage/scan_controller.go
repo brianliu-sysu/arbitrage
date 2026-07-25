@@ -7,21 +7,15 @@ import (
 
 type scanController struct {
 	mu     sync.Mutex
-	base   context.Context
 	block  uint64
 	cancel context.CancelFunc
 	done   chan struct{}
+	closed bool
 }
 
 type scanTask interface {
 	Run(context.Context) error
 	Complete(error)
-}
-
-func (c *scanController) SetContext(ctx context.Context) {
-	c.mu.Lock()
-	c.base = ctx
-	c.mu.Unlock()
 }
 
 func (c *scanController) CancelBefore(ctx context.Context, blockNumber uint64) error {
@@ -45,19 +39,15 @@ func (c *scanController) CancelCurrent(ctx context.Context) error {
 	return cancelAndWait(ctx, cancel, done)
 }
 
-func (c *scanController) WaitForIdle(ctx context.Context) error {
+func (c *scanController) Close(ctx context.Context) error {
 	c.mu.Lock()
-	done := c.done
+	c.closed = true
+	cancel, done := c.cancel, c.done
 	c.mu.Unlock()
 	if done == nil {
 		return nil
 	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-done:
-		return nil
-	}
+	return cancelAndWait(ctx, cancel, done)
 }
 
 func (c *scanController) Start(
@@ -66,7 +56,7 @@ func (c *scanController) Start(
 	task scanTask,
 ) {
 	c.mu.Lock()
-	if c.done != nil && c.block >= blockNumber {
+	if c.closed || c.done != nil && c.block >= blockNumber {
 		c.mu.Unlock()
 		return
 	}
@@ -76,11 +66,11 @@ func (c *scanController) Start(
 	}
 
 	c.mu.Lock()
-	base := c.base
-	if base == nil {
-		base = context.WithoutCancel(ctx)
+	if c.closed {
+		c.mu.Unlock()
+		return
 	}
-	runCtx, cancel := context.WithCancel(base)
+	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	c.block = blockNumber
 	c.cancel = cancel

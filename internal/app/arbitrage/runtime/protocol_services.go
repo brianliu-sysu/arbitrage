@@ -7,6 +7,7 @@ import (
 
 	arbitrageapp "github.com/brianliu-sysu/uniswapv3/internal/application/arbitrage"
 	contractapp "github.com/brianliu-sysu/uniswapv3/internal/application/contract"
+	"github.com/brianliu-sysu/uniswapv3/internal/application/marketpipeline"
 	"github.com/brianliu-sysu/uniswapv3/internal/application/marketstore"
 	syncbalancer "github.com/brianliu-sysu/uniswapv3/internal/application/sync/balancer"
 	syncpancakev3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/pancakev3"
@@ -37,7 +38,7 @@ type protocolModule interface {
 	Bootstrapper() protocolBootstrapper
 	HeadHandler() syncapp.BlockHandler
 	IsReady() bool
-	BindArbitrage(*arbitrageapp.Services, *zap.Logger)
+	BindMarketReports(marketpipeline.ReportReceiver, *zap.Logger)
 	StartDiscovery(*syncLifecycle, config.ChainConfig, protocolResources)
 }
 
@@ -91,24 +92,24 @@ func (m *balancerProtocolModule) IsReady() bool {
 	return m.services.Lifecycle.Readiness != nil && m.services.Lifecycle.Readiness.IsSystemReady()
 }
 
-func (m *univ3ProtocolModule) BindArbitrage(services *arbitrageapp.Services, logger *zap.Logger) {
-	m.services.SetListener(services)
+func (m *univ3ProtocolModule) BindMarketReports(receiver marketpipeline.ReportReceiver, logger *zap.Logger) {
+	m.services.SetListener(&marketpipeline.Univ3PoolListener{Receiver: receiver})
 	m.services.SetLogger(logger.Named("sync.clv3"))
 }
-func (m *pancakeProtocolModule) BindArbitrage(services *arbitrageapp.Services, logger *zap.Logger) {
-	m.services.SetListener(arbitrageapp.PancakePoolListener{Services: services})
+func (m *pancakeProtocolModule) BindMarketReports(receiver marketpipeline.ReportReceiver, logger *zap.Logger) {
+	m.services.SetListener(&marketpipeline.PancakeV3PoolListener{Receiver: receiver})
 	m.services.SetLogger(logger.Named("sync.pancakev3"))
 }
-func (m *quickSwapProtocolModule) BindArbitrage(services *arbitrageapp.Services, logger *zap.Logger) {
-	m.services.SetListener(arbitrageapp.QuickSwapPoolListener{Services: services})
+func (m *quickSwapProtocolModule) BindMarketReports(receiver marketpipeline.ReportReceiver, logger *zap.Logger) {
+	m.services.SetListener(&marketpipeline.QuickSwapV3PoolListener{Receiver: receiver})
 	m.services.SetLogger(logger.Named("sync.quickswapv3"))
 }
-func (m *univ4ProtocolModule) BindArbitrage(services *arbitrageapp.Services, logger *zap.Logger) {
-	m.services.SetListener(arbitrageapp.V4PoolListener{Services: services})
+func (m *univ4ProtocolModule) BindMarketReports(receiver marketpipeline.ReportReceiver, logger *zap.Logger) {
+	m.services.SetListener(&marketpipeline.Univ4PoolListener{Receiver: receiver})
 	m.services.SetLogger(logger.Named("sync.univ4"))
 }
-func (m *balancerProtocolModule) BindArbitrage(services *arbitrageapp.Services, logger *zap.Logger) {
-	m.services.SetListener(arbitrageapp.BalancerPoolListener{Services: services})
+func (m *balancerProtocolModule) BindMarketReports(receiver marketpipeline.ReportReceiver, logger *zap.Logger) {
+	m.services.SetListener(&marketpipeline.BalancerPoolListener{Receiver: receiver})
 	m.services.SetLogger(logger.Named("sync.balancer"))
 }
 
@@ -469,8 +470,6 @@ func newArbitrageServices(
 		MinAmount:                 optimizerMinAmount,
 		MaxAmount:                 optimizerMaxAmount,
 		OptimizerIterations:       optimizerIterations,
-		EnabledProtocols:          enabledSyncProtocols(cfg),
-		MarketStore:               marketView,
 		MarketVersion:             marketView,
 		OpportunityPools:          marketView.Univ3Repository(),
 		OpportunityPancakePools:   marketView.PancakeRepository(),
@@ -496,22 +495,22 @@ func newArbitrageServices(
 	return arbitrageapp.NewServices(deps)
 }
 
-func enabledSyncProtocols(cfg config.ChainConfig) []arbitrageapp.SyncProtocol {
-	protocols := make([]arbitrageapp.SyncProtocol, 0, 5)
+func enabledMarketProtocols(cfg config.ChainConfig) []marketpipeline.Protocol {
+	protocols := make([]marketpipeline.Protocol, 0, 5)
 	if cfg.Sync.Univ3.IsActive() {
-		protocols = append(protocols, arbitrageapp.SyncProtocolUniv3)
+		protocols = append(protocols, marketpipeline.ProtocolUniv3)
 	}
 	if cfg.Sync.PancakeV3.IsActive() {
-		protocols = append(protocols, arbitrageapp.SyncProtocolPancakeV3)
+		protocols = append(protocols, marketpipeline.ProtocolPancakeV3)
 	}
 	if cfg.Sync.QuickSwapV3.IsActive() {
-		protocols = append(protocols, arbitrageapp.SyncProtocolQuickSwapV3)
+		protocols = append(protocols, marketpipeline.ProtocolQuickSwapV3)
 	}
 	if cfg.Sync.Univ4.IsActive() {
-		protocols = append(protocols, arbitrageapp.SyncProtocolUniv4)
+		protocols = append(protocols, marketpipeline.ProtocolUniv4)
 	}
 	if cfg.Sync.Balancer.IsActive() {
-		protocols = append(protocols, arbitrageapp.SyncProtocolBalancer)
+		protocols = append(protocols, marketpipeline.ProtocolBalancer)
 	}
 	return protocols
 }
@@ -564,8 +563,8 @@ func maxOpportunityAge(configured uint64) uint64 {
 	return configured
 }
 
-func (s *protocolServices) bindArbitrage(arbitrage *arbitrageapp.Services, logger *zap.Logger) {
+func (s *protocolServices) bindMarketReports(receiver marketpipeline.ReportReceiver, logger *zap.Logger) {
 	for _, module := range s.modules {
-		module.BindArbitrage(arbitrage, logger)
+		module.BindMarketReports(receiver, logger)
 	}
 }

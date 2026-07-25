@@ -1,4 +1,4 @@
-package arbitrageapp
+package marketpipeline
 
 import (
 	"sync"
@@ -8,21 +8,13 @@ import (
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/marketchange"
 )
 
-// MarketChanges contains all pools changed by one unified market block.
-type MarketChanges = marketchange.Changes
-
-type protocolBlockState struct {
-	changes  MarketChanges
-	reported bool
-}
-
 type pendingBlock struct {
-	byProtocol map[SyncProtocol]*protocolBlockState
+	byProtocol map[Protocol]marketchange.Changes
 }
 
 type blockBarrier struct {
 	mu          sync.Mutex
-	enabled     map[SyncProtocol]struct{}
+	enabled     map[Protocol]struct{}
 	pending     map[uint64]*pendingBlock
 	flushing    map[uint64]struct{}
 	lastVersion domainchain.MarketVersion
@@ -30,8 +22,8 @@ type blockBarrier struct {
 	generation  uint64
 }
 
-func newBlockBarrier(enabled []SyncProtocol) *blockBarrier {
-	protocols := make(map[SyncProtocol]struct{}, len(enabled))
+func newBlockBarrier(enabled []Protocol) *blockBarrier {
+	protocols := make(map[Protocol]struct{}, len(enabled))
 	for _, protocol := range enabled {
 		if protocol != "" {
 			protocols[protocol] = struct{}{}
@@ -58,46 +50,40 @@ func (b *blockBarrier) report(report ProtocolBlockReport) {
 	}
 	block := b.pending[report.BlockNumber]
 	if block == nil {
-		block = &pendingBlock{byProtocol: make(map[SyncProtocol]*protocolBlockState)}
+		block = &pendingBlock{byProtocol: make(map[Protocol]marketchange.Changes)}
 		b.pending[report.BlockNumber] = block
 	}
-	state := block.byProtocol[report.Protocol]
-	if state == nil {
-		state = &protocolBlockState{}
-		block.byProtocol[report.Protocol] = state
-	}
-	state.reported = true
-	state.changes = mergeMarketChanges(state.changes, report.Changes)
+	block.byProtocol[report.Protocol] = mergeChanges(block.byProtocol[report.Protocol], report.Changes)
 	appmetrics.SetBarrier(len(b.pending), b.lastVersion.Number)
 }
 
-func (b *blockBarrier) prepare(head domainchain.BlockHeader) (domainchain.MarketVersion, bool) {
+func (b *blockBarrier) prepare(head domainchain.BlockHeader) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if !b.prepared.IsZero() && b.prepared.Number == head.Number && b.prepared.Hash == head.Hash {
-		return b.prepared, false
+		return false
 	}
 	b.generation++
 	b.prepared = domainchain.MarketVersion{Number: head.Number, Hash: head.Hash, Generation: b.generation}
-	return b.prepared, true
+	return true
 }
 
-func (b *blockBarrier) beginFinalize(head domainchain.BlockHeader) (domainchain.MarketVersion, MarketChanges, int, bool) {
+func (b *blockBarrier) beginFinalize(head domainchain.BlockHeader) (domainchain.MarketVersion, marketchange.Changes, int, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	enabledCount := len(b.enabled)
 	if !b.isReadyLocked(head.Number) {
-		return domainchain.MarketVersion{}, MarketChanges{}, enabledCount, false
+		return domainchain.MarketVersion{}, marketchange.Changes{}, enabledCount, false
 	}
 	if _, flushing := b.flushing[head.Number]; flushing {
-		return domainchain.MarketVersion{}, MarketChanges{}, enabledCount, false
+		return domainchain.MarketVersion{}, marketchange.Changes{}, enabledCount, false
 	}
 	if b.prepared.Number != head.Number {
 		b.generation++
 		b.prepared = domainchain.MarketVersion{Number: head.Number, Hash: head.Hash, Generation: b.generation}
 	}
 	b.flushing[head.Number] = struct{}{}
-	return b.prepared, b.collectChangedLocked(head.Number), enabledCount, true
+	return b.prepared, b.collectChangesLocked(head.Number), enabledCount, true
 }
 
 func (b *blockBarrier) abortFinalize(blockNumber uint64) {
@@ -106,11 +92,11 @@ func (b *blockBarrier) abortFinalize(blockNumber uint64) {
 	b.mu.Unlock()
 }
 
-func (b *blockBarrier) complete(version domainchain.MarketVersion, err error) {
+func (b *blockBarrier) complete(version domainchain.MarketVersion) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.flushing, version.Number)
-	if err != nil || b.lastVersion.SameBlock(version) {
+	if b.lastVersion.SameBlock(version) {
 		return
 	}
 	b.lastVersion = version
@@ -129,41 +115,49 @@ func (b *blockBarrier) isReadyLocked(blockNumber uint64) bool {
 		return false
 	}
 	if len(b.enabled) == 0 {
-		for _, state := range block.byProtocol {
-			if state != nil && state.reported {
-				return true
-			}
-		}
-		return false
+		return len(block.byProtocol) > 0
 	}
 	for protocol := range b.enabled {
-		state := block.byProtocol[protocol]
-		if state == nil || !state.reported {
+		if _, reported := block.byProtocol[protocol]; !reported {
 			return false
 		}
 	}
 	return true
 }
 
-func (b *blockBarrier) collectChangedLocked(blockNumber uint64) MarketChanges {
+func (b *blockBarrier) collectChangesLocked(blockNumber uint64) marketchange.Changes {
 	block := b.pending[blockNumber]
 	if block == nil {
-		return MarketChanges{}
+		return marketchange.Changes{}
 	}
-	var changes MarketChanges
-	for _, state := range block.byProtocol {
-		if state != nil {
-			changes = mergeMarketChanges(changes, state.changes)
-		}
+	var changes marketchange.Changes
+	for _, protocolChanges := range block.byProtocol {
+		changes = mergeChanges(changes, protocolChanges)
 	}
 	return changes
 }
 
-func mergeMarketChanges(dst, src MarketChanges) MarketChanges {
-	dst.Univ3 = mergeAddresses(dst.Univ3, src.Univ3)
-	dst.PancakeV3 = mergeAddresses(dst.PancakeV3, src.PancakeV3)
-	dst.QuickSwapV3 = mergeAddresses(dst.QuickSwapV3, src.QuickSwapV3)
-	dst.Univ4 = mergeV4IDs(dst.Univ4, src.Univ4)
-	dst.Balancer = mergeBalancerIDs(dst.Balancer, src.Balancer)
+func mergeChanges(dst, src marketchange.Changes) marketchange.Changes {
+	dst.Univ3 = mergeComparable(dst.Univ3, src.Univ3)
+	dst.PancakeV3 = mergeComparable(dst.PancakeV3, src.PancakeV3)
+	dst.QuickSwapV3 = mergeComparable(dst.QuickSwapV3, src.QuickSwapV3)
+	dst.Univ4 = mergeComparable(dst.Univ4, src.Univ4)
+	dst.Balancer = mergeComparable(dst.Balancer, src.Balancer)
 	return dst
+}
+
+func mergeComparable[T comparable](dst, src []T) []T {
+	if len(src) == 0 {
+		return dst
+	}
+	seen := make(map[T]struct{}, len(dst)+len(src))
+	out := make([]T, 0, len(dst)+len(src))
+	for _, value := range append(dst, src...) {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }

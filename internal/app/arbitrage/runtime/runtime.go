@@ -7,6 +7,8 @@ import (
 
 	arbitrageapp "github.com/brianliu-sysu/uniswapv3/internal/application/arbitrage"
 	contractapp "github.com/brianliu-sysu/uniswapv3/internal/application/contract"
+	"github.com/brianliu-sysu/uniswapv3/internal/application/headpipeline"
+	"github.com/brianliu-sysu/uniswapv3/internal/application/marketpipeline"
 	"github.com/brianliu-sysu/uniswapv3/internal/application/marketstore"
 	poolmanager "github.com/brianliu-sysu/uniswapv3/internal/application/poolmanager"
 	"github.com/brianliu-sysu/uniswapv3/internal/config"
@@ -18,13 +20,14 @@ import (
 )
 
 type chainRuntime struct {
-	cfg           config.ChainConfig
-	resources     *chainResources
-	protocols     *protocolServices
-	Arbitrage     *arbitrageapp.Services
-	MarketStore   *marketstore.Store
-	PoolManagers  runtimePoolManagers
-	persistenceWG sync.WaitGroup
+	cfg             config.ChainConfig
+	resources       *chainResources
+	protocols       *protocolServices
+	Arbitrage       *arbitrageapp.Services
+	MarketStore     *marketstore.Store
+	headCoordinator *headpipeline.Coordinator
+	PoolManagers    runtimePoolManagers
+	persistenceWG   sync.WaitGroup
 }
 
 // chainResources owns the infrastructure and registries for exactly one chain.
@@ -88,7 +91,9 @@ func newChainRuntime(
 		marketView,
 		resources.contractExecutor,
 	)
-	protocols.bindArbitrage(arbitrageServices, logger)
+	marketCoordinator := marketpipeline.NewCoordinator(enabledMarketProtocols(cfg), marketView, logger.Named("market-pipeline"))
+	headCoordinator := headpipeline.NewCoordinator(marketCoordinator, arbitrageServices.NewScanScheduler())
+	protocols.bindMarketReports(marketCoordinator, logger)
 
 	if cfg.ArbitrageEnabled() {
 		arbitrageServices.LogDiagnostics(context.Background(), logger, "startup")
@@ -97,12 +102,13 @@ func newChainRuntime(
 	}
 
 	runtime := &chainRuntime{
-		cfg:          cfg,
-		resources:    resources,
-		protocols:    protocols,
-		Arbitrage:    arbitrageServices,
-		MarketStore:  marketView,
-		PoolManagers: newRuntimePoolManagers(protocols, arbitrageServices),
+		cfg:             cfg,
+		resources:       resources,
+		protocols:       protocols,
+		Arbitrage:       arbitrageServices,
+		MarketStore:     marketView,
+		headCoordinator: headCoordinator,
+		PoolManagers:    newRuntimePoolManagers(protocols, arbitrageServices),
 	}
 	configureAsyncMarketPersistence(runtime, logger.Named("market-persistence"))
 	return runtime, nil

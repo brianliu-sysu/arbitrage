@@ -54,8 +54,6 @@ type ServiceDeps struct {
 	OptimizerIterations       int
 	Routes                    []domainarb.RouteRef
 	PoolGraph                 quoteunified.PoolGraph
-	EnabledProtocols          []SyncProtocol
-	MarketStore               MarketPublisher
 	MarketVersion             MarketVersionReader
 	OpportunityPools          marketuniv3.PoolRepository
 	OpportunityPancakePools   marketpancake.PoolRepository
@@ -87,7 +85,6 @@ type Services struct {
 	Scan          *ScanService
 	Opportunities *OpportunityService
 	Publish       *PublishService
-	Coordinator   *BlockCoordinator
 
 	routeMu               sync.Mutex
 	mu                    sync.RWMutex
@@ -246,16 +243,21 @@ func NewServices(deps ServiceDeps) *Services {
 		poolGraph:             poolGraph,
 		poolGraphUpdaters:     poolGraphUpdaters,
 	}
-	services.Coordinator = NewBlockCoordinator(
-		deps.EnabledProtocols,
-		&services.routeMu,
-		services.Scan,
-		services.Opportunities,
-		services.Publish,
-		deps.MarketStore,
-		logger,
-	)
 	return services
+}
+
+// NewScanScheduler builds the arbitrage scan lifecycle for these services.
+func (s *Services) NewScanScheduler() *ScanScheduler {
+	if s == nil {
+		return nil
+	}
+	return NewScanScheduler(newBlockScanPipeline(
+		&s.routeMu,
+		s.Scan,
+		s.Opportunities,
+		s.Publish,
+		s.logger,
+	), s.logger)
 }
 
 // RegisterPoolGraphUpdater subscribes an execution-plan builder to graph refreshes.

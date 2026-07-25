@@ -391,60 +391,6 @@ func TestScanServiceFindsAffectedQuickSwapRoutes(t *testing.T) {
 	}
 }
 
-func TestServicesOnPoolsChangedRunsPipeline(t *testing.T) {
-	tokenA := testToken(2)
-	tokenB := testToken(3)
-	poolAB := testToken(10)
-
-	repo := newMemoryPoolRepo()
-	pool := setupQuotedPool(poolAB, tokenA, tokenB, 100_000_000_000_000_000)
-	pool.LastBlockNumber = 100
-	if err := repo.Save(context.Background(), pool); err != nil {
-		t.Fatalf("save pool: %v", err)
-	}
-
-	oppRepo := newMemoryOpportunityRepo()
-	services := arbitrageapp.NewServices(arbitrageapp.ServiceDeps{
-		Pools:  repo,
-		Quotes: unifiedQuotes(),
-		Gas:    domainarb.NewStaticGasEstimator(100_000, 80_000, big.NewInt(1)),
-		Strategies: []domainarb.Strategy{
-			domainarb.NewCycleStrategy("cycle-a", tokenA, 2, big.NewInt(1)),
-		},
-		Readiness:           alwaysReady{},
-		Repository:          oppRepo,
-		MinAmount:           big.NewInt(1_000_000),
-		MaxAmount:           big.NewInt(10_000_000_000),
-		OptimizerIterations: 8,
-		EnabledProtocols:    []arbitrageapp.SyncProtocol{arbitrageapp.SyncProtocolUniv3},
-		Routes: []domainarb.RouteRef{
-			{
-				ID: "cycle-ab",
-				Route: quoteunified.Route{
-					TokenIn:  tokenA,
-					TokenOut: tokenA,
-					Hops: []quoteunified.RouteHop{
-						{Version: quoteunified.PoolVersionV3, PoolV3: poolAB, TokenIn: tokenA, TokenOut: tokenB},
-						{Version: quoteunified.PoolVersionV3, PoolV3: poolAB, TokenIn: tokenB, TokenOut: tokenA},
-					},
-				},
-			},
-		},
-	})
-
-	if err := services.OnPoolsChanged(context.Background(), 100, []common.Address{poolAB}); err != nil {
-		t.Fatalf("on pools changed: %v", err)
-	}
-
-	items, err := oppRepo.List(context.Background(), 10)
-	if err != nil {
-		t.Fatalf("list opportunities: %v", err)
-	}
-	if len(items) != 0 {
-		t.Fatalf("expected no opportunities for unprofitable round-trip route, got %d", len(items))
-	}
-}
-
 func TestRefreshTriangleRoutesRebuildsGraph(t *testing.T) {
 	tokenA := testToken(2)
 	tokenB := testToken(3)
