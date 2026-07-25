@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/brianliu-sysu/uniswapv3/internal/application/committedmarket"
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
 	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
@@ -21,45 +22,39 @@ import (
 
 // ServiceDeps contains dependencies for arbitrage application services.
 type ServiceDeps struct {
-	Logger                    *zap.Logger
-	Pools                     marketuniv3.PoolRepository
-	PancakePools              marketpancake.PoolRepository
-	QuickSwapPools            marketquick.PoolRepository
-	V4Pools                   marketuniv4.PoolRepository
-	BalancerPools             marketbalancer.PoolRepository
-	Registry                  marketuniv3.PoolRegistry
-	PancakeRegistry           marketpancake.PoolRegistry
-	QuickSwapRegistry         marketquick.PoolRegistry
-	V4Registry                marketuniv4.PoolRegistry
-	BalancerRegistry          marketbalancer.PoolRegistry
-	Quotes                    *quoteunified.QuoteService
-	Gas                       domainarb.GasEstimator
-	Strategies                []domainarb.Strategy
-	TriangleEnabled           bool
-	SpreadEnabled             bool
-	ConfiguredStartTokens     []common.Address
-	SpreadStartTokens         []common.Address
-	MinNetProfitWei           *big.Int
-	SpreadMinNetProfitWei     *big.Int
-	Readiness                 ReadinessChecker
-	Repository                domainarb.OpportunityRepository
-	Executor                  ContractExecutor
-	ExecutionHead             ExecutionHeadReader
-	ExecutionBuilder          ExecutionPlanBuilder
-	Execution                 ExecutionConfig
-	LivePlan                  LivePlanConfig
-	FlashLoanOptions          []domainarb.FlashLoanOption
-	MinAmount                 *big.Int
-	MaxAmount                 *big.Int
-	OptimizerIterations       int
-	Routes                    []domainarb.RouteRef
-	PoolGraph                 quoteunified.PoolGraph
-	MarketVersion             MarketVersionReader
-	OpportunityPools          marketuniv3.PoolRepository
-	OpportunityPancakePools   marketpancake.PoolRepository
-	OpportunityQuickSwapPools marketquick.PoolRepository
-	OpportunityV4Pools        marketuniv4.PoolRepository
-	OpportunityBalancerPools  marketbalancer.PoolRepository
+	Logger                *zap.Logger
+	Pools                 marketuniv3.PoolRepository
+	PancakePools          marketpancake.PoolRepository
+	QuickSwapPools        marketquick.PoolRepository
+	V4Pools               marketuniv4.PoolRepository
+	BalancerPools         marketbalancer.PoolRepository
+	Registry              marketuniv3.PoolRegistry
+	PancakeRegistry       marketpancake.PoolRegistry
+	QuickSwapRegistry     marketquick.PoolRegistry
+	V4Registry            marketuniv4.PoolRegistry
+	BalancerRegistry      marketbalancer.PoolRegistry
+	Quotes                *quoteunified.QuoteService
+	Gas                   domainarb.GasEstimator
+	Strategies            []domainarb.Strategy
+	TriangleEnabled       bool
+	SpreadEnabled         bool
+	ConfiguredStartTokens []common.Address
+	SpreadStartTokens     []common.Address
+	MinNetProfitWei       *big.Int
+	SpreadMinNetProfitWei *big.Int
+	Market                committedmarket.Reader
+	Repository            domainarb.OpportunityRepository
+	Executor              ContractExecutor
+	ExecutionHead         ExecutionHeadReader
+	ExecutionBuilder      ExecutionPlanBuilder
+	Execution             ExecutionConfig
+	LivePlan              LivePlanConfig
+	FlashLoanOptions      []domainarb.FlashLoanOption
+	MinAmount             *big.Int
+	MaxAmount             *big.Int
+	OptimizerIterations   int
+	Routes                []domainarb.RouteRef
+	PoolGraph             quoteunified.PoolGraph
 }
 
 type routeRefreshDeps struct {
@@ -96,7 +91,6 @@ type Services struct {
 	triangleEnabled       bool
 	spreadEnabled         bool
 	strategies            []domainarb.Strategy
-	readiness             ReadinessChecker
 	logger                *zap.Logger
 	gasWrappedNative      common.Address
 	poolGraph             quoteunified.PoolGraph
@@ -104,26 +98,6 @@ type Services struct {
 }
 
 func NewServices(deps ServiceDeps) *Services {
-	opportunityPools := deps.OpportunityPools
-	if opportunityPools == nil {
-		opportunityPools = deps.Pools
-	}
-	opportunityPancakePools := deps.OpportunityPancakePools
-	if opportunityPancakePools == nil {
-		opportunityPancakePools = deps.PancakePools
-	}
-	opportunityQuickSwapPools := deps.OpportunityQuickSwapPools
-	if opportunityQuickSwapPools == nil {
-		opportunityQuickSwapPools = deps.QuickSwapPools
-	}
-	opportunityV4Pools := deps.OpportunityV4Pools
-	if opportunityV4Pools == nil {
-		opportunityV4Pools = deps.V4Pools
-	}
-	opportunityBalancerPools := deps.OpportunityBalancerPools
-	if opportunityBalancerPools == nil {
-		opportunityBalancerPools = deps.BalancerPools
-	}
 	minAmount := deps.MinAmount
 	if minAmount == nil {
 		minAmount = big.NewInt(1_000_000)
@@ -192,26 +166,19 @@ func NewServices(deps ServiceDeps) *Services {
 	}
 
 	opportunities := NewOpportunityService(
-		opportunityPools,
-		opportunityPancakePools,
-		opportunityQuickSwapPools,
-		opportunityV4Pools,
-		opportunityBalancerPools,
+		deps.Market,
 		deps.Quotes,
 		gas,
 		strategies,
-		deps.Readiness,
 		minAmount,
 		maxAmount,
 		deps.OptimizerIterations,
 		deps.FlashLoanOptions,
 		logger,
-		deps.MarketVersion,
 	)
 	opportunities.SetGasCostConversion(poolGraph, deps.LivePlan.WETH)
 	if strings.TrimSpace(deps.Execution.FlashbotsRPCURL) != "" && deps.Execution.FlashbotsPaymentBPS > 0 {
 		opportunities.SetCoinbasePaymentBPS(uint16(deps.Execution.FlashbotsPaymentBPS))
-		opportunities.SetSettlementSlippageBPS(uint16(deps.Execution.SettlementSlippageBPS))
 	}
 
 	services := &Services{
@@ -237,7 +204,6 @@ func NewServices(deps ServiceDeps) *Services {
 		triangleEnabled:       deps.TriangleEnabled,
 		spreadEnabled:         deps.SpreadEnabled,
 		strategies:            append([]domainarb.Strategy(nil), strategies...),
-		readiness:             deps.Readiness,
 		logger:                logger,
 		gasWrappedNative:      deps.LivePlan.WETH,
 		poolGraph:             poolGraph,

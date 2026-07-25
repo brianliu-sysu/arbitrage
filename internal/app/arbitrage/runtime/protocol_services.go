@@ -451,7 +451,7 @@ func newArbitrageServices(
 			quoteuniv4domain.NewQuoteService(),
 			quotebalancerdomain.NewQuoteService(),
 		),
-		Readiness:             marketView,
+		Market:                marketView,
 		Repository:            durableStore.Opportunities,
 		Executor:              contractExecutor,
 		ExecutionHead:         chain.Client,
@@ -467,15 +467,9 @@ func newArbitrageServices(
 			{Protocol: domainarb.FlashLoanProtocolBalancer, FeePPM: cfg.Arbitrage.FlashLoan.BalancerFee()},
 			{Protocol: domainarb.FlashLoanProtocolUniv4, FeePPM: cfg.Arbitrage.FlashLoan.Univ4Fee()},
 		},
-		MinAmount:                 optimizerMinAmount,
-		MaxAmount:                 optimizerMaxAmount,
-		OptimizerIterations:       optimizerIterations,
-		MarketVersion:             marketView,
-		OpportunityPools:          marketView.Univ3Repository(),
-		OpportunityPancakePools:   marketView.PancakeRepository(),
-		OpportunityQuickSwapPools: marketView.QuickSwapRepository(),
-		OpportunityV4Pools:        marketView.Univ4Repository(),
-		OpportunityBalancerPools:  marketView.BalancerRepository(),
+		MinAmount:           optimizerMinAmount,
+		MaxAmount:           optimizerMaxAmount,
+		OptimizerIterations: optimizerIterations,
 	}
 	if resources.univ3 != nil {
 		deps.Registry = resources.univ3.registry

@@ -67,9 +67,8 @@ func (p *blockScanPipeline) Execute(ctx context.Context, version domainchain.Mar
 		return nil
 	}
 	opportunities, err := p.opportunities.Generate(ctx, GenerateRequest{
-		BlockNumber: version.Number,
-		Version:     version,
-		Routes:      routes,
+		Version: version,
+		Routes:  routes,
 	})
 	if err != nil {
 		return err

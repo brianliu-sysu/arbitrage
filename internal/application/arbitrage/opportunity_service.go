@@ -9,51 +9,29 @@ import (
 	"sync"
 	"time"
 
+	"github.com/brianliu-sysu/uniswapv3/internal/application/committedmarket"
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
-	"github.com/brianliu-sysu/uniswapv3/internal/domain/asset"
 	domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
-	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
-	marketpancake "github.com/brianliu-sysu/uniswapv3/internal/domain/market/pancakev3"
-	marketquick "github.com/brianliu-sysu/uniswapv3/internal/domain/market/quickswapv3"
-	marketuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
-	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap"
 )
 
-// ReadinessChecker gates scanning on pool and system readiness across protocols.
-type ReadinessChecker interface {
-	IsSystemReady() bool
-	IsV3PoolReady(poolAddress common.Address) bool
-	IsPancakeV3PoolReady(poolAddress common.Address) bool
-	IsQuickSwapV3PoolReady(poolAddress common.Address) bool
-	IsV4PoolReady(poolID marketuniv4.PoolID) bool
-	IsBalancerPoolReady(poolID marketbalancer.PoolID) bool
-}
-
 // OpportunityService generates opportunities from affected routes.
 type OpportunityService struct {
-	univ3Pools            marketuniv3.PoolRepository
-	pancakePools          marketpancake.PoolRepository
-	quickSwapPools        marketquick.PoolRepository
-	univ4Pools            marketuniv4.PoolRepository
-	balancerPools         marketbalancer.PoolRepository
-	quotes                *quoteunified.QuoteService
-	evaluator             *domainarb.Evaluator
-	optimizer             *domainarb.Optimizer
-	gas                   domainarb.GasEstimator
-	flashLoans            []domainarb.FlashLoanOption
-	mu                    sync.RWMutex
-	strategies            []domainarb.Strategy
-	readiness             ReadinessChecker
-	logger                *zap.Logger
-	now                   func() time.Time
-	marketVersion         MarketVersionReader
-	poolGraph             quoteunified.PoolGraph
-	wrappedNative         common.Address
-	coinbasePaymentBPS    uint16
-	settlementSlippageBPS uint16
+	market             committedmarket.Reader
+	quotes             *quoteunified.QuoteService
+	evaluator          *domainarb.Evaluator
+	optimizer          *domainarb.Optimizer
+	gas                domainarb.GasEstimator
+	flashLoans         []domainarb.FlashLoanOption
+	mu                 sync.RWMutex
+	strategies         []domainarb.Strategy
+	logger             *zap.Logger
+	now                func() time.Time
+	poolGraph          quoteunified.PoolGraph
+	wrappedNative      common.Address
+	coinbasePaymentBPS uint16
 }
 
 func (s *OpportunityService) SetCoinbasePaymentBPS(paymentBPS uint16) {
@@ -65,22 +43,10 @@ func (s *OpportunityService) SetCoinbasePaymentBPS(paymentBPS uint16) {
 	s.mu.Unlock()
 }
 
-func (s *OpportunityService) SetSettlementSlippageBPS(slippageBPS uint16) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	s.settlementSlippageBPS = slippageBPS
-	s.mu.Unlock()
-}
-
 // SetGasCostConversion configures the routing graph used to value native gas in each strategy's profit token.
 func (s *OpportunityService) SetGasCostConversion(graph quoteunified.PoolGraph, wrappedNative common.Address) {
 	if s == nil {
 		return
-	}
-	if wrappedNative == (common.Address{}) {
-		wrappedNative = asset.MainnetWETH
 	}
 	s.mu.Lock()
 	s.poolGraph = graph
@@ -88,32 +54,29 @@ func (s *OpportunityService) SetGasCostConversion(graph quoteunified.PoolGraph, 
 	s.mu.Unlock()
 }
 
-type MarketVersionReader interface {
-	Version() domainchain.MarketVersion
+func (s *OpportunityService) IsMarketReady() bool {
+	if s == nil || s.market == nil {
+		return false
+	}
+	snapshot := s.market.Snapshot()
+	return snapshot != nil && !snapshot.Version().IsZero()
 }
 
 // GenerateRequest is the input for opportunity generation.
 type GenerateRequest struct {
-	BlockNumber uint64
-	Version     domainchain.MarketVersion
-	Routes      []domainarb.RouteRef
+	Version domainchain.MarketVersion
+	Routes  []domainarb.RouteRef
 }
 
 func NewOpportunityService(
-	univ3Pools marketuniv3.PoolRepository,
-	pancakePools marketpancake.PoolRepository,
-	quickSwapPools marketquick.PoolRepository,
-	univ4Pools marketuniv4.PoolRepository,
-	balancerPools marketbalancer.PoolRepository,
+	market committedmarket.Reader,
 	quotes *quoteunified.QuoteService,
 	gas domainarb.GasEstimator,
 	strategies []domainarb.Strategy,
-	readiness ReadinessChecker,
 	minAmount, maxAmount *big.Int,
 	optimizerIterations int,
 	flashLoans []domainarb.FlashLoanOption,
 	logger *zap.Logger,
-	marketVersion MarketVersionReader,
 ) *OpportunityService {
 	if logger == nil {
 		logger = zap.NewNop()
@@ -122,21 +85,15 @@ func NewOpportunityService(
 		flashLoans = domainarb.DefaultFlashLoanOptions()
 	}
 	return &OpportunityService{
-		univ3Pools:     univ3Pools,
-		pancakePools:   pancakePools,
-		quickSwapPools: quickSwapPools,
-		univ4Pools:     univ4Pools,
-		balancerPools:  balancerPools,
-		quotes:         quotes,
-		evaluator:      domainarb.NewEvaluator(),
-		optimizer:      domainarb.NewOptimizer(minAmount, maxAmount, optimizerIterations),
-		gas:            gas,
-		flashLoans:     append([]domainarb.FlashLoanOption(nil), flashLoans...),
-		strategies:     append([]domainarb.Strategy(nil), strategies...),
-		readiness:      readiness,
-		logger:         logger,
-		now:            time.Now,
-		marketVersion:  marketVersion,
+		market:     market,
+		quotes:     quotes,
+		evaluator:  domainarb.NewEvaluator(),
+		optimizer:  domainarb.NewOptimizer(minAmount, maxAmount, optimizerIterations),
+		gas:        gas,
+		flashLoans: append([]domainarb.FlashLoanOption(nil), flashLoans...),
+		strategies: append([]domainarb.Strategy(nil), strategies...),
+		logger:     logger,
+		now:        time.Now,
 	}
 }
 
@@ -150,26 +107,25 @@ func (s *OpportunityService) SetStrategies(strategies []domainarb.Strategy) {
 // Generate evaluates affected routes and returns accepted opportunities.
 func (s *OpportunityService) Generate(ctx context.Context, req GenerateRequest) ([]*domainarb.Opportunity, error) {
 	started := time.Now()
-	if s.marketVersion != nil && !req.Version.IsZero() {
-		current := s.marketVersion.Version()
-		if current.Generation != req.Version.Generation || !current.SameBlock(req.Version) {
-			return nil, fmt.Errorf("committed market version changed: got %+v, want %+v", current, req.Version)
-		}
+	if s.market == nil {
+		return nil, fmt.Errorf("committed market reader is not configured")
 	}
-	strategies := s.strategiesSnapshot()
-	if s.readiness != nil && !s.readiness.IsSystemReady() {
-		s.logger.Debug("arbitrage scan skipped",
-			zap.Uint64("block", req.BlockNumber),
-			zap.String("reason", "system_not_ready"),
-			zap.Int("routes", len(req.Routes)),
-			zap.Int("strategies", len(strategies)),
-			zap.Int64("duration_ms", time.Since(started).Milliseconds()),
-		)
+	snapshot := s.market.Snapshot()
+	if snapshot == nil {
+		return nil, fmt.Errorf("committed market snapshot is not available")
+	}
+	current := snapshot.Version()
+	if current.IsZero() {
 		return nil, nil
 	}
+	if current.Generation != req.Version.Generation || !current.SameBlock(req.Version) {
+		return nil, fmt.Errorf("committed market version changed: got %+v, want %+v", current, req.Version)
+	}
+	blockNumber := current.Number
+	strategies := s.strategiesSnapshot()
 	if len(req.Routes) == 0 {
 		s.logger.Debug("arbitrage scan skipped",
-			zap.Uint64("block", req.BlockNumber),
+			zap.Uint64("block", blockNumber),
 			zap.String("reason", "no_affected_routes"),
 			zap.Int("strategies", len(strategies)),
 			zap.Int64("duration_ms", time.Since(started).Milliseconds()),
@@ -178,7 +134,7 @@ func (s *OpportunityService) Generate(ctx context.Context, req GenerateRequest) 
 	}
 	if len(strategies) == 0 {
 		s.logger.Debug("arbitrage scan skipped",
-			zap.Uint64("block", req.BlockNumber),
+			zap.Uint64("block", blockNumber),
 			zap.String("reason", "no_strategies"),
 			zap.Int("routes", len(req.Routes)),
 			zap.Int64("duration_ms", time.Since(started).Milliseconds()),
@@ -188,7 +144,6 @@ func (s *OpportunityService) Generate(ctx context.Context, req GenerateRequest) 
 
 	strategiesByStart := indexStrategiesByStartToken(strategies)
 	opportunities := make([]*domainarb.Opportunity, 0)
-	routeNotReady := 0
 	strategyMismatches := 0
 	quoteErrors := 0
 	nonProfitable := 0
@@ -196,17 +151,6 @@ func (s *OpportunityService) Generate(ctx context.Context, req GenerateRequest) 
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if err := s.ensureRouteReady(routeRef); err != nil {
-			routeNotReady++
-			s.logger.Debug("arbitrage route skipped",
-				zap.Uint64("block", req.BlockNumber),
-				zap.String("route", routeRef.ID),
-				zap.String("reason", "route_not_ready"),
-				zap.Error(err),
-			)
-			continue
-		}
-
 		candidates := strategiesByStart[routeRef.Route.TokenIn]
 		for _, strategy := range candidates {
 			if err := ctx.Err(); err != nil {
@@ -217,11 +161,11 @@ func (s *OpportunityService) Generate(ctx context.Context, req GenerateRequest) 
 				continue
 			}
 
-			opp, err := s.generateForRoute(ctx, req.BlockNumber, strategy, routeRef)
+			opp, err := s.generateForRoute(ctx, snapshot, blockNumber, strategy, routeRef)
 			if err != nil {
 				quoteErrors++
 				s.logger.Debug("arbitrage route skipped",
-					zap.Uint64("block", req.BlockNumber),
+					zap.Uint64("block", blockNumber),
 					zap.String("route", routeRef.ID),
 					zap.String("strategy", strategy.ID),
 					zap.String("reason", "generate_failed"),
@@ -238,10 +182,9 @@ func (s *OpportunityService) Generate(ctx context.Context, req GenerateRequest) 
 	}
 
 	s.logger.Debug("arbitrage scan completed",
-		zap.Uint64("block", req.BlockNumber),
+		zap.Uint64("block", blockNumber),
 		zap.Int("routes", len(req.Routes)),
 		zap.Int("strategies", len(strategies)),
-		zap.Int("route_not_ready", routeNotReady),
 		zap.Int("strategy_mismatches", strategyMismatches),
 		zap.Int("generate_errors", quoteErrors),
 		zap.Int("rejected", nonProfitable),
@@ -267,11 +210,12 @@ func (s *OpportunityService) strategiesSnapshot() []domainarb.Strategy {
 
 func (s *OpportunityService) generateForRoute(
 	ctx context.Context,
+	snapshot committedmarket.Snapshot,
 	blockNumber uint64,
 	strategy domainarb.Strategy,
 	routeRef domainarb.RouteRef,
 ) (*domainarb.Opportunity, error) {
-	pools, err := s.loadRoutePools(ctx, routeRef.Route)
+	pools, err := snapshot.LoadRoutePools(ctx, routeRef.Route)
 	if err != nil {
 		return nil, err
 	}
@@ -308,7 +252,7 @@ func (s *OpportunityService) generateForRoute(
 		return nil, err
 	}
 
-	gasCost, err := s.gasCostInToken(ctx, gas.CostWei, strategy.StartToken)
+	gasCost, err := s.gasCostInToken(ctx, snapshot, gas.CostWei, strategy.StartToken)
 	if err != nil {
 		return nil, fmt.Errorf("convert gas cost to profit token %s: %w", strategy.StartToken.Hex(), err)
 	}
@@ -328,7 +272,7 @@ func (s *OpportunityService) generateForRoute(
 		QuoteSteps:         opportunityQuoteSteps(quoteSteps),
 	})
 	if evaluation.CoinbasePayment.Sign() > 0 {
-		builderPaymentWei, conversionErr := s.tokenAmountInWrappedNative(ctx, evaluation.CoinbasePayment, strategy.StartToken)
+		builderPaymentWei, conversionErr := s.tokenAmountInWrappedNative(ctx, snapshot, evaluation.CoinbasePayment, strategy.StartToken)
 		if conversionErr != nil {
 			return nil, fmt.Errorf("convert builder payment to native token: %w", conversionErr)
 		}
@@ -380,6 +324,7 @@ func (s *OpportunityService) generateForRoute(
 
 func (s *OpportunityService) tokenAmountInWrappedNative(
 	ctx context.Context,
+	snapshot committedmarket.Snapshot,
 	amount *big.Int,
 	token common.Address,
 ) (*big.Int, error) {
@@ -391,7 +336,7 @@ func (s *OpportunityService) tokenAmountInWrappedNative(
 	wrappedNative := s.wrappedNative
 	s.mu.RUnlock()
 	if wrappedNative == (common.Address{}) {
-		wrappedNative = asset.MainnetWETH
+		return nil, errors.New("wrapped native token is not configured")
 	}
 	if token == (common.Address{}) || token == wrappedNative {
 		return new(big.Int).Set(amount), nil
@@ -408,7 +353,7 @@ func (s *OpportunityService) tokenAmountInWrappedNative(
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		pools, loadErr := s.loadRoutePools(ctx, route)
+		pools, loadErr := snapshot.LoadRoutePools(ctx, route)
 		if loadErr != nil {
 			continue
 		}
@@ -425,7 +370,12 @@ func (s *OpportunityService) tokenAmountInWrappedNative(
 	return bestAmountOut, nil
 }
 
-func (s *OpportunityService) gasCostInToken(ctx context.Context, costWei *big.Int, token common.Address) (*big.Int, error) {
+func (s *OpportunityService) gasCostInToken(
+	ctx context.Context,
+	snapshot committedmarket.Snapshot,
+	costWei *big.Int,
+	token common.Address,
+) (*big.Int, error) {
 	if costWei == nil || costWei.Sign() <= 0 {
 		return new(big.Int), nil
 	}
@@ -434,7 +384,7 @@ func (s *OpportunityService) gasCostInToken(ctx context.Context, costWei *big.In
 	wrappedNative := s.wrappedNative
 	s.mu.RUnlock()
 	if wrappedNative == (common.Address{}) {
-		wrappedNative = asset.MainnetWETH
+		return nil, errors.New("wrapped native token is not configured")
 	}
 	if token == (common.Address{}) || token == wrappedNative {
 		return new(big.Int).Set(costWei), nil
@@ -448,7 +398,7 @@ func (s *OpportunityService) gasCostInToken(ctx context.Context, costWei *big.In
 	}
 	var bestAmountOut *big.Int
 	for _, route := range routes {
-		pools, loadErr := s.loadRoutePools(ctx, route)
+		pools, loadErr := snapshot.LoadRoutePools(ctx, route)
 		if loadErr != nil {
 			continue
 		}
@@ -524,137 +474,6 @@ func cloneBigIntOrZero(value *big.Int) *big.Int {
 		return new(big.Int)
 	}
 	return new(big.Int).Set(value)
-}
-
-func (s *OpportunityService) ensureRouteReady(routeRef domainarb.RouteRef) error {
-	if s.readiness == nil {
-		return nil
-	}
-	for _, hop := range routeRef.Route.Hops {
-		switch hop.Version {
-		case quoteunified.PoolVersionV3:
-			if !s.readiness.IsV3PoolReady(hop.PoolV3) {
-				return fmt.Errorf("univ3 pool %s is not ready", hop.PoolV3.Hex())
-			}
-		case quoteunified.PoolVersionPancakeV3:
-			if !s.readiness.IsPancakeV3PoolReady(hop.PoolPancakeV3) {
-				return fmt.Errorf("pancakev3 pool %s is not ready", hop.PoolPancakeV3.Hex())
-			}
-		case quoteunified.PoolVersionQuickSwapV3:
-			if !s.readiness.IsQuickSwapV3PoolReady(hop.PoolQuickSwapV3) {
-				return fmt.Errorf("quickswapv3 pool %s is not ready", hop.PoolQuickSwapV3.Hex())
-			}
-		case quoteunified.PoolVersionV4:
-			if !s.readiness.IsV4PoolReady(hop.PoolV4) {
-				return fmt.Errorf("v4 pool %s is not ready", hop.PoolV4.String())
-			}
-		case quoteunified.PoolVersionBalancer:
-			if !s.readiness.IsBalancerPoolReady(hop.PoolBalancer) {
-				return fmt.Errorf("balancer pool %s is not ready", hop.PoolBalancer.String())
-			}
-		case quoteunified.PoolVersionWrapWETH, quoteunified.PoolVersionUnwrapWETH:
-			continue
-		default:
-			return fmt.Errorf("unsupported pool version %d", hop.Version)
-		}
-	}
-	return nil
-}
-
-func (s *OpportunityService) loadRoutePools(ctx context.Context, route quoteunified.Route) (quoteunified.RoutePools, error) {
-	pools := quoteunified.RoutePools{
-		V3:          make(map[common.Address]*marketuniv3.Pool),
-		PancakeV3:   make(map[common.Address]*marketpancake.Pool),
-		QuickSwapV3: make(map[common.Address]*marketquick.Pool),
-		V4:          make(map[marketuniv4.PoolID]*marketuniv4.Pool),
-		Balancer:    make(map[marketbalancer.PoolID]*marketbalancer.Pool),
-	}
-
-	for _, hop := range route.Hops {
-		switch hop.Version {
-		case quoteunified.PoolVersionV3:
-			if _, ok := pools.V3[hop.PoolV3]; ok {
-				continue
-			}
-			if s.univ3Pools == nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("v3 pool repository is nil")
-			}
-			pool, err := s.univ3Pools.Get(ctx, hop.PoolV3)
-			if err != nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("load v3 pool %s: %w", hop.PoolV3.Hex(), err)
-			}
-			if pool == nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("v3 pool %s not found", hop.PoolV3.Hex())
-			}
-			pools.V3[hop.PoolV3] = pool
-		case quoteunified.PoolVersionPancakeV3:
-			if _, ok := pools.PancakeV3[hop.PoolPancakeV3]; ok {
-				continue
-			}
-			if s.pancakePools == nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("pancakev3 pool repository is nil")
-			}
-			pool, err := s.pancakePools.Get(ctx, hop.PoolPancakeV3)
-			if err != nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("load pancakev3 pool %s: %w", hop.PoolPancakeV3.Hex(), err)
-			}
-			if pool == nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("pancakev3 pool %s not found", hop.PoolPancakeV3.Hex())
-			}
-			pools.PancakeV3[hop.PoolPancakeV3] = pool
-		case quoteunified.PoolVersionQuickSwapV3:
-			if _, ok := pools.QuickSwapV3[hop.PoolQuickSwapV3]; ok {
-				continue
-			}
-			if s.quickSwapPools == nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("quickswapv3 pool repository is nil")
-			}
-			pool, err := s.quickSwapPools.Get(ctx, hop.PoolQuickSwapV3)
-			if err != nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("load quickswapv3 pool %s: %w", hop.PoolQuickSwapV3.Hex(), err)
-			}
-			if pool == nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("quickswapv3 pool %s not found", hop.PoolQuickSwapV3.Hex())
-			}
-			pools.QuickSwapV3[hop.PoolQuickSwapV3] = pool
-		case quoteunified.PoolVersionV4:
-			if _, ok := pools.V4[hop.PoolV4]; ok {
-				continue
-			}
-			if s.univ4Pools == nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("v4 pool repository is nil")
-			}
-			pool, err := s.univ4Pools.Get(ctx, hop.PoolV4)
-			if err != nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("load v4 pool %s: %w", hop.PoolV4.String(), err)
-			}
-			if pool == nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("v4 pool %s not found", hop.PoolV4.String())
-			}
-			pools.V4[hop.PoolV4] = pool
-		case quoteunified.PoolVersionBalancer:
-			if _, ok := pools.Balancer[hop.PoolBalancer]; ok {
-				continue
-			}
-			if s.balancerPools == nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("balancer pool repository is nil")
-			}
-			pool, err := s.balancerPools.Get(ctx, hop.PoolBalancer)
-			if err != nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("load balancer pool %s: %w", hop.PoolBalancer.String(), err)
-			}
-			if pool == nil {
-				return quoteunified.RoutePools{}, fmt.Errorf("balancer pool %s not found", hop.PoolBalancer.String())
-			}
-			pools.Balancer[hop.PoolBalancer] = pool
-		case quoteunified.PoolVersionWrapWETH, quoteunified.PoolVersionUnwrapWETH:
-			continue
-		default:
-			return quoteunified.RoutePools{}, fmt.Errorf("unsupported pool version %d", hop.Version)
-		}
-	}
-
-	return pools, nil
 }
 
 type routeQuoter struct {

@@ -23,8 +23,8 @@ func (s *Services) CollectDiagnostics(ctx context.Context) Diagnostics {
 		Routes:      len(s.Scan.Routes()),
 		StartTokens: len(s.StartTokens()),
 	}
-	if s.readiness != nil {
-		d.ArbitrageReady = s.readiness.IsSystemReady()
+	if s.Opportunities != nil {
+		d.ArbitrageReady = s.Opportunities.IsMarketReady()
 	}
 	if edges, err := s.countGraphEdges(ctx); err != nil {
 		d.RefreshError = err.Error()

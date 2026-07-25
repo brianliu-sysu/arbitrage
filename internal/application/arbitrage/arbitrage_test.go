@@ -10,7 +10,6 @@ import (
 	arbitrageapp "github.com/brianliu-sysu/uniswapv3/internal/application/arbitrage"
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/market"
-	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
 	marketuniv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	domainquote "github.com/brianliu-sysu/uniswapv3/internal/domain/quote"
@@ -148,17 +147,6 @@ func (r *memoryOpportunityRepo) List(_ context.Context, limit int) ([]*domainarb
 func (r *memoryOpportunityRepo) Delete(_ context.Context, id string) error {
 	delete(r.items, id)
 	return nil
-}
-
-type alwaysReady struct{}
-
-func (alwaysReady) IsSystemReady() bool                          { return true }
-func (alwaysReady) IsV3PoolReady(_ common.Address) bool          { return true }
-func (alwaysReady) IsPancakeV3PoolReady(_ common.Address) bool   { return true }
-func (alwaysReady) IsQuickSwapV3PoolReady(_ common.Address) bool { return true }
-func (alwaysReady) IsV4PoolReady(_ marketuniv4.PoolID) bool      { return true }
-func (alwaysReady) IsBalancerPoolReady(_ marketbalancer.PoolID) bool {
-	return true
 }
 
 func testToken(index byte) common.Address {
@@ -418,7 +406,6 @@ func TestRefreshTriangleRoutesRebuildsGraph(t *testing.T) {
 		Pools:                 repo,
 		Registry:              registry,
 		Quotes:                unifiedQuotes(),
-		Readiness:             alwaysReady{},
 		TriangleEnabled:       true,
 		ConfiguredStartTokens: []common.Address{tokenA},
 		MinNetProfitWei:       big.NewInt(1),
@@ -484,7 +471,6 @@ func TestRefreshTriangleRoutesAddsAutoStartTokens(t *testing.T) {
 		Pools:           repo,
 		Registry:        registry,
 		Quotes:          unifiedQuotes(),
-		Readiness:       alwaysReady{},
 		TriangleEnabled: true,
 		MinNetProfitWei: big.NewInt(1),
 	})
@@ -560,7 +546,6 @@ func TestRefreshSpreadRoutesRebuildsGraph(t *testing.T) {
 		Pools:             repo,
 		Registry:          registry,
 		Quotes:            unifiedQuotes(),
-		Readiness:         alwaysReady{},
 		SpreadEnabled:     true,
 		SpreadStartTokens: []common.Address{tokenA},
 		MinNetProfitWei:   big.NewInt(1),

@@ -8,6 +8,7 @@ import (
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync/protocol"
 	domainchain "github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	marketuniv3 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ3"
+	quoteunified "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/unified"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -106,6 +107,41 @@ func TestViewKeepsOldSnapshotUntilCompleteBlockCommits(t *testing.T) {
 	}
 	if committedA.LastBlockNumber != 11 || committedB.LastBlockNumber != 10 {
 		t.Fatalf("copy-on-write replaced unchanged pool: A=%d B=%d", committedA.LastBlockNumber, committedB.LastBlockNumber)
+	}
+}
+
+func TestSnapshotRemainsPinnedAfterNewVersionPublishes(t *testing.T) {
+	poolID := common.HexToAddress("0x0000000000000000000000000000000000000011")
+	token0 := common.HexToAddress("0x0000000000000000000000000000000000000001")
+	token1 := common.HexToAddress("0x0000000000000000000000000000000000000002")
+	source := &testUniv3Repository{pools: map[common.Address]*marketuniv3.Pool{
+		poolID: marketuniv3.NewPool(poolID, token0, token1, 500, 10),
+	}}
+	source.pools[poolID].LastBlockNumber = 10
+	view := NewView(Sources{
+		Univ3Pools:    source,
+		Univ3Registry: testAddressRegistry{ids: []common.Address{poolID}},
+	})
+	if err := view.Publish(context.Background(), domainchain.MarketVersion{Number: 10, Generation: 1}, Changes{}); err != nil {
+		t.Fatalf("publish block 10: %v", err)
+	}
+	block10 := view.Snapshot()
+
+	source.pools[poolID].LastBlockNumber = 11
+	if err := view.Publish(context.Background(), domainchain.MarketVersion{Number: 11, Generation: 2}, Changes{Univ3: []common.Address{poolID}}); err != nil {
+		t.Fatalf("publish block 11: %v", err)
+	}
+
+	route := quoteunified.NewDirectV3Route(poolID, token0, token1)
+	pools, err := block10.LoadRoutePools(context.Background(), route)
+	if err != nil {
+		t.Fatalf("load pools from pinned snapshot: %v", err)
+	}
+	if block10.Version().Number != 10 || pools.V3[poolID].LastBlockNumber != 10 {
+		t.Fatalf("snapshot advanced after publish: version=%d pool=%d", block10.Version().Number, pools.V3[poolID].LastBlockNumber)
+	}
+	if view.Snapshot().Version().Number != 11 {
+		t.Fatalf("active snapshot did not advance: version=%d", view.Snapshot().Version().Number)
 	}
 }
 
