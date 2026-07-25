@@ -1,4 +1,4 @@
-package runtime
+package chainruntime
 
 import (
 	"context"
@@ -29,6 +29,7 @@ type chainRuntime struct {
 type chainResources struct {
 	stores            *chainStores
 	blockchain        *chaininfra.Services
+	headLogFetcher    *chaininfra.HeadLogFetcher
 	protocols         protocolResources
 	contractExecutor  *contractapp.AppService
 	persistenceCtx    context.Context

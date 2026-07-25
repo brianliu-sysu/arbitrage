@@ -76,15 +76,6 @@ func (s *BlockConsumer[PoolID, Event]) WithBlockConsumptionPaused(ctx context.Co
 	return fn(ctx)
 }
 
-// HandleBlock consumes logs fetched once by the shared-head runner.
-func (s *BlockConsumer[PoolID, Event]) HandleBlock(ctx context.Context, head blockchain.BlockHeader, logs []RawLog) error {
-	prepared, err := s.PrepareBlock(ctx, head, logs)
-	if err != nil {
-		return err
-	}
-	return prepared.Apply(ctx)
-}
-
 // PrepareBlock filters and parses protocol logs without mutating pool state.
 func (s *BlockConsumer[PoolID, Event]) PrepareBlock(ctx context.Context, head blockchain.BlockHeader, sharedLogs []RawLog) (PreparedBlock, error) {
 	pools := s.lifecycle.ListActive()

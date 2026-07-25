@@ -25,11 +25,6 @@ type BlockPreparer interface {
 	PrepareBlock(context.Context, blockchain.BlockHeader, []RawLog) (PreparedBlock, error)
 }
 
-type BlockHandler interface {
-	BlockPreparer
-	HandleBlock(context.Context, blockchain.BlockHeader, []RawLog) error
-}
-
 type ReorgPreparer interface {
 	PrepareReorg(context.Context, blockchain.Reorg) (PreparedReorg, error)
 }
@@ -38,7 +33,7 @@ type HeadLogFetcher interface {
 	FetchBlockLogs(context.Context, common.Hash) ([]RawLog, error)
 }
 
-type NamedHeadHandler struct {
-	Name    string
-	Handler BlockPreparer
+type NamedBlockPreparer struct {
+	Name     string
+	Preparer BlockPreparer
 }

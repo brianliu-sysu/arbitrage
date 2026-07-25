@@ -17,9 +17,9 @@ func (f blockPreparerFunc) PrepareBlock(ctx context.Context, head blockchain.Blo
 }
 
 func TestMarketBlockProcessorRejectsNilPreparedBlock(t *testing.T) {
-	processor := syncapp.NewMarketBlockProcessor([]syncapp.NamedHeadHandler{{
+	processor := syncapp.NewMarketBlockProcessor([]syncapp.NamedBlockPreparer{{
 		Name: "univ3",
-		Handler: blockPreparerFunc(func(context.Context, blockchain.BlockHeader, []blockchain.RawLog) (syncapp.PreparedBlock, error) {
+		Preparer: blockPreparerFunc(func(context.Context, blockchain.BlockHeader, []blockchain.RawLog) (syncapp.PreparedBlock, error) {
 			return nil, nil
 		}),
 	}})
@@ -52,9 +52,9 @@ func TestMarketBlockProcessorRollsBackAfterApplyContextCancellation(t *testing.T
 			},
 		}, nil
 	})
-	processor := syncapp.NewMarketBlockProcessor([]syncapp.NamedHeadHandler{
-		{Name: "univ3", Handler: first},
-		{Name: "pancakev3", Handler: second},
+	processor := syncapp.NewMarketBlockProcessor([]syncapp.NamedBlockPreparer{
+		{Name: "univ3", Preparer: first},
+		{Name: "pancakev3", Preparer: second},
 	})
 
 	if _, err := processor.Process(ctx, blockchain.BlockHeader{Number: 1}, nil); err == nil {

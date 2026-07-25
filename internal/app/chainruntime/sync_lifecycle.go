@@ -1,4 +1,4 @@
-package runtime
+package chainruntime
 
 import (
 	"context"
@@ -38,12 +38,12 @@ func newSyncLifecycle(runtime *chainRuntime, logger *zap.Logger) (*syncLifecycle
 		runtime: runtime,
 		logger:  logger,
 	}
-	handlers := make([]syncapp.NamedHeadHandler, 0, 5)
+	preparers := make([]syncapp.NamedBlockPreparer, 0, 5)
 	for _, module := range runtime.protocols.modules {
 		runner.bootstraps.add(module.Name(), module.Bootstrapper())
-		handlers = append(handlers, syncapp.NamedHeadHandler{Name: module.Name(), Handler: module.HeadHandler()})
+		preparers = append(preparers, syncapp.NamedBlockPreparer{Name: module.Name(), Preparer: module.BlockPreparer()})
 	}
-	if len(handlers) > 0 {
+	if len(preparers) > 0 {
 		var subscriber syncapp.HeadSubscriber
 		var blocks syncapp.CanonicalBlockReader
 		if runtime.resources.blockchain != nil {
@@ -53,11 +53,11 @@ func newSyncLifecycle(runtime *chainRuntime, logger *zap.Logger) (*syncLifecycle
 		sharedHead, err := syncapp.NewSharedHeadRunner(
 			syncapp.SharedHeadDependencies{
 				Subscriber:  subscriber,
-				LogFetcher:  runtime.resources.protocols.headLogFetcher,
+				LogFetcher:  runtime.resources.headLogFetcher,
 				Blocks:      blocks,
 				Coordinator: runtime.headCoordinator,
 			},
-			handlers,
+			preparers,
 			runtime.cfg.Sync.ReorgMaxDepth,
 			logger.Named("shared-head"),
 		)

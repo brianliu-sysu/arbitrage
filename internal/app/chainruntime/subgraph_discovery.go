@@ -1,4 +1,4 @@
-package runtime
+package chainruntime
 
 import (
 	"context"
@@ -18,7 +18,7 @@ type poolOnboarder[PoolID comparable] interface {
 
 func (r *syncLifecycle) runSubgraphDiscoveryWatchers() {
 	for _, module := range r.runtime.protocols.modules {
-		module.StartDiscovery(r, r.runtime.cfg, r.runtime.resources.protocols)
+		module.StartDiscovery(r, r.runtime.cfg)
 	}
 }
 

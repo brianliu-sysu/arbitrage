@@ -628,7 +628,7 @@ func TestSnapshotSchedulerRunOnce(t *testing.T) {
 	_ = readiness
 }
 
-func TestBlockConsumerHandlesSharedBlock(t *testing.T) {
+func TestBlockConsumerPreparesAndAppliesSharedBlock(t *testing.T) {
 	ctx := context.Background()
 	poolRepo := newMemoryPoolRepo()
 	checkpointRepo := newMemoryCheckpointRepo()
@@ -653,8 +653,12 @@ func TestBlockConsumerHandlesSharedBlock(t *testing.T) {
 
 	head := blockchain.BlockHeader{Number: 2, Hash: common.HexToHash("0x2"), ParentHash: common.HexToHash("0x1")}
 
-	if err := services.Lifecycle.BlockHandler.HandleBlock(ctx, head, nil); err != nil {
-		t.Fatalf("handle block: %v", err)
+	prepared, err := services.Lifecycle.BlockPreparer.PrepareBlock(ctx, head, nil)
+	if err != nil {
+		t.Fatalf("prepare block: %v", err)
+	}
+	if err := prepared.Apply(ctx); err != nil {
+		t.Fatalf("apply block: %v", err)
 	}
 	if !services.Lifecycle.Readiness.IsPoolReady(testPoolAddress()) {
 		t.Fatal("expected pool ready after block consumption")

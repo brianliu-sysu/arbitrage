@@ -1,4 +1,4 @@
-package runtime
+package chainruntime
 
 import (
 	"fmt"
@@ -9,15 +9,13 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// protocolResources owns the complete infrastructure and registry state for
-// every enabled protocol on one chain.
+// protocolResources owns protocol-specific infrastructure and registry state.
 type protocolResources struct {
-	headLogFetcher *chaininfra.HeadLogFetcher
-	univ3          *univ3Resources
-	pancakeV3      *pancakeV3Resources
-	quickSwapV3    *quickSwapV3Resources
-	univ4          *univ4Resources
-	balancer       *balancerResources
+	modules []protocolResource
+}
+
+type protocolResource interface {
+	protocolResource()
 }
 
 type univ3Resources struct {
@@ -45,55 +43,91 @@ type balancerResources struct {
 	registry   *registry.CompositeBalancerRegistry
 }
 
-func newProtocolResources(cfg config.ChainConfig, chain *chaininfra.Services) (protocolResources, error) {
-	var result protocolResources
+func (*univ3Resources) protocolResource()       {}
+func (*pancakeV3Resources) protocolResource()   {}
+func (*quickSwapV3Resources) protocolResource() {}
+func (*univ4Resources) protocolResource()       {}
+func (*balancerResources) protocolResource()    {}
+
+func findProtocolResource[T protocolResource](resources protocolResources) T {
+	var zero T
+	for _, module := range resources.modules {
+		if typed, ok := module.(T); ok {
+			return typed
+		}
+	}
+	return zero
+}
+
+func (r protocolResources) univ3() *univ3Resources {
+	return findProtocolResource[*univ3Resources](r)
+}
+
+func (r protocolResources) pancakeV3() *pancakeV3Resources {
+	return findProtocolResource[*pancakeV3Resources](r)
+}
+
+func (r protocolResources) quickSwapV3() *quickSwapV3Resources {
+	return findProtocolResource[*quickSwapV3Resources](r)
+}
+
+func (r protocolResources) univ4() *univ4Resources {
+	return findProtocolResource[*univ4Resources](r)
+}
+
+func (r protocolResources) balancer() *balancerResources {
+	return findProtocolResource[*balancerResources](r)
+}
+
+func newProtocolResources(cfg config.ChainConfig, chain *chaininfra.Services) (protocolResources, *chaininfra.HeadLogFetcher, error) {
+	result := protocolResources{modules: make([]protocolResource, 0, 5)}
 	var topicGroups [][]common.Hash
 	if cfg.Sync.Univ3.IsActive() {
 		blockchain, err := chaininfra.NewUniv3Services(chain, cfg.Univ3BlockchainConfig())
 		if err != nil {
-			return protocolResources{}, fmt.Errorf("create univ3 blockchain adapters: %w", err)
+			return protocolResources{}, nil, fmt.Errorf("create univ3 blockchain adapters: %w", err)
 		}
-		result.univ3 = &univ3Resources{blockchain: blockchain, registry: newPoolRegistry(cfg)}
+		result.modules = append(result.modules, &univ3Resources{blockchain: blockchain, registry: newPoolRegistry(cfg)})
 		topicGroups = append(topicGroups, chaininfra.PoolLogTopics())
 	}
 	if cfg.Sync.PancakeV3.IsActive() {
 		blockchain, err := chaininfra.NewPancakeV3Services(chain)
 		if err != nil {
-			return protocolResources{}, fmt.Errorf("create pancakev3 blockchain adapters: %w", err)
+			return protocolResources{}, nil, fmt.Errorf("create pancakev3 blockchain adapters: %w", err)
 		}
-		result.pancakeV3 = &pancakeV3Resources{blockchain: blockchain, registry: newPancakePoolRegistry(cfg)}
+		result.modules = append(result.modules, &pancakeV3Resources{blockchain: blockchain, registry: newPancakePoolRegistry(cfg)})
 		topicGroups = append(topicGroups, chaininfra.PancakePoolLogTopics())
 	}
 	if cfg.Sync.QuickSwapV3.IsActive() {
 		blockchain, err := chaininfra.NewQuickSwapV3Services(chain)
 		if err != nil {
-			return protocolResources{}, fmt.Errorf("create quickswapv3 blockchain adapters: %w", err)
+			return protocolResources{}, nil, fmt.Errorf("create quickswapv3 blockchain adapters: %w", err)
 		}
-		result.quickSwapV3 = &quickSwapV3Resources{blockchain: blockchain, registry: newQuickSwapPoolRegistry(cfg)}
+		result.modules = append(result.modules, &quickSwapV3Resources{blockchain: blockchain, registry: newQuickSwapPoolRegistry(cfg)})
 		topicGroups = append(topicGroups, chaininfra.QuickSwapPoolLogTopics())
 	}
 	if cfg.Sync.Univ4.IsActive() {
 		blockchain, err := chaininfra.NewUniv4Services(chain, cfg.Univ4BlockchainConfig())
 		if err != nil {
-			return protocolResources{}, fmt.Errorf("create univ4 blockchain adapters: %w", err)
+			return protocolResources{}, nil, fmt.Errorf("create univ4 blockchain adapters: %w", err)
 		}
 		poolRegistry, err := newV4PoolRegistry(cfg)
 		if err != nil {
-			return protocolResources{}, fmt.Errorf("create univ4 pool registry: %w", err)
+			return protocolResources{}, nil, fmt.Errorf("create univ4 pool registry: %w", err)
 		}
-		result.univ4 = &univ4Resources{blockchain: blockchain, registry: poolRegistry}
+		result.modules = append(result.modules, &univ4Resources{blockchain: blockchain, registry: poolRegistry})
 		topicGroups = append(topicGroups, chaininfra.V4PoolLogTopics())
 	}
 	if cfg.Sync.Balancer.IsActive() {
 		blockchain, err := chaininfra.NewBalancerServices(chain, cfg.BalancerBlockchainConfig())
 		if err != nil {
-			return protocolResources{}, fmt.Errorf("create balancer blockchain adapters: %w", err)
+			return protocolResources{}, nil, fmt.Errorf("create balancer blockchain adapters: %w", err)
 		}
 		poolRegistry, err := newBalancerPoolRegistry(cfg)
 		if err != nil {
-			return protocolResources{}, fmt.Errorf("create balancer pool registry: %w", err)
+			return protocolResources{}, nil, fmt.Errorf("create balancer pool registry: %w", err)
 		}
-		result.balancer = &balancerResources{blockchain: blockchain, registry: poolRegistry}
+		result.modules = append(result.modules, &balancerResources{blockchain: blockchain, registry: poolRegistry})
 		topicGroups = append(
 			topicGroups,
 			chaininfra.BalancerVaultV2LogTopics(),
@@ -101,10 +135,11 @@ func newProtocolResources(cfg config.ChainConfig, chain *chaininfra.Services) (p
 			chaininfra.BalancerPoolV2LogTopics(),
 		)
 	}
+	var headLogFetcher *chaininfra.HeadLogFetcher
 	if len(topicGroups) > 0 {
-		result.headLogFetcher = chaininfra.NewHeadLogFetcher(chain.Client, topicGroups...)
+		headLogFetcher = chaininfra.NewHeadLogFetcher(chain.Client, topicGroups...)
 	}
-	return result, nil
+	return result, headLogFetcher, nil
 }
 
 func newPoolRegistry(cfg config.ChainConfig) *registry.CompositeRegistry {

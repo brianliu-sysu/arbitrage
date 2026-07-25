@@ -1,4 +1,4 @@
-package runtime
+package chainruntime
 
 import (
 	"fmt"
@@ -35,7 +35,7 @@ func newQuoteV3AppService(
 ) *quoteuniv3.AppService {
 	cfg := runtime.cfg
 	services := runtime.protocols.univ3Services()
-	if !cfg.Sync.Univ3.IsActive() || services == nil {
+	if services == nil {
 		return nil
 	}
 	maxHops := cfg.Quote.MaxHops
@@ -50,7 +50,7 @@ func newQuotePancakeV3AppService(
 ) *quotepancakev3.AppService {
 	cfg := runtime.cfg
 	services := runtime.protocols.pancakeServices()
-	if !cfg.Sync.PancakeV3.IsActive() || services == nil || runtime.resources.protocols.pancakeV3 == nil {
+	if services == nil {
 		return nil
 	}
 	maxHops := cfg.Quote.MaxHops
@@ -65,7 +65,7 @@ func newQuoteQuickSwapV3AppService(
 ) *quotequickswapv3.AppService {
 	cfg := runtime.cfg
 	services := runtime.protocols.quickSwapServices()
-	if !cfg.Sync.QuickSwapV3.IsActive() || services == nil || runtime.resources.protocols.quickSwapV3 == nil {
+	if services == nil {
 		return nil
 	}
 	maxHops := cfg.Quote.MaxHops
@@ -80,7 +80,7 @@ func newQuoteV4AppService(
 ) *quoteuniv4.AppService {
 	cfg := runtime.cfg
 	services := runtime.protocols.univ4Services()
-	if services == nil || runtime.resources.protocols.univ4 == nil {
+	if services == nil {
 		return nil
 	}
 	maxHops := cfg.Quote.MaxHops
@@ -115,21 +115,25 @@ func newPoolsAppService(
 	chain *chaininfra.Services,
 	resources protocolResources,
 ) *poolsapp.AppService {
+	univ3Resources := resources.univ3()
+	pancakeResources := resources.pancakeV3()
+	univ4Resources := resources.univ4()
+	balancerResources := resources.balancer()
 	var poolRegistry *registry.CompositeRegistry
 	var pancakePoolRegistry *registry.PancakeCompositeRegistry
 	var v4PoolRegistry *registry.CompositeV4Registry
 	var balancerPoolRegistry *registry.CompositeBalancerRegistry
-	if resources.univ3 != nil {
-		poolRegistry = resources.univ3.registry
+	if univ3Resources != nil {
+		poolRegistry = univ3Resources.registry
 	}
-	if resources.pancakeV3 != nil {
-		pancakePoolRegistry = resources.pancakeV3.registry
+	if pancakeResources != nil {
+		pancakePoolRegistry = pancakeResources.registry
 	}
-	if resources.univ4 != nil {
-		v4PoolRegistry = resources.univ4.registry
+	if univ4Resources != nil {
+		v4PoolRegistry = univ4Resources.registry
 	}
-	if resources.balancer != nil {
-		balancerPoolRegistry = resources.balancer.registry
+	if balancerResources != nil {
+		balancerPoolRegistry = balancerResources.registry
 	}
 	var pancakeRegistry marketpancake.PoolRegistry
 	if pancakePoolRegistry != nil {
@@ -149,17 +153,17 @@ func newPoolsAppService(
 	var pancakeReader *chaininfra.PoolReader
 	var v4Reader *chaininfra.V4PoolReader
 	var balancerReader *chaininfra.BalancerPoolReader
-	if resources.univ3 != nil {
-		v3Reader = resources.univ3.blockchain.PoolReader
+	if univ3Resources != nil {
+		v3Reader = univ3Resources.blockchain.PoolReader
 	}
-	if resources.pancakeV3 != nil {
-		pancakeReader = resources.pancakeV3.blockchain.PoolReader
+	if pancakeResources != nil {
+		pancakeReader = pancakeResources.blockchain.PoolReader
 	}
-	if resources.univ4 != nil {
-		v4Reader = resources.univ4.blockchain.PoolReader
+	if univ4Resources != nil {
+		v4Reader = univ4Resources.blockchain.PoolReader
 	}
-	if resources.balancer != nil {
-		balancerReader = resources.balancer.blockchain.PoolReader
+	if balancerResources != nil {
+		balancerReader = balancerResources.blockchain.PoolReader
 	}
 	headReader := chaininfra.NewPoolsHeadReader(chain.Client)
 	univ3Reader := chaininfra.NewCLV3ChainReader(v3Reader)

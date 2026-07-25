@@ -12,7 +12,3 @@ const (
 	PoolStatusStopped       PoolStatus = "stopped"
 	PoolStatusError         PoolStatus = "error"
 )
-
-func (s PoolStatus) IsReady() bool {
-	return s == PoolStatusReady
-}

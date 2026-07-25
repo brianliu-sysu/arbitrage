@@ -14,26 +14,26 @@ type ProtocolLifecycleConfigurer[PoolID comparable] interface {
 
 // ProtocolLifecycle groups the runtime lifecycle of one pool protocol.
 type ProtocolLifecycle[PoolID comparable] struct {
-	Pools        *PoolLifecycleService[PoolID]
-	BlockHandler BlockHandler
-	Readiness    *ReadinessService[PoolID]
-	orchestrator *SyncOrchestrator[PoolID]
-	configurer   ProtocolLifecycleConfigurer[PoolID]
+	Pools         *PoolLifecycleService[PoolID]
+	BlockPreparer BlockPreparer
+	Readiness     *ReadinessService[PoolID]
+	orchestrator  *SyncOrchestrator[PoolID]
+	configurer    ProtocolLifecycleConfigurer[PoolID]
 }
 
 func NewProtocolLifecycle[PoolID comparable](
 	pools *PoolLifecycleService[PoolID],
-	blockHandler BlockHandler,
+	blockPreparer BlockPreparer,
 	readiness *ReadinessService[PoolID],
 	orchestrator *SyncOrchestrator[PoolID],
 	configurer ProtocolLifecycleConfigurer[PoolID],
 ) *ProtocolLifecycle[PoolID] {
 	return &ProtocolLifecycle[PoolID]{
-		Pools:        pools,
-		BlockHandler: blockHandler,
-		Readiness:    readiness,
-		orchestrator: orchestrator,
-		configurer:   configurer,
+		Pools:         pools,
+		BlockPreparer: blockPreparer,
+		Readiness:     readiness,
+		orchestrator:  orchestrator,
+		configurer:    configurer,
 	}
 }
 

@@ -1,4 +1,4 @@
-package runtime
+package chainruntime
 
 import (
 	"testing"
@@ -17,16 +17,16 @@ func TestNewProtocolServicesSkipsDisabledProtocols(t *testing.T) {
 }
 
 func TestNewProtocolResourcesSkipsDisabledProtocols(t *testing.T) {
-	services, err := newProtocolResources(config.ChainConfig{}, nil)
+	services, headLogFetcher, err := newProtocolResources(config.ChainConfig{}, nil)
 	if err != nil {
 		t.Fatalf("build disabled protocol infrastructure: %v", err)
 	}
-	if services.headLogFetcher != nil ||
-		services.univ3 != nil ||
-		services.pancakeV3 != nil ||
-		services.quickSwapV3 != nil ||
-		services.univ4 != nil ||
-		services.balancer != nil {
+	if headLogFetcher != nil ||
+		services.univ3() != nil ||
+		services.pancakeV3() != nil ||
+		services.quickSwapV3() != nil ||
+		services.univ4() != nil ||
+		services.balancer() != nil {
 		t.Fatal("expected disabled protocol infrastructure to remain nil")
 	}
 }

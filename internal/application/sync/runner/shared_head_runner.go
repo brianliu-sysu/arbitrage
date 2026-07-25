@@ -15,7 +15,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// BlockHandler consumes one canonical head with logs fetched by the shared runner.
 // SharedHeadRunner subscribes once to new heads and fans each head out to every
 // enabled protocol before advancing. This keeps cross-protocol pool state aligned
 // at the same block before arbitrage generation.
@@ -82,7 +81,7 @@ func (r *SharedHeadRunner) InitializeLocalHead(ctx context.Context, head blockch
 
 func NewSharedHeadRunner(
 	deps SharedHeadDependencies,
-	handlers []NamedHeadHandler,
+	preparers []NamedBlockPreparer,
 	reorgDepth uint64,
 	logger *zap.Logger,
 ) (*SharedHeadRunner, error) {
@@ -101,15 +100,15 @@ func NewSharedHeadRunner(
 	if logger == nil {
 		logger = zap.NewNop()
 	}
-	out := make([]NamedHeadHandler, 0, len(handlers))
-	for _, handler := range handlers {
-		if handler.Handler == nil || handler.Name == "" {
+	out := make([]NamedBlockPreparer, 0, len(preparers))
+	for _, protocol := range preparers {
+		if protocol.Preparer == nil || protocol.Name == "" {
 			continue
 		}
-		out = append(out, handler)
+		out = append(out, protocol)
 	}
 	if len(out) == 0 {
-		return nil, errors.New("at least one shared head handler is required")
+		return nil, errors.New("at least one shared block preparer is required")
 	}
 	return &SharedHeadRunner{
 		subscriber:            deps.Subscriber,

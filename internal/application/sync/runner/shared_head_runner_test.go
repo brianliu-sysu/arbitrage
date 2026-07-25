@@ -15,7 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-type recordingHeadHandler struct {
+type recordingHeadPreparer struct {
 	name    string
 	mu      sync.Mutex
 	heads   []uint64
@@ -25,21 +25,17 @@ type recordingHeadHandler struct {
 	release chan struct{}
 }
 
-type recordingBlockHandler struct {
+type recordingBlockPreparer struct {
 	heads []uint64
 	logs  int
 }
 
-type blockHandlerFunc func(context.Context, blockchain.BlockHeader, []blockchain.RawLog) error
+type applyingBlockFunc func(context.Context, blockchain.BlockHeader, []blockchain.RawLog) error
 
-func (f blockHandlerFunc) HandleBlock(ctx context.Context, head blockchain.BlockHeader, logs []blockchain.RawLog) error {
-	return f(ctx, head, logs)
-}
-
-func (f blockHandlerFunc) PrepareBlock(_ context.Context, head blockchain.BlockHeader, logs []blockchain.RawLog) (syncapp.PreparedBlock, error) {
+func (f applyingBlockFunc) PrepareBlock(_ context.Context, head blockchain.BlockHeader, logs []blockchain.RawLog) (syncapp.PreparedBlock, error) {
 	return &preparedBlockFunc{
 		apply: func(ctx context.Context) error {
-			return f.HandleBlock(ctx, head, logs)
+			return f(ctx, head, logs)
 		},
 	}, nil
 }
@@ -60,7 +56,7 @@ func (f *preparedBlockFunc) Rollback(ctx context.Context) error {
 	return f.rollback(ctx)
 }
 
-type preparingBlockHandler struct {
+type preparingBlockPreparer struct {
 	prepareErr error
 	applyErr   error
 	applied    *atomic.Int32
@@ -70,11 +66,7 @@ type preparingBlockHandler struct {
 	replayFrom uint64
 }
 
-func (h *preparingBlockHandler) HandleBlock(context.Context, blockchain.BlockHeader, []blockchain.RawLog) error {
-	panic("legacy HandleBlock should not be called")
-}
-
-func (h *preparingBlockHandler) PrepareBlock(context.Context, blockchain.BlockHeader, []blockchain.RawLog) (syncapp.PreparedBlock, error) {
+func (h *preparingBlockPreparer) PrepareBlock(context.Context, blockchain.BlockHeader, []blockchain.RawLog) (syncapp.PreparedBlock, error) {
 	if h.prepareErr != nil {
 		return nil, h.prepareErr
 	}
@@ -92,7 +84,7 @@ func (h *preparingBlockHandler) PrepareBlock(context.Context, blockchain.BlockHe
 	}, nil
 }
 
-func (h *preparingBlockHandler) PrepareReorg(_ context.Context, reorg blockchain.Reorg) (syncapp.PreparedReorg, error) {
+func (h *preparingBlockPreparer) PrepareReorg(_ context.Context, reorg blockchain.Reorg) (syncapp.PreparedReorg, error) {
 	replayFrom := h.replayFrom
 	if replayFrom == 0 {
 		replayFrom = reorg.RemoteHead.Number + 1
@@ -157,16 +149,12 @@ func (r *sharedBlockReader) GetBlockHeaders(_ context.Context, blockNumbers []ui
 	return headers, nil
 }
 
-func (h *recordingBlockHandler) HandleBlock(_ context.Context, head blockchain.BlockHeader, logs []blockchain.RawLog) error {
-	h.heads = append(h.heads, head.Number)
-	h.logs += len(logs)
-	return nil
-}
-
-func (h *recordingBlockHandler) PrepareBlock(_ context.Context, head blockchain.BlockHeader, logs []blockchain.RawLog) (syncapp.PreparedBlock, error) {
+func (h *recordingBlockPreparer) PrepareBlock(_ context.Context, head blockchain.BlockHeader, logs []blockchain.RawLog) (syncapp.PreparedBlock, error) {
 	return &preparedBlockFunc{
-		apply: func(ctx context.Context) error {
-			return h.HandleBlock(ctx, head, logs)
+		apply: func(context.Context) error {
+			h.heads = append(h.heads, head.Number)
+			h.logs += len(logs)
+			return nil
 		},
 	}, nil
 }
@@ -202,37 +190,33 @@ func (c *testHeadCoordinator) FinalizeHead(ctx context.Context, head blockchain.
 	return c.finalize(ctx, head)
 }
 
-func (h *recordingHeadHandler) HandleBlock(_ context.Context, head blockchain.BlockHeader, _ []blockchain.RawLog) error {
-	if h.started != nil {
-		select {
-		case h.started <- struct{}{}:
-		default:
-		}
-	}
-	if h.release != nil {
-		<-h.release
-	}
-	if h.delay > 0 {
-		time.Sleep(h.delay)
-	}
-	if h.failAt != 0 && head.Number == h.failAt {
-		return errors.New("boom")
-	}
-	h.mu.Lock()
-	h.heads = append(h.heads, head.Number)
-	h.mu.Unlock()
-	return nil
-}
-
-func (h *recordingHeadHandler) PrepareBlock(_ context.Context, head blockchain.BlockHeader, logs []blockchain.RawLog) (syncapp.PreparedBlock, error) {
+func (h *recordingHeadPreparer) PrepareBlock(_ context.Context, head blockchain.BlockHeader, _ []blockchain.RawLog) (syncapp.PreparedBlock, error) {
 	return &preparedBlockFunc{
-		apply: func(ctx context.Context) error {
-			return h.HandleBlock(ctx, head, logs)
+		apply: func(context.Context) error {
+			if h.started != nil {
+				select {
+				case h.started <- struct{}{}:
+				default:
+				}
+			}
+			if h.release != nil {
+				<-h.release
+			}
+			if h.delay > 0 {
+				time.Sleep(h.delay)
+			}
+			if h.failAt != 0 && head.Number == h.failAt {
+				return errors.New("boom")
+			}
+			h.mu.Lock()
+			h.heads = append(h.heads, head.Number)
+			h.mu.Unlock()
+			return nil
 		},
 	}, nil
 }
 
-func (h *recordingHeadHandler) snapshot() []uint64 {
+func (h *recordingHeadPreparer) snapshot() []uint64 {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return append([]uint64(nil), h.heads...)
@@ -261,17 +245,17 @@ func (s *staticHeadSubscriber) SubscribeNewHead(ctx context.Context) (<-chan blo
 func newTestSharedHeadRunner(
 	t *testing.T,
 	subscriber syncapp.HeadSubscriber,
-	handlers []syncapp.NamedHeadHandler,
+	preparers []syncapp.NamedBlockPreparer,
 	fetcher syncapp.HeadLogFetcher,
 	blocks syncapp.CanonicalBlockReader,
 ) *syncapp.SharedHeadRunner {
-	return newTestSharedHeadRunnerWithCoordinator(t, subscriber, handlers, fetcher, blocks, nil)
+	return newTestSharedHeadRunnerWithCoordinator(t, subscriber, preparers, fetcher, blocks, nil)
 }
 
 func newTestSharedHeadRunnerWithCoordinator(
 	t *testing.T,
 	subscriber syncapp.HeadSubscriber,
-	handlers []syncapp.NamedHeadHandler,
+	preparers []syncapp.NamedBlockPreparer,
 	fetcher syncapp.HeadLogFetcher,
 	blocks syncapp.CanonicalBlockReader,
 	coordinator syncapp.HeadCoordinator,
@@ -293,7 +277,7 @@ func newTestSharedHeadRunnerWithCoordinator(
 			Blocks:      blocks,
 			Coordinator: coordinator,
 		},
-		handlers,
+		preparers,
 		16,
 		nil,
 	)
@@ -309,36 +293,36 @@ func TestNewSharedHeadRunnerRejectsIncompleteDependencies(t *testing.T) {
 		LogFetcher: &recordingHeadLogFetcher{},
 		Blocks:     &sharedBlockReader{},
 	}
-	validHandlers := []syncapp.NamedHeadHandler{{
-		Name:    "test",
-		Handler: &recordingBlockHandler{},
+	validPreparers := []syncapp.NamedBlockPreparer{{
+		Name:     "test",
+		Preparer: &recordingBlockPreparer{},
 	}}
 	tests := []struct {
-		name     string
-		deps     syncapp.SharedHeadDependencies
-		handlers []syncapp.NamedHeadHandler
-		depth    uint64
+		name      string
+		deps      syncapp.SharedHeadDependencies
+		preparers []syncapp.NamedBlockPreparer
+		depth     uint64
 	}{
-		{name: "subscriber", deps: syncapp.SharedHeadDependencies{LogFetcher: valid.LogFetcher, Blocks: valid.Blocks}, handlers: validHandlers, depth: 16},
-		{name: "log fetcher", deps: syncapp.SharedHeadDependencies{Subscriber: valid.Subscriber, Blocks: valid.Blocks}, handlers: validHandlers, depth: 16},
-		{name: "block reader", deps: syncapp.SharedHeadDependencies{Subscriber: valid.Subscriber, LogFetcher: valid.LogFetcher}, handlers: validHandlers, depth: 16},
-		{name: "reorg depth", deps: valid, handlers: validHandlers},
-		{name: "handlers", deps: valid, depth: 16},
+		{name: "subscriber", deps: syncapp.SharedHeadDependencies{LogFetcher: valid.LogFetcher, Blocks: valid.Blocks}, preparers: validPreparers, depth: 16},
+		{name: "log fetcher", deps: syncapp.SharedHeadDependencies{Subscriber: valid.Subscriber, Blocks: valid.Blocks}, preparers: validPreparers, depth: 16},
+		{name: "block reader", deps: syncapp.SharedHeadDependencies{Subscriber: valid.Subscriber, LogFetcher: valid.LogFetcher}, preparers: validPreparers, depth: 16},
+		{name: "reorg depth", deps: valid, preparers: validPreparers},
+		{name: "preparers", deps: valid, depth: 16},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := syncapp.NewSharedHeadRunner(test.deps, test.handlers, test.depth, nil); err == nil {
+			if _, err := syncapp.NewSharedHeadRunner(test.deps, test.preparers, test.depth, nil); err == nil {
 				t.Fatalf("expected missing %s to fail", test.name)
 			}
 		})
 	}
 }
 
-func TestSharedHeadRunnerAppliesAllHandlersBeforeNextHead(t *testing.T) {
+func TestSharedHeadRunnerAppliesAllPreparersBeforeNextHead(t *testing.T) {
 	slowStarted := make(chan struct{}, 1)
 	slowRelease := make(chan struct{})
-	slow := &recordingHeadHandler{name: "slow", started: slowStarted, release: slowRelease}
-	fast := &recordingHeadHandler{name: "fast"}
+	slow := &recordingHeadPreparer{name: "slow", started: slowStarted, release: slowRelease}
+	fast := &recordingHeadPreparer{name: "fast"}
 
 	runner := newTestSharedHeadRunner(
 		t,
@@ -346,9 +330,9 @@ func TestSharedHeadRunnerAppliesAllHandlersBeforeNextHead(t *testing.T) {
 			{Number: 10, Hash: common.HexToHash("0xa")},
 			{Number: 11, Hash: common.HexToHash("0xb")},
 		}},
-		[]syncapp.NamedHeadHandler{
-			{Name: "slow", Handler: slow},
-			{Name: "fast", Handler: fast},
+		[]syncapp.NamedBlockPreparer{
+			{Name: "slow", Preparer: slow},
+			{Name: "fast", Preparer: fast},
 		},
 		nil,
 		nil,
@@ -402,11 +386,11 @@ func TestSharedHeadRunnerAppliesAllHandlersBeforeNextHead(t *testing.T) {
 }
 
 func TestSharedHeadRunnerHandleHeadFailsWhenAnyProtocolFails(t *testing.T) {
-	ok := &recordingHeadHandler{name: "ok"}
-	bad := &recordingHeadHandler{name: "bad", failAt: 5}
-	runner := newTestSharedHeadRunner(t, nil, []syncapp.NamedHeadHandler{
-		{Name: "ok", Handler: ok},
-		{Name: "bad", Handler: bad},
+	ok := &recordingHeadPreparer{name: "ok"}
+	bad := &recordingHeadPreparer{name: "bad", failAt: 5}
+	runner := newTestSharedHeadRunner(t, nil, []syncapp.NamedBlockPreparer{
+		{Name: "ok", Preparer: ok},
+		{Name: "bad", Preparer: bad},
 	}, nil, nil)
 
 	err := runner.HandleHead(context.Background(), blockchain.BlockHeader{Number: 5, Hash: common.HexToHash("0x5")})
@@ -417,17 +401,17 @@ func TestSharedHeadRunnerHandleHeadFailsWhenAnyProtocolFails(t *testing.T) {
 
 func TestSharedHeadRunnerPublishesOnlyAfterAllProtocolsApply(t *testing.T) {
 	order := make([]string, 0, 3)
-	first := blockHandlerFunc(func(context.Context, blockchain.BlockHeader, []blockchain.RawLog) error {
+	first := applyingBlockFunc(func(context.Context, blockchain.BlockHeader, []blockchain.RawLog) error {
 		order = append(order, "univ3")
 		return nil
 	})
-	second := blockHandlerFunc(func(context.Context, blockchain.BlockHeader, []blockchain.RawLog) error {
+	second := applyingBlockFunc(func(context.Context, blockchain.BlockHeader, []blockchain.RawLog) error {
 		order = append(order, "pancakev3")
 		return nil
 	})
-	runner := newTestSharedHeadRunnerWithCoordinator(t, nil, []syncapp.NamedHeadHandler{
-		{Name: "univ3", Handler: first},
-		{Name: "pancakev3", Handler: second},
+	runner := newTestSharedHeadRunnerWithCoordinator(t, nil, []syncapp.NamedBlockPreparer{
+		{Name: "univ3", Preparer: first},
+		{Name: "pancakev3", Preparer: second},
 	}, nil, nil, &testHeadCoordinator{finalize: func(context.Context, blockchain.BlockHeader) error {
 		order = append(order, "publish")
 		return nil
@@ -443,9 +427,9 @@ func TestSharedHeadRunnerPublishesOnlyAfterAllProtocolsApply(t *testing.T) {
 
 func TestSharedHeadRunnerDoesNotApplyWhenAnyProtocolPrepareFails(t *testing.T) {
 	var applied atomic.Int32
-	runner := newTestSharedHeadRunner(t, nil, []syncapp.NamedHeadHandler{
-		{Name: "univ3", Handler: &preparingBlockHandler{applied: &applied}},
-		{Name: "pancakev3", Handler: &preparingBlockHandler{prepareErr: errors.New("parse failed"), applied: &applied}},
+	runner := newTestSharedHeadRunner(t, nil, []syncapp.NamedBlockPreparer{
+		{Name: "univ3", Preparer: &preparingBlockPreparer{applied: &applied}},
+		{Name: "pancakev3", Preparer: &preparingBlockPreparer{prepareErr: errors.New("parse failed"), applied: &applied}},
 	}, nil, nil)
 
 	err := runner.HandleHead(context.Background(), blockchain.BlockHeader{Number: 9})
@@ -461,9 +445,9 @@ func TestSharedHeadRunnerRollsBackAppliedProtocolsWhenLaterApplyFails(t *testing
 	var applied atomic.Int32
 	var rolledBack atomic.Int32
 	var published atomic.Bool
-	runner := newTestSharedHeadRunnerWithCoordinator(t, nil, []syncapp.NamedHeadHandler{
-		{Name: "univ3", Handler: &preparingBlockHandler{applied: &applied, rolledBack: &rolledBack}},
-		{Name: "pancakev3", Handler: &preparingBlockHandler{applyErr: errors.New("apply failed"), applied: &applied, rolledBack: &rolledBack}},
+	runner := newTestSharedHeadRunnerWithCoordinator(t, nil, []syncapp.NamedBlockPreparer{
+		{Name: "univ3", Preparer: &preparingBlockPreparer{applied: &applied, rolledBack: &rolledBack}},
+		{Name: "pancakev3", Preparer: &preparingBlockPreparer{applyErr: errors.New("apply failed"), applied: &applied, rolledBack: &rolledBack}},
 	}, nil, nil, &testHeadCoordinator{finalize: func(context.Context, blockchain.BlockHeader) error {
 		published.Store(true)
 		return nil
@@ -500,9 +484,9 @@ func TestSharedHeadRunnerDetectsReorgOnceAndRecoversEveryProtocol(t *testing.T) 
 	}
 	oldHeaders[10] = blockchain.BlockHeader{Number: 10, Hash: common.HexToHash("0xa10"), ParentHash: oldHeaders[9].Hash}
 	blocks := &sharedBlockReader{headers: oldHeaders}
-	runner := newTestSharedHeadRunner(t, nil, []syncapp.NamedHeadHandler{
-		{Name: "univ3", Handler: &preparingBlockHandler{applied: &applied, recovered: &recovered, replayed: &replayed, replayFrom: 8}},
-		{Name: "univ4", Handler: &preparingBlockHandler{applied: &applied, recovered: &recovered, replayed: &replayed, replayFrom: 8}},
+	runner := newTestSharedHeadRunner(t, nil, []syncapp.NamedBlockPreparer{
+		{Name: "univ3", Preparer: &preparingBlockPreparer{applied: &applied, recovered: &recovered, replayed: &replayed, replayFrom: 8}},
+		{Name: "univ4", Preparer: &preparingBlockPreparer{applied: &applied, recovered: &recovered, replayed: &replayed, replayFrom: 8}},
 	}, fetcher, blocks)
 	if err := runner.InitializeLocalHead(context.Background(), blockchain.BlockHeader{
 		Number: 10,
@@ -543,9 +527,9 @@ func TestSharedHeadRunnerCatchesUpEveryProtocolForHeadGap(t *testing.T) {
 		11: {Number: 11, Hash: common.HexToHash("0x11")},
 		12: {Number: 12, Hash: common.HexToHash("0x12")},
 	}}
-	runner := newTestSharedHeadRunner(t, nil, []syncapp.NamedHeadHandler{
-		{Name: "univ3", Handler: &preparingBlockHandler{applied: &applied}},
-		{Name: "univ4", Handler: &preparingBlockHandler{applied: &applied}},
+	runner := newTestSharedHeadRunner(t, nil, []syncapp.NamedBlockPreparer{
+		{Name: "univ3", Preparer: &preparingBlockPreparer{applied: &applied}},
+		{Name: "univ4", Preparer: &preparingBlockPreparer{applied: &applied}},
 	}, fetcher, blocks)
 	if err := runner.InitializeLocalHead(context.Background(), blockchain.BlockHeader{Number: 10, Hash: common.HexToHash("0x10")}); err != nil {
 		t.Fatalf("initialize local head: %v", err)
@@ -567,13 +551,13 @@ func TestSharedHeadRunnerCatchesUpEveryProtocolForHeadGap(t *testing.T) {
 	}
 }
 
-func TestSharedHeadRunnerFetchesLogsOnceForAllBlockHandlers(t *testing.T) {
-	first := &recordingBlockHandler{}
-	second := &recordingBlockHandler{}
+func TestSharedHeadRunnerFetchesLogsOnceForAllBlockPreparers(t *testing.T) {
+	first := &recordingBlockPreparer{}
+	second := &recordingBlockPreparer{}
 	fetcher := &recordingHeadLogFetcher{logs: []blockchain.RawLog{{BlockNumber: 7}}}
-	runner := newTestSharedHeadRunner(t, nil, []syncapp.NamedHeadHandler{
-		{Name: "first", Handler: first},
-		{Name: "second", Handler: second},
+	runner := newTestSharedHeadRunner(t, nil, []syncapp.NamedBlockPreparer{
+		{Name: "first", Preparer: first},
+		{Name: "second", Preparer: second},
 	}, fetcher, nil)
 
 	hash := common.HexToHash("0x7")
@@ -587,22 +571,22 @@ func TestSharedHeadRunnerFetchesLogsOnceForAllBlockHandlers(t *testing.T) {
 		t.Fatalf("expected block-hash-bound log fetch %s, got %s", hash.Hex(), fetcher.hash.Hex())
 	}
 	if first.logs != 1 || second.logs != 1 {
-		t.Fatalf("expected both handlers to consume shared logs, got first=%d second=%d", first.logs, second.logs)
+		t.Fatalf("expected both preparers to consume shared logs, got first=%d second=%d", first.logs, second.logs)
 	}
 }
 
 func TestSharedHeadRunnerContinuesAfterApplyFailure(t *testing.T) {
-	ok := &recordingHeadHandler{name: "ok"}
-	bad := &recordingHeadHandler{name: "bad", failAt: 5}
+	ok := &recordingHeadPreparer{name: "ok"}
+	bad := &recordingHeadPreparer{name: "bad", failAt: 5}
 	runner := newTestSharedHeadRunner(
 		t,
 		&staticHeadSubscriber{heads: []blockchain.BlockHeader{
 			{Number: 5, Hash: common.HexToHash("0x5")},
 			{Number: 6, Hash: common.HexToHash("0x6")},
 		}},
-		[]syncapp.NamedHeadHandler{
-			{Name: "ok", Handler: ok},
-			{Name: "bad", Handler: bad},
+		[]syncapp.NamedBlockPreparer{
+			{Name: "ok", Preparer: ok},
+			{Name: "bad", Preparer: bad},
 		},
 		nil,
 		nil,
@@ -640,13 +624,13 @@ func TestSharedHeadRunnerContinuesAfterApplyFailure(t *testing.T) {
 	}
 }
 
-func TestSharedHeadRunnerPreparesCoordinatorBeforeHandlers(t *testing.T) {
+func TestSharedHeadRunnerPreparesCoordinatorBeforePreparers(t *testing.T) {
 	prepared := false
-	handler := &coordinatorOrderRecordingHandler{prepared: &prepared}
+	handler := &coordinatorOrderRecordingPreparer{prepared: &prepared}
 	runner := newTestSharedHeadRunnerWithCoordinator(
 		t,
 		nil,
-		[]syncapp.NamedHeadHandler{{Name: "univ3", Handler: handler}},
+		[]syncapp.NamedBlockPreparer{{Name: "univ3", Preparer: handler}},
 		nil,
 		nil,
 		&testHeadCoordinator{prepare: func(context.Context, blockchain.BlockHeader) error {
@@ -662,20 +646,16 @@ func TestSharedHeadRunnerPreparesCoordinatorBeforeHandlers(t *testing.T) {
 	}
 }
 
-type coordinatorOrderRecordingHandler struct {
+type coordinatorOrderRecordingPreparer struct {
 	prepared    *bool
 	sawPrepared bool
 }
 
-func (h *coordinatorOrderRecordingHandler) HandleBlock(context.Context, blockchain.BlockHeader, []blockchain.RawLog) error {
-	h.sawPrepared = *h.prepared
-	return nil
-}
-
-func (h *coordinatorOrderRecordingHandler) PrepareBlock(_ context.Context, head blockchain.BlockHeader, logs []blockchain.RawLog) (syncapp.PreparedBlock, error) {
+func (h *coordinatorOrderRecordingPreparer) PrepareBlock(context.Context, blockchain.BlockHeader, []blockchain.RawLog) (syncapp.PreparedBlock, error) {
 	return &preparedBlockFunc{
-		apply: func(ctx context.Context) error {
-			return h.HandleBlock(ctx, head, logs)
+		apply: func(context.Context) error {
+			h.sawPrepared = *h.prepared
+			return nil
 		},
 	}, nil
 }

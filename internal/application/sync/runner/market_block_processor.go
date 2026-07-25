@@ -34,26 +34,26 @@ func newPreparedBlock(apply, rollback func(context.Context) error) PreparedBlock
 
 // MarketBlockProcessor prepares every protocol before applying any state changes.
 type MarketBlockProcessor struct {
-	handlers []NamedHeadHandler
+	preparers []NamedBlockPreparer
 }
 
-func NewMarketBlockProcessor(handlers []NamedHeadHandler) *MarketBlockProcessor {
-	return &MarketBlockProcessor{handlers: append([]NamedHeadHandler(nil), handlers...)}
+func NewMarketBlockProcessor(preparers []NamedBlockPreparer) *MarketBlockProcessor {
+	return &MarketBlockProcessor{preparers: append([]NamedBlockPreparer(nil), preparers...)}
 }
 
 func (p *MarketBlockProcessor) Process(ctx context.Context, head blockchain.BlockHeader, logs []RawLog) ([]string, error) {
-	prepared := make([]PreparedBlock, 0, len(p.handlers))
-	names := make([]string, 0, len(p.handlers))
-	for _, handler := range p.handlers {
-		block, err := handler.Handler.PrepareBlock(ctx, head, logs)
+	prepared := make([]PreparedBlock, 0, len(p.preparers))
+	names := make([]string, 0, len(p.preparers))
+	for _, protocol := range p.preparers {
+		block, err := protocol.Preparer.PrepareBlock(ctx, head, logs)
 		if err != nil {
-			return nil, fmt.Errorf("prepare protocol %s: %w", handler.Name, err)
+			return nil, fmt.Errorf("prepare protocol %s: %w", protocol.Name, err)
 		}
 		if block == nil {
-			return nil, fmt.Errorf("prepare protocol %s returned nil block", handler.Name)
+			return nil, fmt.Errorf("prepare protocol %s returned nil block", protocol.Name)
 		}
 		prepared = append(prepared, block)
-		names = append(names, handler.Name)
+		names = append(names, protocol.Name)
 	}
 	for index, block := range prepared {
 		if block == nil {
@@ -78,8 +78,8 @@ type preparedMarketReorg struct {
 
 func (p *MarketBlockProcessor) prepareReorg(ctx context.Context, reorg blockchain.Reorg) (*preparedMarketReorg, error) {
 	recovery := &preparedMarketReorg{replayFrom: ^uint64(0)}
-	for _, handler := range p.handlers {
-		transition, ok := handler.Handler.(ReorgPreparer)
+	for _, protocol := range p.preparers {
+		transition, ok := protocol.Preparer.(ReorgPreparer)
 		if !ok {
 			continue
 		}
@@ -87,15 +87,15 @@ func (p *MarketBlockProcessor) prepareReorg(ctx context.Context, reorg blockchai
 		if err != nil {
 			rollbackErr := recovery.Rollback(ctx)
 			return nil, errors.Join(
-				fmt.Errorf("prepare protocol %s reorg at block %d: %w", handler.Name, reorg.RemoteHead.Number, err),
+				fmt.Errorf("prepare protocol %s reorg at block %d: %w", protocol.Name, reorg.RemoteHead.Number, err),
 				rollbackErr,
 			)
 		}
 		if plan == nil {
-			return nil, fmt.Errorf("prepare protocol %s reorg returned nil plan", handler.Name)
+			return nil, fmt.Errorf("prepare protocol %s reorg returned nil plan", protocol.Name)
 		}
 		recovery.plans = append(recovery.plans, plan)
-		recovery.names = append(recovery.names, handler.Name)
+		recovery.names = append(recovery.names, protocol.Name)
 		if plan.ReplayFrom() < recovery.replayFrom {
 			recovery.replayFrom = plan.ReplayFrom()
 		}

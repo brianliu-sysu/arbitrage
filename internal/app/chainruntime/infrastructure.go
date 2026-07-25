@@ -1,4 +1,4 @@
-package runtime
+package chainruntime
 
 import (
 	"context"
@@ -81,7 +81,7 @@ func newChainResources(persistenceCfg persistence.Config, chainCfg config.ChainC
 		return nil, fmt.Errorf("create blockchain services: %w", err)
 	}
 
-	protocols, err := newProtocolResources(chainCfg, blockchain)
+	protocols, headLogFetcher, err := newProtocolResources(chainCfg, blockchain)
 	if err != nil {
 		blockchain.Close()
 		stores.Close()
@@ -99,6 +99,7 @@ func newChainResources(persistenceCfg persistence.Config, chainCfg config.ChainC
 	return &chainResources{
 		stores:            stores,
 		blockchain:        blockchain,
+		headLogFetcher:    headLogFetcher,
 		protocols:         protocols,
 		contractExecutor:  contractExecutor,
 		persistenceCtx:    persistenceCtx,

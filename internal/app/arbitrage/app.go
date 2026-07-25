@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	appruntime "github.com/brianliu-sysu/uniswapv3/internal/app/arbitrage/runtime"
+	chainruntime "github.com/brianliu-sysu/uniswapv3/internal/app/chainruntime"
 	"go.uber.org/zap"
 )
 
@@ -16,7 +16,7 @@ const shutdownTimeout = 15 * time.Second
 // Application owns the explicitly constructed arbitrage runtime and its lifecycle.
 type Application struct {
 	logger  *zap.Logger
-	runtime *appruntime.Manager
+	runtime *chainruntime.Manager
 
 	mu      sync.Mutex
 	started bool
@@ -34,7 +34,7 @@ func New(params Params) (_ *Application, err error) {
 		return nil, fmt.Errorf("create logger: %w", err)
 	}
 
-	runtimeManager, err := appruntime.NewManager(cfg, logger)
+	runtimeManager, err := chainruntime.NewManager(cfg, logger)
 	if err != nil {
 		_ = logger.Sync()
 		return nil, fmt.Errorf("create runtime manager: %w", err)

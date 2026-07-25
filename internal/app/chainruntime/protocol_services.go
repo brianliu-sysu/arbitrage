@@ -1,4 +1,4 @@
-package runtime
+package chainruntime
 
 import (
 	"fmt"
@@ -11,6 +11,7 @@ import (
 	"github.com/brianliu-sysu/uniswapv3/internal/application/marketpipeline"
 	"github.com/brianliu-sysu/uniswapv3/internal/application/marketstore"
 	syncbalancer "github.com/brianliu-sysu/uniswapv3/internal/application/sync/balancer"
+	synccontract "github.com/brianliu-sysu/uniswapv3/internal/application/sync/contract"
 	syncpancakev3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/pancakev3"
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync/protocol"
 	syncquickswapv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/quickswapv3"
@@ -37,17 +38,31 @@ type protocolServices struct {
 type protocolModule interface {
 	Name() string
 	Bootstrapper() protocolBootstrapper
-	HeadHandler() syncapp.BlockHandler
-	IsReady() bool
+	BlockPreparer() synccontract.BlockPreparer
 	BindMarketReports(marketpipeline.ReportReceiver, *zap.Logger)
-	StartDiscovery(*syncLifecycle, config.ChainConfig, protocolResources)
+	StartDiscovery(*syncLifecycle, config.ChainConfig)
 }
 
-type univ3ProtocolModule struct{ services *syncv3.Services }
-type pancakeProtocolModule struct{ services *syncpancakev3.Services }
-type quickSwapProtocolModule struct{ services *syncquickswapv3.Services }
-type univ4ProtocolModule struct{ services *syncv4.Services }
-type balancerProtocolModule struct{ services *syncbalancer.Services }
+type univ3ProtocolModule struct {
+	services  *syncv3.Services
+	resources *univ3Resources
+}
+type pancakeProtocolModule struct {
+	services  *syncpancakev3.Services
+	resources *pancakeV3Resources
+}
+type quickSwapProtocolModule struct {
+	services  *syncquickswapv3.Services
+	resources *quickSwapV3Resources
+}
+type univ4ProtocolModule struct {
+	services  *syncv4.Services
+	resources *univ4Resources
+}
+type balancerProtocolModule struct {
+	services  *syncbalancer.Services
+	resources *balancerResources
+}
 
 func (m *univ3ProtocolModule) Name() string     { return "univ3" }
 func (m *pancakeProtocolModule) Name() string   { return "pancakev3" }
@@ -61,36 +76,20 @@ func (m *quickSwapProtocolModule) Bootstrapper() protocolBootstrapper { return m
 func (m *univ4ProtocolModule) Bootstrapper() protocolBootstrapper     { return m.services.Lifecycle }
 func (m *balancerProtocolModule) Bootstrapper() protocolBootstrapper  { return m.services.Lifecycle }
 
-func (m *univ3ProtocolModule) HeadHandler() syncapp.BlockHandler {
-	return m.services.Lifecycle.BlockHandler
+func (m *univ3ProtocolModule) BlockPreparer() synccontract.BlockPreparer {
+	return m.services.Lifecycle.BlockPreparer
 }
-func (m *pancakeProtocolModule) HeadHandler() syncapp.BlockHandler {
-	return m.services.Lifecycle.BlockHandler
+func (m *pancakeProtocolModule) BlockPreparer() synccontract.BlockPreparer {
+	return m.services.Lifecycle.BlockPreparer
 }
-func (m *quickSwapProtocolModule) HeadHandler() syncapp.BlockHandler {
-	return m.services.Lifecycle.BlockHandler
+func (m *quickSwapProtocolModule) BlockPreparer() synccontract.BlockPreparer {
+	return m.services.Lifecycle.BlockPreparer
 }
-func (m *univ4ProtocolModule) HeadHandler() syncapp.BlockHandler {
-	return m.services.Lifecycle.BlockHandler
+func (m *univ4ProtocolModule) BlockPreparer() synccontract.BlockPreparer {
+	return m.services.Lifecycle.BlockPreparer
 }
-func (m *balancerProtocolModule) HeadHandler() syncapp.BlockHandler {
-	return m.services.Lifecycle.BlockHandler
-}
-
-func (m *univ3ProtocolModule) IsReady() bool {
-	return m.services.Lifecycle.Readiness != nil && m.services.Lifecycle.Readiness.IsSystemReady()
-}
-func (m *pancakeProtocolModule) IsReady() bool {
-	return m.services.Lifecycle.Readiness != nil && m.services.Lifecycle.Readiness.IsSystemReady()
-}
-func (m *quickSwapProtocolModule) IsReady() bool {
-	return m.services.Lifecycle.Readiness != nil && m.services.Lifecycle.Readiness.IsSystemReady()
-}
-func (m *univ4ProtocolModule) IsReady() bool {
-	return m.services.Lifecycle.Readiness != nil && m.services.Lifecycle.Readiness.IsSystemReady()
-}
-func (m *balancerProtocolModule) IsReady() bool {
-	return m.services.Lifecycle.Readiness != nil && m.services.Lifecycle.Readiness.IsSystemReady()
+func (m *balancerProtocolModule) BlockPreparer() synccontract.BlockPreparer {
+	return m.services.Lifecycle.BlockPreparer
 }
 
 func (m *univ3ProtocolModule) BindMarketReports(receiver marketpipeline.ReportReceiver, logger *zap.Logger) {
@@ -114,29 +113,29 @@ func (m *balancerProtocolModule) BindMarketReports(receiver marketpipeline.Repor
 	m.services.SetLogger(logger.Named("sync.balancer"))
 }
 
-func (m *univ3ProtocolModule) StartDiscovery(r *syncLifecycle, cfg config.ChainConfig, resources protocolResources) {
-	if resources.univ3 != nil {
-		runSubgraphDiscovery(r, m.Name(), cfg.Sync.Univ3.Subgraph.RefreshInterval, cfg.Sync.Univ3.Subgraph.IsEnabled(), resources.univ3.registry, m.services.Lifecycle.Pools, m.services.Lifecycle)
+func (m *univ3ProtocolModule) StartDiscovery(r *syncLifecycle, cfg config.ChainConfig) {
+	if m.resources != nil {
+		runSubgraphDiscovery(r, m.Name(), cfg.Sync.Univ3.Subgraph.RefreshInterval, cfg.Sync.Univ3.Subgraph.IsEnabled(), m.resources.registry, m.services.Lifecycle.Pools, m.services.Lifecycle)
 	}
 }
-func (m *pancakeProtocolModule) StartDiscovery(r *syncLifecycle, cfg config.ChainConfig, resources protocolResources) {
-	if resources.pancakeV3 != nil {
-		runSubgraphDiscovery(r, m.Name(), cfg.Sync.PancakeV3.Subgraph.RefreshInterval, cfg.Sync.PancakeV3.Subgraph.IsEnabled(), resources.pancakeV3.registry, m.services.Lifecycle.Pools, m.services.Lifecycle)
+func (m *pancakeProtocolModule) StartDiscovery(r *syncLifecycle, cfg config.ChainConfig) {
+	if m.resources != nil {
+		runSubgraphDiscovery(r, m.Name(), cfg.Sync.PancakeV3.Subgraph.RefreshInterval, cfg.Sync.PancakeV3.Subgraph.IsEnabled(), m.resources.registry, m.services.Lifecycle.Pools, m.services.Lifecycle)
 	}
 }
-func (m *quickSwapProtocolModule) StartDiscovery(r *syncLifecycle, cfg config.ChainConfig, resources protocolResources) {
-	if resources.quickSwapV3 != nil {
-		runSubgraphDiscovery(r, m.Name(), cfg.Sync.QuickSwapV3.Subgraph.RefreshInterval, cfg.Sync.QuickSwapV3.Subgraph.IsEnabled(), resources.quickSwapV3.registry, m.services.Lifecycle.Pools, m.services.Lifecycle)
+func (m *quickSwapProtocolModule) StartDiscovery(r *syncLifecycle, cfg config.ChainConfig) {
+	if m.resources != nil {
+		runSubgraphDiscovery(r, m.Name(), cfg.Sync.QuickSwapV3.Subgraph.RefreshInterval, cfg.Sync.QuickSwapV3.Subgraph.IsEnabled(), m.resources.registry, m.services.Lifecycle.Pools, m.services.Lifecycle)
 	}
 }
-func (m *univ4ProtocolModule) StartDiscovery(r *syncLifecycle, cfg config.ChainConfig, resources protocolResources) {
-	if resources.univ4 != nil {
-		runSubgraphDiscovery(r, m.Name(), cfg.Sync.Univ4.Subgraph.RefreshInterval, cfg.Sync.Univ4.Subgraph.IsEnabled(), resources.univ4.registry, m.services.Lifecycle.Pools, m.services.Lifecycle)
+func (m *univ4ProtocolModule) StartDiscovery(r *syncLifecycle, cfg config.ChainConfig) {
+	if m.resources != nil {
+		runSubgraphDiscovery(r, m.Name(), cfg.Sync.Univ4.Subgraph.RefreshInterval, cfg.Sync.Univ4.Subgraph.IsEnabled(), m.resources.registry, m.services.Lifecycle.Pools, m.services.Lifecycle)
 	}
 }
-func (m *balancerProtocolModule) StartDiscovery(r *syncLifecycle, cfg config.ChainConfig, resources protocolResources) {
-	if resources.balancer != nil {
-		runSubgraphDiscovery(r, m.Name(), cfg.Sync.Balancer.Subgraph.RefreshInterval, cfg.Sync.Balancer.Subgraph.IsEnabled(), resources.balancer.registry, m.services.Lifecycle.Pools, m.services.Lifecycle)
+func (m *balancerProtocolModule) StartDiscovery(r *syncLifecycle, cfg config.ChainConfig) {
+	if m.resources != nil {
+		runSubgraphDiscovery(r, m.Name(), cfg.Sync.Balancer.Subgraph.RefreshInterval, cfg.Sync.Balancer.Subgraph.IsEnabled(), m.resources.registry, m.services.Lifecycle.Pools, m.services.Lifecycle)
 	}
 }
 
@@ -192,37 +191,42 @@ func newProtocolServices(
 	resources protocolResources,
 ) (*protocolServices, error) {
 	protocols := &protocolServices{modules: make([]protocolModule, 0, 5)}
-	univ3 := newUniv3Protocol(cfg, store, chain, resources.univ3)
+	univ3Resources := resources.univ3()
+	univ3 := newUniv3Protocol(cfg, store, chain, univ3Resources)
 	if univ3 != nil {
-		protocols.modules = append(protocols.modules, &univ3ProtocolModule{services: univ3})
+		protocols.modules = append(protocols.modules, &univ3ProtocolModule{services: univ3, resources: univ3Resources})
 	}
-	pancake, err := newPancakeProtocol(cfg, store, chain, resources.pancakeV3)
+	pancakeResources := resources.pancakeV3()
+	pancake, err := newPancakeProtocol(cfg, store, chain, pancakeResources)
 	if err != nil {
 		return nil, err
 	}
 	if pancake != nil {
-		protocols.modules = append(protocols.modules, &pancakeProtocolModule{services: pancake})
+		protocols.modules = append(protocols.modules, &pancakeProtocolModule{services: pancake, resources: pancakeResources})
 	}
-	quickSwap, err := newQuickSwapProtocol(cfg, store, chain, resources.quickSwapV3)
+	quickSwapResources := resources.quickSwapV3()
+	quickSwap, err := newQuickSwapProtocol(cfg, store, chain, quickSwapResources)
 	if err != nil {
 		return nil, err
 	}
 	if quickSwap != nil {
-		protocols.modules = append(protocols.modules, &quickSwapProtocolModule{services: quickSwap})
+		protocols.modules = append(protocols.modules, &quickSwapProtocolModule{services: quickSwap, resources: quickSwapResources})
 	}
-	univ4, err := newUniv4Protocol(cfg, store, chain, resources.univ4)
+	univ4Resources := resources.univ4()
+	univ4, err := newUniv4Protocol(cfg, store, chain, univ4Resources)
 	if err != nil {
 		return nil, err
 	}
 	if univ4 != nil {
-		protocols.modules = append(protocols.modules, &univ4ProtocolModule{services: univ4})
+		protocols.modules = append(protocols.modules, &univ4ProtocolModule{services: univ4, resources: univ4Resources})
 	}
-	balancer, err := newBalancerProtocol(cfg, store, chain, resources.balancer)
+	balancerResources := resources.balancer()
+	balancer, err := newBalancerProtocol(cfg, store, chain, balancerResources)
 	if err != nil {
 		return nil, err
 	}
 	if balancer != nil {
-		protocols.modules = append(protocols.modules, &balancerProtocolModule{services: balancer})
+		protocols.modules = append(protocols.modules, &balancerProtocolModule{services: balancer, resources: balancerResources})
 	}
 	return protocols, nil
 }
