@@ -97,21 +97,23 @@ type ExecutionConfig struct {
 }
 
 type SpreadArbitrageConfig struct {
-	Enabled             bool     `yaml:"enabled"`
-	StartTokens         []string `yaml:"start_tokens"`
-	MinNetProfitWei     string   `yaml:"min_net_profit_wei"`
-	MinAmount           string   `yaml:"min_amount"`
-	MaxAmount           string   `yaml:"max_amount"`
-	OptimizerIterations int      `yaml:"optimizer_iterations"`
+	Enabled             bool                   `yaml:"enabled"`
+	Tokens              []ArbitrageTokenConfig `yaml:"tokens"`
+	OptimizerIterations int                    `yaml:"optimizer_iterations"`
 }
 
 type TriangleArbitrageConfig struct {
-	Enabled             bool     `yaml:"enabled"`
-	StartTokens         []string `yaml:"start_tokens"`
-	MinNetProfitWei     string   `yaml:"min_net_profit_wei"`
-	MinAmount           string   `yaml:"min_amount"`
-	MaxAmount           string   `yaml:"max_amount"`
-	OptimizerIterations int      `yaml:"optimizer_iterations"`
+	Enabled             bool                   `yaml:"enabled"`
+	Tokens              []ArbitrageTokenConfig `yaml:"tokens"`
+	OptimizerIterations int                    `yaml:"optimizer_iterations"`
+}
+
+// ArbitrageTokenConfig defines human-readable amounts for one strategy start token.
+type ArbitrageTokenConfig struct {
+	Address      string `yaml:"address"`
+	MinAmount    string `yaml:"min_amount"`
+	MaxAmount    string `yaml:"max_amount"`
+	MinNetProfit string `yaml:"min_net_profit"`
 }
 
 type RPCConfig struct {
@@ -516,6 +518,16 @@ func validateChainConfig(c ChainConfig) error {
 			return fmt.Errorf("%ssync.balancer.pools[%d].type must be weighted or stable", prefix, i)
 		}
 	}
+	if c.Arbitrage.Triangle.Enabled {
+		if err := validateArbitrageTokens(prefix+"arbitrage.triangle.tokens", c.Arbitrage.Triangle.Tokens); err != nil {
+			return err
+		}
+	}
+	if c.Arbitrage.Spread.Enabled {
+		if err := validateArbitrageTokens(prefix+"arbitrage.spread.tokens", c.Arbitrage.Spread.Tokens); err != nil {
+			return err
+		}
+	}
 	if c.Sync.Univ4.IsActive() {
 		if c.Blockchain.PoolManagerAddress == "" {
 			return fmt.Errorf("%sblockchain.pool_manager_address is required when sync.univ4 is enabled", prefix)
@@ -579,6 +591,36 @@ func validateChainConfig(c ChainConfig) error {
 			if !isStrictHexAddress(address) {
 				return fmt.Errorf("%sarbitrage.execution.allowed_approval_spenders[%d] must be a 20-byte hex address", prefix, i)
 			}
+		}
+	}
+	return nil
+}
+
+func validateArbitrageTokens(path string, tokens []ArbitrageTokenConfig) error {
+	if len(tokens) == 0 {
+		return fmt.Errorf("%s must contain at least one token when enabled", path)
+	}
+	seen := make(map[string]struct{}, len(tokens))
+	for i, token := range tokens {
+		if !isStrictHexAddress(token.Address) {
+			return fmt.Errorf("%s[%d].address must be a 20-byte hex address", path, i)
+		}
+		address := strings.ToLower(token.Address)
+		if _, ok := seen[address]; ok {
+			return fmt.Errorf("%s[%d].address is duplicated", path, i)
+		}
+		seen[address] = struct{}{}
+		minAmount, ok := new(big.Rat).SetString(strings.TrimSpace(token.MinAmount))
+		if !ok || minAmount.Sign() <= 0 {
+			return fmt.Errorf("%s[%d].min_amount must be a positive decimal", path, i)
+		}
+		maxAmount, ok := new(big.Rat).SetString(strings.TrimSpace(token.MaxAmount))
+		if !ok || maxAmount.Cmp(minAmount) <= 0 {
+			return fmt.Errorf("%s[%d].max_amount must be greater than min_amount", path, i)
+		}
+		minProfit, ok := new(big.Rat).SetString(strings.TrimSpace(token.MinNetProfit))
+		if !ok || minProfit.Sign() <= 0 {
+			return fmt.Errorf("%s[%d].min_net_profit must be a positive decimal", path, i)
 		}
 	}
 	return nil
@@ -843,40 +885,6 @@ func (c FlashLoanConfig) Univ4Fee() *big.Int {
 	return parseConfigBigInt(c.Univ4FeePPM, big.NewInt(0))
 }
 
-func (c SpreadArbitrageConfig) StartTokenAddresses() []common.Address {
-	addresses := make([]common.Address, 0, len(c.StartTokens))
-	for _, token := range c.StartTokens {
-		if token == "" {
-			continue
-		}
-		addresses = append(addresses, common.HexToAddress(token))
-	}
-	return addresses
-}
-
-func (c SpreadArbitrageConfig) MinNetProfit() *big.Int {
-	return parseConfigBigInt(c.MinNetProfitWei, big.NewInt(1))
-}
-
-func (c SpreadArbitrageConfig) OptimizerMinAmount() *big.Int {
-	return parseConfigBigInt(c.MinAmount, big.NewInt(1_000_000))
-}
-
-func (c SpreadArbitrageConfig) OptimizerMaxAmount() *big.Int {
-	return parseConfigBigInt(c.MaxAmount, big.NewInt(100_000_000_000_000))
-}
-
-func (c TriangleArbitrageConfig) StartTokenAddresses() []common.Address {
-	addresses := make([]common.Address, 0, len(c.StartTokens))
-	for _, token := range c.StartTokens {
-		if token == "" {
-			continue
-		}
-		addresses = append(addresses, common.HexToAddress(token))
-	}
-	return addresses
-}
-
 func parseConfigBigInt(value string, fallback *big.Int) *big.Int {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -893,16 +901,4 @@ func parseConfigBigInt(value string, fallback *big.Int) *big.Int {
 		return new(big.Int).Set(fallback)
 	}
 	return parsed
-}
-
-func (c TriangleArbitrageConfig) MinNetProfit() *big.Int {
-	return parseConfigBigInt(c.MinNetProfitWei, big.NewInt(1))
-}
-
-func (c TriangleArbitrageConfig) OptimizerMinAmount() *big.Int {
-	return parseConfigBigInt(c.MinAmount, big.NewInt(1_000_000))
-}
-
-func (c TriangleArbitrageConfig) OptimizerMaxAmount() *big.Int {
-	return parseConfigBigInt(c.MaxAmount, big.NewInt(100_000_000_000_000))
 }

@@ -17,19 +17,11 @@ import (
 var ErrNoPoolsAvailable = errors.New("no pools available for routing")
 
 type RoutingConfig struct {
-	Strategies            []domainarb.Strategy
-	TriangleEnabled       bool
-	SpreadEnabled         bool
-	ConfiguredStartTokens []common.Address
-	SpreadStartTokens     []common.Address
-	MinNetProfitWei       *big.Int
-	SpreadMinNetProfitWei *big.Int
-	InitialRoutes         []domainarb.RouteRef
+	Strategies    []domainarb.Strategy
+	InitialRoutes []domainarb.RouteRef
 }
 
 type OpportunityConfig struct {
-	MinAmount           *big.Int
-	MaxAmount           *big.Int
 	OptimizerIterations int
 	FlashLoanOptions    []domainarb.FlashLoanOption
 	WrappedNative       common.Address
@@ -64,46 +56,20 @@ type Services struct {
 	Opportunities *OpportunityService
 	Publish       *PublishService
 
-	routeMu               sync.Mutex
-	mu                    sync.RWMutex
-	market                committedmarket.Reader
-	configuredStartTokens []common.Address
-	spreadStartTokens     []common.Address
-	minNetProfitWei       *big.Int
-	spreadMinNetProfitWei *big.Int
-	triangleEnabled       bool
-	spreadEnabled         bool
-	strategies            []domainarb.Strategy
-	logger                *zap.Logger
-	gasWrappedNative      common.Address
-	poolGraph             quoteunified.PoolGraph
-	poolGraphUpdaters     []PoolGraphUpdater
+	routeMu           sync.Mutex
+	mu                sync.RWMutex
+	market            committedmarket.Reader
+	strategies        []domainarb.Strategy
+	logger            *zap.Logger
+	gasWrappedNative  common.Address
+	poolGraph         quoteunified.PoolGraph
+	poolGraphUpdaters []PoolGraphUpdater
 }
 
 func NewServices(deps ServiceDeps) *Services {
-	minAmount := deps.Opportunity.MinAmount
-	if minAmount == nil {
-		minAmount = big.NewInt(1_000_000)
-	}
-	maxAmount := deps.Opportunity.MaxAmount
-	if maxAmount == nil {
-		maxAmount = big.NewInt(100_000_000_000_000)
-	}
-
 	gas := deps.Gas
 	if gas == nil {
 		gas = domainarb.NewStaticGasEstimator(100_000, 80_000, big.NewInt(10))
-	}
-
-	configuredStartTokens := append([]common.Address(nil), deps.Routing.ConfiguredStartTokens...)
-	spreadStartTokens := append([]common.Address(nil), deps.Routing.SpreadStartTokens...)
-	minNetProfitWei := deps.Routing.MinNetProfitWei
-	if minNetProfitWei == nil {
-		minNetProfitWei = big.NewInt(1)
-	}
-	spreadMinNetProfitWei := deps.Routing.SpreadMinNetProfitWei
-	if spreadMinNetProfitWei == nil {
-		spreadMinNetProfitWei = minNetProfitWei
 	}
 
 	logger := deps.Logger
@@ -118,14 +84,7 @@ func NewServices(deps ServiceDeps) *Services {
 	} else {
 		logger.Debug("initial arbitrage pool graph deferred until pool bootstrap")
 	}
-	strategies := buildArbitrageStrategies(
-		deps.Routing,
-		poolGraph,
-		configuredStartTokens,
-		spreadStartTokens,
-		minNetProfitWei,
-		spreadMinNetProfitWei,
-	)
+	strategies := append([]domainarb.Strategy(nil), deps.Routing.Strategies...)
 
 	scan := NewScanService(domainarb.NewDependencyGraph())
 	scan.RegisterRoutes(deps.Routing.InitialRoutes)
@@ -142,8 +101,6 @@ func NewServices(deps ServiceDeps) *Services {
 		deps.Quotes,
 		gas,
 		strategies,
-		minAmount,
-		maxAmount,
 		deps.Opportunity.OptimizerIterations,
 		deps.Opportunity.FlashLoanOptions,
 		logger,
@@ -154,21 +111,15 @@ func NewServices(deps ServiceDeps) *Services {
 	}
 
 	services := &Services{
-		Scan:                  scan,
-		Opportunities:         opportunities,
-		Publish:               NewPublishService(publishers...),
-		market:                deps.Market,
-		configuredStartTokens: configuredStartTokens,
-		spreadStartTokens:     spreadStartTokens,
-		minNetProfitWei:       minNetProfitWei,
-		spreadMinNetProfitWei: spreadMinNetProfitWei,
-		triangleEnabled:       deps.Routing.TriangleEnabled,
-		spreadEnabled:         deps.Routing.SpreadEnabled,
-		strategies:            append([]domainarb.Strategy(nil), strategies...),
-		logger:                logger,
-		gasWrappedNative:      deps.Opportunity.WrappedNative,
-		poolGraph:             poolGraph,
-		poolGraphUpdaters:     append([]PoolGraphUpdater(nil), deps.Publishing.PoolGraphUpdaters...),
+		Scan:              scan,
+		Opportunities:     opportunities,
+		Publish:           NewPublishService(publishers...),
+		market:            deps.Market,
+		strategies:        append([]domainarb.Strategy(nil), strategies...),
+		logger:            logger,
+		gasWrappedNative:  deps.Opportunity.WrappedNative,
+		poolGraph:         poolGraph,
+		poolGraphUpdaters: append([]PoolGraphUpdater(nil), deps.Publishing.PoolGraphUpdaters...),
 	}
 	if poolGraph != nil {
 		for _, updater := range services.poolGraphUpdaters {
@@ -240,7 +191,6 @@ func (s *Services) RefreshArbitrageRoutes(ctx context.Context) (int, error) {
 	}
 	graph, err := loadPoolGraph(s.market)
 	if err != nil {
-		s.rebuildStrategiesOnGraphError()
 		s.Scan.ReplaceMonitoredRoutes(nil)
 		return 0, err
 	}
@@ -254,71 +204,15 @@ func (s *Services) RefreshArbitrageRoutes(ctx context.Context) (int, error) {
 		}
 	}
 
-	triangleTokens := ResolveTriangleStartTokens(s.configuredStartTokens, graph.Edges(), autoStartTokenCount)
-	spreadTokens := ResolveSpreadStartTokens(s.spreadStartTokens, triangleTokens, graph.Edges())
-	s.updateArbitrageStrategies(triangleTokens, spreadTokens)
 	strategies := s.strategiesSnapshot()
 
 	return registerMonitoredRoutes(s.Scan, strategies, graph), nil
-}
-
-func (s *Services) rebuildStrategiesOnGraphError() {
-	s.updateArbitrageStrategies(s.configuredStartTokens, s.spreadStartTokens)
-}
-
-func (s *Services) updateArbitrageStrategies(triangleTokens, spreadTokens []common.Address) {
-	strategies := SpreadAndTriangleStrategies(
-		s.triangleEnabled,
-		s.spreadEnabled,
-		triangleTokens,
-		spreadTokens,
-		s.minNetProfitWei,
-		s.spreadMinNetProfitWei,
-	)
-	s.mu.Lock()
-	s.strategies = append([]domainarb.Strategy(nil), strategies...)
-	s.mu.Unlock()
-	if s.Opportunities != nil {
-		s.Opportunities.SetStrategies(strategies)
-	}
 }
 
 func (s *Services) strategiesSnapshot() []domainarb.Strategy {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return append([]domainarb.Strategy(nil), s.strategies...)
-}
-
-func buildArbitrageStrategies(
-	cfg RoutingConfig,
-	graph quoteunified.PoolGraph,
-	configured []common.Address,
-	spreadConfigured []common.Address,
-	minNetProfitWei, spreadMinNetProfitWei *big.Int,
-) []domainarb.Strategy {
-	if len(cfg.Strategies) > 0 {
-		return cfg.Strategies
-	}
-	if graph != nil {
-		triangleTokens := ResolveTriangleStartTokens(configured, graph.Edges(), autoStartTokenCount)
-		spreadTokens := ResolveSpreadStartTokens(spreadConfigured, triangleTokens, graph.Edges())
-		return SpreadAndTriangleStrategies(
-			cfg.TriangleEnabled,
-			cfg.SpreadEnabled,
-			triangleTokens,
-			spreadTokens,
-			minNetProfitWei,
-			spreadMinNetProfitWei,
-		)
-	}
-	return SpreadAndTriangleStrategies(
-		cfg.TriangleEnabled,
-		cfg.SpreadEnabled,
-		configured,
-		spreadConfigured,
-		minNetProfitWei,
-		spreadMinNetProfitWei,
-	)
 }
 
 func registerMonitoredRoutes(scan *ScanService, strategies []domainarb.Strategy, graph quoteunified.PoolGraph) int {
@@ -365,22 +259,6 @@ func buildMonitoredRoutes(strategies []domainarb.Strategy, graph quoteunified.Po
 	return routes
 }
 
-// SpreadAndTriangleStrategies builds enabled arbitrage strategies for the given start tokens.
-func SpreadAndTriangleStrategies(
-	triangleEnabled, spreadEnabled bool,
-	triangleTokens, spreadTokens []common.Address,
-	triangleMinNetProfit, spreadMinNetProfit *big.Int,
-) []domainarb.Strategy {
-	strategies := make([]domainarb.Strategy, 0)
-	if triangleEnabled {
-		strategies = append(strategies, TriangleStrategies(triangleTokens, triangleMinNetProfit)...)
-	}
-	if spreadEnabled {
-		strategies = append(strategies, SpreadStrategies(spreadTokens, spreadMinNetProfit)...)
-	}
-	return strategies
-}
-
 func loadPoolGraph(market committedmarket.Reader) (quoteunified.PoolGraph, error) {
 	if market == nil {
 		return nil, ErrNoPoolsAvailable
@@ -394,32 +272,4 @@ func loadPoolGraph(market committedmarket.Reader) (quoteunified.PoolGraph, error
 		return nil, ErrNoPoolsAvailable
 	}
 	return quoteunified.NewStaticPoolGraph(edges), nil
-}
-
-// TriangleStrategies builds triangle strategies for the given start tokens.
-func TriangleStrategies(startTokens []common.Address, minNetProfitWei *big.Int) []domainarb.Strategy {
-	deduped := dedupeStartTokens(startTokens)
-	strategies := make([]domainarb.Strategy, 0, len(deduped))
-	for i, token := range deduped {
-		strategies = append(strategies, domainarb.NewTriangleStrategy(
-			fmt.Sprintf("triangle-%d", i),
-			token,
-			minNetProfitWei,
-		))
-	}
-	return strategies
-}
-
-// SpreadStrategies builds cross-pool spread strategies for the given start tokens.
-func SpreadStrategies(startTokens []common.Address, minNetProfitWei *big.Int) []domainarb.Strategy {
-	deduped := dedupeStartTokens(startTokens)
-	strategies := make([]domainarb.Strategy, 0, len(deduped))
-	for i, token := range deduped {
-		strategies = append(strategies, domainarb.NewSpreadStrategy(
-			fmt.Sprintf("spread-%d", i),
-			token,
-			minNetProfitWei,
-		))
-	}
-	return strategies
 }

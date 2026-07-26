@@ -422,9 +422,10 @@ func TestRefreshArbitrageRoutesRebuildsTriangleGraph(t *testing.T) {
 		Market: marketReader,
 		Quotes: unifiedQuotes(),
 		Routing: arbitrageapp.RoutingConfig{
-			TriangleEnabled:       true,
-			ConfiguredStartTokens: []common.Address{tokenA},
-			MinNetProfitWei:       big.NewInt(1),
+			Strategies: []domainarb.Strategy{
+				domainarb.NewTriangleStrategy("triangle-a", tokenA, big.NewInt(1)).
+					WithExecutionLimits(big.NewInt(1), big.NewInt(100), big.NewInt(1)),
+			},
 		},
 	})
 
@@ -441,60 +442,22 @@ func TestRefreshArbitrageRoutesRebuildsTriangleGraph(t *testing.T) {
 	if err != nil {
 		t.Fatalf("refresh triangle routes: %v", err)
 	}
-	if routes != 6 {
-		t.Fatalf("expected 6 triangle routes for 3 start tokens, got %d", routes)
+	if routes != 2 {
+		t.Fatalf("expected 2 triangle routes for the configured start token, got %d", routes)
 	}
-	if len(services.Scan.Routes()) != 6 {
-		t.Fatalf("expected scan service to track 6 routes, got %d", len(services.Scan.Routes()))
+	if len(services.Scan.Routes()) != 2 {
+		t.Fatalf("expected scan service to track 2 routes, got %d", len(services.Scan.Routes()))
 	}
 
 	routes, err = services.RefreshArbitrageRoutes(context.Background())
 	if err != nil {
 		t.Fatalf("refresh triangle routes again: %v", err)
 	}
-	if routes != 6 {
-		t.Fatalf("expected 6 triangle routes after refresh, got %d", routes)
+	if routes != 2 {
+		t.Fatalf("expected 2 triangle routes after refresh, got %d", routes)
 	}
-	if len(services.Scan.Routes()) != 6 {
-		t.Fatalf("expected scan service to keep 6 routes, got %d", len(services.Scan.Routes()))
-	}
-}
-
-func TestRefreshArbitrageRoutesAddsAutoStartTokens(t *testing.T) {
-	tokenA := testToken(2)
-	tokenB := testToken(3)
-	tokenC := testToken(4)
-	tokenD := testToken(5)
-	poolAB := testToken(10)
-	poolBC := testToken(11)
-	poolCA := testToken(12)
-	poolAD := testToken(13)
-
-	marketReader := &graphMarketReader{edges: []quoteunified.PoolEdge{
-		{Version: quoteunified.PoolVersionV3, PoolV3: poolAB, Token0: tokenA, Token1: tokenB},
-		{Version: quoteunified.PoolVersionV3, PoolV3: poolBC, Token0: tokenB, Token1: tokenC},
-		{Version: quoteunified.PoolVersionV3, PoolV3: poolCA, Token0: tokenC, Token1: tokenA},
-		{Version: quoteunified.PoolVersionV3, PoolV3: poolAD, Token0: tokenA, Token1: tokenD},
-	}}
-	services := arbitrageapp.NewServices(arbitrageapp.ServiceDeps{
-		Market: marketReader,
-		Quotes: unifiedQuotes(),
-		Routing: arbitrageapp.RoutingConfig{
-			TriangleEnabled: true,
-			MinNetProfitWei: big.NewInt(1),
-		},
-	})
-
-	if _, err := services.RefreshArbitrageRoutes(context.Background()); err != nil {
-		t.Fatalf("refresh triangle routes: %v", err)
-	}
-
-	startTokens := services.StartTokens()
-	if len(startTokens) != 3 {
-		t.Fatalf("expected 3 auto start tokens, got %d: %+v", len(startTokens), startTokens)
-	}
-	if startTokens[0] != tokenA {
-		t.Fatalf("expected tokenA to rank first, got %s", startTokens[0].Hex())
+	if len(services.Scan.Routes()) != 2 {
+		t.Fatalf("expected scan service to keep 2 routes, got %d", len(services.Scan.Routes()))
 	}
 }
 
@@ -535,9 +498,10 @@ func TestRefreshSpreadRoutesRebuildsGraph(t *testing.T) {
 		Market: marketReader,
 		Quotes: unifiedQuotes(),
 		Routing: arbitrageapp.RoutingConfig{
-			SpreadEnabled:     true,
-			SpreadStartTokens: []common.Address{tokenA},
-			MinNetProfitWei:   big.NewInt(1),
+			Strategies: []domainarb.Strategy{
+				domainarb.NewSpreadStrategy("spread-a", tokenA, big.NewInt(1)).
+					WithExecutionLimits(big.NewInt(1), big.NewInt(100), big.NewInt(1)),
+			},
 		},
 	})
 
@@ -545,8 +509,8 @@ func TestRefreshSpreadRoutesRebuildsGraph(t *testing.T) {
 	if err != nil {
 		t.Fatalf("refresh spread routes: %v", err)
 	}
-	if routes != 4 {
-		t.Fatalf("expected 4 spread routes for both start tokens, got %d", routes)
+	if routes != 2 {
+		t.Fatalf("expected 2 spread routes for the configured start token, got %d", routes)
 	}
 }
 

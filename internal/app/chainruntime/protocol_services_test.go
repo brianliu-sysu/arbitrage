@@ -1,9 +1,12 @@
 package chainruntime
 
 import (
+	"math/big"
 	"testing"
 
 	"github.com/brianliu-sysu/uniswapv3/internal/config"
+	domainasset "github.com/brianliu-sysu/uniswapv3/internal/domain/asset"
+	"github.com/ethereum/go-ethereum/common"
 )
 
 func TestNewProtocolServicesSkipsDisabledProtocols(t *testing.T) {
@@ -59,5 +62,35 @@ func TestFlashbotsCoinbasePaymentDisabledWithoutRelay(t *testing.T) {
 	got := flashbotsCoinbasePaymentBPS(config.ExecutionConfig{FlashbotsPaymentBPS: 8_000})
 	if got != 0 {
 		t.Fatalf("expected zero payment without relay, got %d", got)
+	}
+}
+
+func TestResolveTokenStrategiesUsesEachTokenDecimals(t *testing.T) {
+	usdc := common.HexToAddress("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")
+	weth := common.HexToAddress("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")
+	configs := []config.ArbitrageTokenConfig{
+		{Address: usdc.Hex(), MinAmount: "1", MaxAmount: "100", MinNetProfit: "0.5"},
+		{Address: weth.Hex(), MinAmount: "0.1", MaxAmount: "2", MinNetProfit: "0.01"},
+	}
+	metadata := map[common.Address]*domainasset.Token{
+		usdc: {Address: usdc, Decimal: 6},
+		weth: {Address: weth, Decimal: 18},
+	}
+
+	got, err := resolveTokenStrategies(configs, metadata, true)
+	if err != nil {
+		t.Fatalf("resolve strategies: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 strategies, got %d", len(got))
+	}
+	if got[0].MinAmount.Cmp(big.NewInt(1_000_000)) != 0 ||
+		got[0].MinNetProfit.Cmp(big.NewInt(500_000)) != 0 {
+		t.Fatalf("unexpected USDC limits: %+v", got[0])
+	}
+	wantWETHMin := new(big.Int)
+	wantWETHMin.SetString("100000000000000000", 10)
+	if got[1].MinAmount.Cmp(wantWETHMin) != 0 {
+		t.Fatalf("unexpected WETH minimum: %s", got[1].MinAmount)
 	}
 }

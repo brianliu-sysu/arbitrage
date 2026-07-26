@@ -21,11 +21,21 @@ const triangleHopCount = 3
 
 // Strategy defines how opportunities are discovered and filtered.
 type Strategy struct {
-	ID              string
-	Kind            StrategyKind
-	StartToken      common.Address
-	MaxHops         int
-	MinNetProfitWei *big.Int
+	ID           string
+	Kind         StrategyKind
+	StartToken   common.Address
+	MaxHops      int
+	MinNetProfit *big.Int
+	MinAmount    *big.Int
+	MaxAmount    *big.Int
+}
+
+// WithExecutionLimits returns a strategy with token-denominated optimizer bounds.
+func (s Strategy) WithExecutionLimits(minAmount, maxAmount, minNetProfit *big.Int) Strategy {
+	s.MinAmount = cloneBigInt(minAmount)
+	s.MaxAmount = cloneBigInt(maxAmount)
+	s.MinNetProfit = cloneBigInt(minNetProfit)
+	return s
 }
 
 func NewCycleStrategy(id string, startToken common.Address, maxHops int, minNetProfitWei *big.Int) Strategy {
@@ -33,33 +43,33 @@ func NewCycleStrategy(id string, startToken common.Address, maxHops int, minNetP
 		maxHops = 3
 	}
 	return Strategy{
-		ID:              id,
-		Kind:            StrategyKindCycle,
-		StartToken:      startToken,
-		MaxHops:         maxHops,
-		MinNetProfitWei: cloneBigInt(minNetProfitWei),
+		ID:           id,
+		Kind:         StrategyKindCycle,
+		StartToken:   startToken,
+		MaxHops:      maxHops,
+		MinNetProfit: cloneBigInt(minNetProfitWei),
 	}
 }
 
 // NewTriangleStrategy builds a three-hop triangular arbitrage strategy: A->B->C->A.
 func NewTriangleStrategy(id string, startToken common.Address, minNetProfitWei *big.Int) Strategy {
 	return Strategy{
-		ID:              id,
-		Kind:            StrategyKindTriangle,
-		StartToken:      startToken,
-		MaxHops:         triangleHopCount,
-		MinNetProfitWei: cloneBigInt(minNetProfitWei),
+		ID:           id,
+		Kind:         StrategyKindTriangle,
+		StartToken:   startToken,
+		MaxHops:      triangleHopCount,
+		MinNetProfit: cloneBigInt(minNetProfitWei),
 	}
 }
 
 // NewSpreadStrategy builds a two-hop cross-pool spread strategy: A->B->A across distinct pools.
 func NewSpreadStrategy(id string, startToken common.Address, minNetProfitWei *big.Int) Strategy {
 	return Strategy{
-		ID:              id,
-		Kind:            StrategyKindSpread,
-		StartToken:      startToken,
-		MaxHops:         spreadHopCount,
-		MinNetProfitWei: cloneBigInt(minNetProfitWei),
+		ID:           id,
+		Kind:         StrategyKindSpread,
+		StartToken:   startToken,
+		MaxHops:      spreadHopCount,
+		MinNetProfit: cloneBigInt(minNetProfitWei),
 	}
 }
 
@@ -86,6 +96,12 @@ func (s Strategy) Validate() error {
 	default:
 		return fmt.Errorf("unsupported strategy kind %q", s.Kind)
 	}
+	if (s.MinAmount == nil) != (s.MaxAmount == nil) {
+		return fmt.Errorf("strategy optimizer bounds must be configured together")
+	}
+	if s.MinAmount != nil && (s.MinAmount.Sign() <= 0 || s.MaxAmount.Cmp(s.MinAmount) <= 0) {
+		return fmt.Errorf("strategy optimizer bounds are invalid")
+	}
 	return nil
 }
 
@@ -99,8 +115,8 @@ func (s Strategy) MeetsMinimumProfit(netProfit *big.Int) bool {
 	if netProfit == nil || netProfit.Sign() <= 0 {
 		return false
 	}
-	if s.MinNetProfitWei == nil || s.MinNetProfitWei.Sign() <= 0 {
+	if s.MinNetProfit == nil || s.MinNetProfit.Sign() <= 0 {
 		return true
 	}
-	return netProfit.Cmp(s.MinNetProfitWei) >= 0
+	return netProfit.Cmp(s.MinNetProfit) >= 0
 }

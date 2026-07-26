@@ -1,12 +1,14 @@
 package chainruntime
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"go.uber.org/zap"
 
 	arbitrageapp "github.com/brianliu-sysu/uniswapv3/internal/application/arbitrage"
+	assetapp "github.com/brianliu-sysu/uniswapv3/internal/application/asset"
 	contractapp "github.com/brianliu-sysu/uniswapv3/internal/application/contract"
 	"github.com/brianliu-sysu/uniswapv3/internal/application/marketpipeline"
 	"github.com/brianliu-sysu/uniswapv3/internal/application/marketstore"
@@ -18,6 +20,7 @@ import (
 	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ4"
 	"github.com/brianliu-sysu/uniswapv3/internal/config"
 	domainarb "github.com/brianliu-sysu/uniswapv3/internal/domain/arbitrage"
+	domainasset "github.com/brianliu-sysu/uniswapv3/internal/domain/asset"
 	marketbalancer "github.com/brianliu-sysu/uniswapv3/internal/domain/market/balancer"
 	marketv4 "github.com/brianliu-sysu/uniswapv3/internal/domain/market/univ4"
 	quotebalancerdomain "github.com/brianliu-sysu/uniswapv3/internal/domain/quote/balancer"
@@ -414,29 +417,24 @@ func newArbitrageServices(
 	chain *chaininfra.Services,
 	marketView *marketstore.Store,
 	contractExecutor *contractapp.AppService,
-) *arbitrageapp.Services {
+) (*arbitrageapp.Services, error) {
 	triangleCfg := cfg.Arbitrage.Triangle
 	spreadCfg := cfg.Arbitrage.Spread
 	triangleEnabled := cfg.TriangleArbitrageEnabled()
 	spreadEnabled := cfg.SpreadArbitrageEnabled()
-	configuredStartTokens := triangleCfg.StartTokenAddresses()
-	spreadStartTokens := spreadCfg.StartTokenAddresses()
-	minNetProfit := triangleCfg.MinNetProfit()
-	spreadMinNetProfit := spreadCfg.MinNetProfit()
-	if !triangleEnabled {
-		configuredStartTokens = nil
-		minNetProfit = nil
+	strategies, err := resolveConfiguredStrategies(
+		context.Background(),
+		assetapp.NewTokenMetadataService(durableStore.Tokens, chain.ERC20),
+		triangleEnabled,
+		triangleCfg.Tokens,
+		spreadEnabled,
+		spreadCfg.Tokens,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("resolve arbitrage token amounts: %w", err)
 	}
-	if !spreadEnabled {
-		spreadStartTokens = nil
-		spreadMinNetProfit = nil
-	}
-	optimizerMinAmount := triangleCfg.OptimizerMinAmount()
-	optimizerMaxAmount := triangleCfg.OptimizerMaxAmount()
 	optimizerIterations := triangleCfg.OptimizerIterations
 	if !triangleEnabled && spreadEnabled {
-		optimizerMinAmount = spreadCfg.OptimizerMinAmount()
-		optimizerMaxAmount = spreadCfg.OptimizerMaxAmount()
 		optimizerIterations = spreadCfg.OptimizerIterations
 	}
 	executionCfg := executionConfigFromRuntime(cfg)
@@ -472,16 +470,9 @@ func newArbitrageServices(
 		),
 		Market: marketView,
 		Routing: arbitrageapp.RoutingConfig{
-			TriangleEnabled:       triangleEnabled,
-			SpreadEnabled:         spreadEnabled,
-			ConfiguredStartTokens: configuredStartTokens,
-			SpreadStartTokens:     spreadStartTokens,
-			MinNetProfitWei:       minNetProfit,
-			SpreadMinNetProfitWei: spreadMinNetProfit,
+			Strategies: strategies,
 		},
 		Opportunity: arbitrageapp.OpportunityConfig{
-			MinAmount:           optimizerMinAmount,
-			MaxAmount:           optimizerMaxAmount,
 			OptimizerIterations: optimizerIterations,
 			WrappedNative:       livePlan.WETH,
 			CoinbasePaymentBPS:  coinbasePaymentBPS,
@@ -491,7 +482,83 @@ func newArbitrageServices(
 			},
 		},
 		Publishing: publishing,
-	})
+	}), nil
+}
+
+func resolveConfiguredStrategies(
+	ctx context.Context,
+	tokens *assetapp.TokenMetadataService,
+	triangleEnabled bool,
+	triangle []config.ArbitrageTokenConfig,
+	spreadEnabled bool,
+	spread []config.ArbitrageTokenConfig,
+) ([]domainarb.Strategy, error) {
+	addresses := make([]common.Address, 0, len(triangle)+len(spread))
+	if triangleEnabled {
+		for _, item := range triangle {
+			addresses = append(addresses, common.HexToAddress(item.Address))
+		}
+	}
+	if spreadEnabled {
+		for _, item := range spread {
+			addresses = append(addresses, common.HexToAddress(item.Address))
+		}
+	}
+	metadata, err := tokens.Resolve(ctx, addresses)
+	if err != nil {
+		return nil, err
+	}
+	strategies := make([]domainarb.Strategy, 0, len(addresses))
+	if triangleEnabled {
+		resolved, err := resolveTokenStrategies(triangle, metadata, true)
+		if err != nil {
+			return nil, err
+		}
+		strategies = append(strategies, resolved...)
+	}
+	if spreadEnabled {
+		resolved, err := resolveTokenStrategies(spread, metadata, false)
+		if err != nil {
+			return nil, err
+		}
+		strategies = append(strategies, resolved...)
+	}
+	return strategies, nil
+}
+
+func resolveTokenStrategies(
+	configs []config.ArbitrageTokenConfig,
+	metadata map[common.Address]*domainasset.Token,
+	triangle bool,
+) ([]domainarb.Strategy, error) {
+	strategies := make([]domainarb.Strategy, 0, len(configs))
+	for i, item := range configs {
+		address := common.HexToAddress(item.Address)
+		token := metadata[address]
+		if token == nil {
+			return nil, fmt.Errorf("token %s metadata is unavailable", address.Hex())
+		}
+		minAmount, err := domainasset.ParseDecimalAmount(item.MinAmount, token.Decimal)
+		if err != nil {
+			return nil, fmt.Errorf("token %s min_amount: %w", address.Hex(), err)
+		}
+		maxAmount, err := domainasset.ParseDecimalAmount(item.MaxAmount, token.Decimal)
+		if err != nil {
+			return nil, fmt.Errorf("token %s max_amount: %w", address.Hex(), err)
+		}
+		minProfit, err := domainasset.ParseDecimalAmount(item.MinNetProfit, token.Decimal)
+		if err != nil {
+			return nil, fmt.Errorf("token %s min_net_profit: %w", address.Hex(), err)
+		}
+		var strategy domainarb.Strategy
+		if triangle {
+			strategy = domainarb.NewTriangleStrategy(fmt.Sprintf("triangle-%d", i), address, minProfit)
+		} else {
+			strategy = domainarb.NewSpreadStrategy(fmt.Sprintf("spread-%d", i), address, minProfit)
+		}
+		strategies = append(strategies, strategy.WithExecutionLimits(minAmount, maxAmount, minProfit))
+	}
+	return strategies, nil
 }
 
 func enabledMarketProtocols(cfg config.ChainConfig) []marketpipeline.Protocol {

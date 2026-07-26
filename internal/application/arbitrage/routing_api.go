@@ -5,16 +5,22 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-const autoStartTokenCount = 3
-
 type ScanService = routing.ScanService
 
 var NewScanService = routing.NewScanService
-var ResolveTriangleStartTokens = routing.ResolveTriangleStartTokens
-var TopPoolOverlapTokens = routing.TopPoolOverlapTokens
-var ResolveSpreadStartTokens = routing.ResolveSpreadStartTokens
-var TokensWithParallelPools = routing.TokensWithParallelPools
 
 func dedupeStartTokens(tokens []common.Address) []common.Address {
-	return routing.DedupeStartTokens(tokens)
+	seen := make(map[common.Address]struct{}, len(tokens))
+	out := make([]common.Address, 0, len(tokens))
+	for _, token := range tokens {
+		if token == (common.Address{}) {
+			continue
+		}
+		if _, ok := seen[token]; ok {
+			continue
+		}
+		seen[token] = struct{}{}
+		out = append(out, token)
+	}
+	return out
 }

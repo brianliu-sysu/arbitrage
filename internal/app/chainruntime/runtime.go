@@ -68,7 +68,7 @@ func newChainRuntime(
 		return nil, err
 	}
 	marketView := newMarketStore(resources.stores.runtime, protocols, logger)
-	arbitrageServices := newArbitrageServices(
+	arbitrageServices, err := newArbitrageServices(
 		cfg,
 		logger,
 		resources.stores.durable,
@@ -76,6 +76,9 @@ func newChainRuntime(
 		marketView,
 		resources.contractExecutor,
 	)
+	if err != nil {
+		return nil, err
+	}
 	marketCoordinator := marketpipeline.NewCoordinator(enabledMarketProtocols(cfg), marketView, logger.Named("market-pipeline"))
 	headCoordinator := headpipeline.NewCoordinator(marketCoordinator, arbitrageServices.NewScanScheduler())
 	protocols.bindMarketReports(marketCoordinator, logger)

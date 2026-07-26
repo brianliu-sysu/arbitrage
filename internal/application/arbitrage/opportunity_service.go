@@ -19,19 +19,19 @@ import (
 
 // OpportunityService generates opportunities from affected routes.
 type OpportunityService struct {
-	market             committedmarket.Reader
-	quotes             *quoteunified.QuoteService
-	evaluator          *domainarb.Evaluator
-	optimizer          *domainarb.Optimizer
-	gas                domainarb.GasEstimator
-	flashLoans         []domainarb.FlashLoanOption
-	mu                 sync.RWMutex
-	strategies         []domainarb.Strategy
-	logger             *zap.Logger
-	now                func() time.Time
-	poolGraph          quoteunified.PoolGraph
-	wrappedNative      common.Address
-	coinbasePaymentBPS uint16
+	market              committedmarket.Reader
+	quotes              *quoteunified.QuoteService
+	evaluator           *domainarb.Evaluator
+	optimizerIterations int
+	gas                 domainarb.GasEstimator
+	flashLoans          []domainarb.FlashLoanOption
+	mu                  sync.RWMutex
+	strategies          []domainarb.Strategy
+	logger              *zap.Logger
+	now                 func() time.Time
+	poolGraph           quoteunified.PoolGraph
+	wrappedNative       common.Address
+	coinbasePaymentBPS  uint16
 }
 
 func (s *OpportunityService) SetCoinbasePaymentBPS(paymentBPS uint16) {
@@ -73,7 +73,6 @@ func NewOpportunityService(
 	quotes *quoteunified.QuoteService,
 	gas domainarb.GasEstimator,
 	strategies []domainarb.Strategy,
-	minAmount, maxAmount *big.Int,
 	optimizerIterations int,
 	flashLoans []domainarb.FlashLoanOption,
 	logger *zap.Logger,
@@ -85,23 +84,16 @@ func NewOpportunityService(
 		flashLoans = domainarb.DefaultFlashLoanOptions()
 	}
 	return &OpportunityService{
-		market:     market,
-		quotes:     quotes,
-		evaluator:  domainarb.NewEvaluator(),
-		optimizer:  domainarb.NewOptimizer(minAmount, maxAmount, optimizerIterations),
-		gas:        gas,
-		flashLoans: append([]domainarb.FlashLoanOption(nil), flashLoans...),
-		strategies: append([]domainarb.Strategy(nil), strategies...),
-		logger:     logger,
-		now:        time.Now,
+		market:              market,
+		quotes:              quotes,
+		evaluator:           domainarb.NewEvaluator(),
+		optimizerIterations: optimizerIterations,
+		gas:                 gas,
+		flashLoans:          append([]domainarb.FlashLoanOption(nil), flashLoans...),
+		strategies:          append([]domainarb.Strategy(nil), strategies...),
+		logger:              logger,
+		now:                 time.Now,
 	}
-}
-
-// SetStrategies replaces the active arbitrage strategies.
-func (s *OpportunityService) SetStrategies(strategies []domainarb.Strategy) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.strategies = append([]domainarb.Strategy(nil), strategies...)
 }
 
 // Generate evaluates affected routes and returns accepted opportunities.
@@ -225,14 +217,18 @@ func (s *OpportunityService) generateForRoute(
 		pools:  pools,
 		route:  routeRef.Route,
 	}
-	promising, err := s.optimizer.ProbePositiveGrossProfit(ctx, quoter)
+	if strategy.MinAmount == nil || strategy.MaxAmount == nil {
+		return nil, fmt.Errorf("strategy %q optimizer bounds are not configured", strategy.ID)
+	}
+	optimizer := domainarb.NewOptimizer(strategy.MinAmount, strategy.MaxAmount, s.optimizerIterations)
+	promising, err := optimizer.ProbePositiveGrossProfit(ctx, quoter)
 	if err != nil {
 		return nil, err
 	}
 	if !promising {
 		return nil, nil
 	}
-	optimized, err := s.optimizer.OptimizeContext(ctx, quoter)
+	optimized, err := optimizer.OptimizeContext(ctx, quoter)
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +284,7 @@ func (s *OpportunityService) generateForRoute(
 			zap.String("coinbase_payment", evaluation.CoinbasePayment.String()),
 			zap.String("net_profit", evaluation.NetProfit.String()),
 			zap.Bool("profitable", evaluation.Profitable),
-			zap.String("min_net_profit", bigIntString(strategy.MinNetProfitWei)),
+			zap.String("min_net_profit", bigIntString(strategy.MinNetProfit)),
 			zap.String("quote_steps", formatQuoteSteps(quoteSteps, quoteStepsErr)),
 		)
 		return nil, nil

@@ -45,7 +45,7 @@ func (s *fixedMarketSnapshot) LoadRoutePools(
 func TestOpportunityServiceCapturesOneSnapshotPerGenerate(t *testing.T) {
 	version := domainchain.MarketVersion{Number: 10, Generation: 1}
 	market := &countingMarketReader{snapshot: &fixedMarketSnapshot{version: version}}
-	service := NewOpportunityService(market, nil, nil, nil, nil, nil, 0, nil, nil)
+	service := NewOpportunityService(market, nil, nil, nil, 0, nil, nil)
 
 	if _, err := service.Generate(context.Background(), GenerateRequest{Version: version}); err != nil {
 		t.Fatalf("generate: %v", err)
@@ -59,7 +59,7 @@ func TestOpportunityServiceRejectsDifferentSnapshotVersion(t *testing.T) {
 	market := &countingMarketReader{snapshot: &fixedMarketSnapshot{
 		version: domainchain.MarketVersion{Number: 11, Generation: 2},
 	}}
-	service := NewOpportunityService(market, nil, nil, nil, nil, nil, 0, nil, nil)
+	service := NewOpportunityService(market, nil, nil, nil, 0, nil, nil)
 
 	if _, err := service.Generate(context.Background(), GenerateRequest{
 		Version: domainchain.MarketVersion{Number: 10, Generation: 1},
@@ -72,7 +72,7 @@ func TestOpportunityServiceRequiresSnapshotVersion(t *testing.T) {
 	market := &countingMarketReader{snapshot: &fixedMarketSnapshot{
 		version: domainchain.MarketVersion{Number: 10, Generation: 1},
 	}}
-	service := NewOpportunityService(market, nil, nil, nil, nil, nil, 0, nil, nil)
+	service := NewOpportunityService(market, nil, nil, nil, 0, nil, nil)
 
 	if _, err := service.Generate(context.Background(), GenerateRequest{}); err == nil {
 		t.Fatal("expected missing market version to be rejected")

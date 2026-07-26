@@ -143,26 +143,29 @@ chains:
       triangle:
         # Enable A->B->C->A triangular arbitrage scanning.
         enabled: true
-        # Base tokens to search triangular routes from. Requires synced pools forming closed loops.
-        start_tokens:
-          - "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"  # USDC
-          - "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH
-        # Minimum net profit in wei after gas to accept an opportunity.
-        min_net_profit_wei: "1000000"
-        # Optimizer input amount search bounds (wei).
-        min_amount: "1000000"
-        max_amount: "100000000000000"
+        # Human-readable amounts are converted using each token's on-chain decimals.
+        tokens:
+          - address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"  # USDC
+            min_amount: "1"
+            max_amount: "100000000"
+            min_net_profit: "1"
+          - address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH
+            min_amount: "0.000000000001"
+            max_amount: "0.0001"
+            min_net_profit: "0.000000000001"
         optimizer_iterations: 8
       spread:
         # Enable A->B->A cross-pool spread arbitrage for the same token pair on different pools.
         enabled: false
-        # Optional base tokens. When empty, tokens from parallel pool pairs are auto-discovered.
-        start_tokens:
-          - "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"  # USDC
-          - "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH
-        min_net_profit_wei: "1000000"
-        min_amount: "1000000"
-        max_amount: "100000000000000"
+        tokens:
+          - address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"  # USDC
+            min_amount: "1"
+            max_amount: "100000000"
+            min_net_profit: "1"
+          - address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"  # WETH
+            min_amount: "0.000000000001"
+            max_amount: "0.0001"
+            min_net_profit: "0.000000000001"
         optimizer_iterations: 8
       flash_loan:
         # Flash-loan fee rates in ppm; Uniswap V3 uses the selected pool's fee tier.
@@ -308,21 +311,27 @@ chains:
     arbitrage:
       triangle:
         enabled: false
-        start_tokens:
-          - "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"  # USDC.e
-          - "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619"  # WETH
-        min_net_profit_wei: "1000000"
-        min_amount: "1000000"
-        max_amount: "100000000000000"
+        tokens:
+          - address: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"  # USDC.e
+            min_amount: "1"
+            max_amount: "100000000"
+            min_net_profit: "1"
+          - address: "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619"  # WETH
+            min_amount: "0.000000000001"
+            max_amount: "0.0001"
+            min_net_profit: "0.000000000001"
         optimizer_iterations: 8
       spread:
         enabled: false
-        start_tokens:
-          - "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"  # USDC.e
-          - "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619"  # WETH
-        min_net_profit_wei: "1000000"
-        min_amount: "1000000"
-        max_amount: "100000000000000"
+        tokens:
+          - address: "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"  # USDC.e
+            min_amount: "1"
+            max_amount: "100000000"
+            min_net_profit: "1"
+          - address: "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619"  # WETH
+            min_amount: "0.000000000001"
+            max_amount: "0.0001"
+            min_net_profit: "0.000000000001"
         optimizer_iterations: 8
       flash_loan:
         balancer_fee_ppm: "0"
