@@ -271,10 +271,6 @@ func (f *fakeContractBroadcaster) BroadcastExecution(
 	return domaincontract.BroadcastResponse{TxHash: f.txHash}, nil
 }
 
-func (f *fakeContractBroadcaster) SimulateExecution(context.Context, domaincontract.BroadcastRequest) error {
-	return nil
-}
-
 func (f *fakeContractBroadcaster) Allowances(
 	_ context.Context,
 	_ string,

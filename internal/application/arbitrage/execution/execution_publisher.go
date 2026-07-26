@@ -21,7 +21,6 @@ var ErrExecutionPlanUnavailable = errors.New("execution plan unavailable")
 
 type ContractExecutor interface {
 	EnsureApprovals(context.Context, domaincontract.EnsureApprovalsRequest) (domaincontract.EnsureApprovalsResponse, error)
-	Simulate(context.Context, domaincontract.BroadcastRequest) error
 	Execute(context.Context, domaincontract.BroadcastRequest) (domaincontract.BroadcastResponse, error)
 }
 
@@ -34,21 +33,19 @@ type ExecutionHeadReader interface {
 }
 
 type ExecutionConfig struct {
-	Enabled               bool
-	RPCURL                string
-	PrivateKey            string
-	Executor              common.Address
-	FlashbotsRPCURL       string
-	FlashbotsPaymentBPS   uint64
-	SettlementSlippageBPS uint64
-	WrappedNativeToken    common.Address
-	GasLimit              uint64
-	GasPriceWei           *big.Int
-	SkipEstimate          bool
-	BroadcastToken        string
-	MaxOpportunityAge     uint64
-	AllowedRouters        []common.Address
-	AllowedSpenders       []common.Address
+	Enabled           bool
+	RPCURL            string
+	PrivateKey        string
+	Executor          common.Address
+	FlashbotsRPCURL   string
+	FlashbotsBuilders []string
+	GasLimit          uint64
+	GasPriceWei       *big.Int
+	SkipEstimate      bool
+	BroadcastToken    string
+	MaxOpportunityAge uint64
+	AllowedRouters    []common.Address
+	AllowedSpenders   []common.Address
 }
 
 type ExecutionPublisher struct {
@@ -151,7 +148,6 @@ func (p *ExecutionPublisher) Publish(ctx context.Context, opportunity *domainarb
 		}
 		return fmt.Errorf("build execution plan: %w", err)
 	}
-	disableContractBuilderPayment(&plan)
 	approvals = domaincontract.MergeTokenApprovals(approvals, domaincontract.RequiredTokenApprovals(plan))
 	if plan.MinProfit == nil {
 		plan.MinProfit = cloneBigIntOrZero(opportunity.NetProfit)
@@ -187,25 +183,18 @@ func (p *ExecutionPublisher) Publish(ctx context.Context, opportunity *domainarb
 	}
 
 	broadcastReq := domaincontract.BroadcastRequest{
-		RPCURL:            strings.TrimSpace(p.cfg.RPCURL),
-		PrivateKey:        strings.TrimSpace(p.cfg.PrivateKey),
-		Executor:          p.cfg.Executor,
-		Plan:              plan,
-		GasLimit:          p.cfg.GasLimit,
-		GasPriceWei:       gasPriceWei,
-		BuilderPaymentWei: cloneBigInt(opportunity.BuilderPaymentWei),
-		SkipEstimate:      p.cfg.SkipEstimate,
-		SubmitRPCURL:      strings.TrimSpace(p.cfg.FlashbotsRPCURL),
+		RPCURL:         strings.TrimSpace(p.cfg.RPCURL),
+		PrivateKey:     strings.TrimSpace(p.cfg.PrivateKey),
+		Executor:       p.cfg.Executor,
+		Plan:           plan,
+		GasLimit:       p.cfg.GasLimit,
+		GasPriceWei:    gasPriceWei,
+		SkipEstimate:   p.cfg.SkipEstimate,
+		SubmitRPCURL:   strings.TrimSpace(p.cfg.FlashbotsRPCURL),
+		SubmitBuilders: append([]string(nil), p.cfg.FlashbotsBuilders...),
 	}
 	resp, err := p.executor.Execute(ctx, broadcastReq)
 	if err != nil {
-		if errors.Is(err, domaincontract.ErrExecutionSimulationReverted) {
-			p.logger.Info("arbitrage execution skipped after bundle simulation reverted",
-				zap.String("opportunity", opportunity.ID),
-				zap.Error(err),
-			)
-			return nil
-		}
 		return fmt.Errorf("execute arbitrage: %w", err)
 	}
 	if err := markOpportunityExecuted(ctx, p.repo, opportunity, resp.TxHash); err != nil {
@@ -224,16 +213,6 @@ func (p *ExecutionPublisher) Publish(ctx context.Context, opportunity *domainarb
 		zap.String("flashbots_rpc", strings.TrimSpace(p.cfg.FlashbotsRPCURL)),
 	)
 	return nil
-}
-
-func disableContractBuilderPayment(plan *domaincontract.ExecutionPlan) {
-	if plan == nil {
-		return
-	}
-	plan.SettlementRoutes = nil
-	plan.SettlementMinProfit = nil
-	plan.CoinbasePaymentBPS = 0
-	plan.WrappedNativeToken = common.Address{}
 }
 
 func (p *ExecutionPublisher) begin(opportunityID string) (common.Hash, bool) {

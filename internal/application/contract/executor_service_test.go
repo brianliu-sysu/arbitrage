@@ -91,10 +91,6 @@ func (f *fakeBroadcaster) BroadcastExecution(context.Context, domaincontract.Bro
 	return domaincontract.BroadcastResponse{TxHash: common.HexToHash("0x1")}, nil
 }
 
-func (f *fakeBroadcaster) SimulateExecution(context.Context, domaincontract.BroadcastRequest) error {
-	return nil
-}
-
 func (f *fakeBroadcaster) Allowances(_ context.Context, _ string, _ common.Address, approvals []domaincontract.TokenApproval) ([]*big.Int, error) {
 	f.allowanceCalls++
 	allowances := make([]*big.Int, len(approvals))

@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 
-	domaincontract "github.com/brianliu-sysu/uniswapv3/internal/domain/contract"
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -33,68 +32,26 @@ type flashbotsRPCError struct {
 	Message string `json:"message"`
 }
 
-func submitFlashbotsBundles(
+func submitFlashbotsBundle(
 	ctx context.Context,
 	relayURL string,
 	authKey *ecdsa.PrivateKey,
 	tx *types.Transaction,
-	firstTargetBlock uint64,
-	targetBlockCount uint64,
-	decodeRevert func([]byte) string,
+	targetBlock uint64,
+	builders []string,
 ) error {
 	rawTx, err := tx.MarshalBinary()
 	if err != nil {
 		return fmt.Errorf("marshal flashbots transaction: %w", err)
 	}
 	txs := []string{hexutil.Encode(rawTx)}
-	firstTarget := hexutil.EncodeUint64(firstTargetBlock)
-	simulation, err := callFlashbotsRPC(ctx, relayURL, authKey, "eth_callBundle", []any{map[string]any{
-		"txs":              txs,
-		"blockNumber":      firstTarget,
-		"stateBlockNumber": "latest",
-	}})
-	if err != nil {
-		return fmt.Errorf("simulate flashbots bundle: %w", err)
-	}
-	if err := validateFlashbotsSimulation(simulation, decodeRevert); err != nil {
-		return fmt.Errorf("simulate flashbots bundle: %w", err)
-	}
-
-	for offset := uint64(0); offset < targetBlockCount; offset++ {
-		target := hexutil.EncodeUint64(firstTargetBlock + offset)
-		if _, err := callFlashbotsRPC(ctx, relayURL, authKey, "eth_sendBundle", []any{map[string]any{
-			"txs":         txs,
-			"blockNumber": target,
-		}}); err != nil {
-			return fmt.Errorf("submit flashbots bundle for block %s: %w", target, err)
-		}
-	}
-	return nil
-}
-
-func validateFlashbotsSimulation(raw json.RawMessage, decodeRevert func([]byte) string) error {
-	var result struct {
-		Results []struct {
-			Error  string `json:"error"`
-			Revert string `json:"revert"`
-		} `json:"results"`
-	}
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return fmt.Errorf("decode simulation result: %w", err)
-	}
-	for index, txResult := range result.Results {
-		if txResult.Error != "" {
-			return fmt.Errorf("%w: transaction %d: %s", domaincontract.ErrExecutionSimulationReverted, index, txResult.Error)
-		}
-		if txResult.Revert != "" {
-			detail := txResult.Revert
-			if rawRevert, decodeErr := hexutil.Decode(txResult.Revert); decodeErr == nil && decodeRevert != nil {
-				if decoded := decodeRevert(rawRevert); decoded != "" {
-					detail = decoded
-				}
-			}
-			return fmt.Errorf("%w: transaction %d reverted: %s", domaincontract.ErrExecutionSimulationReverted, index, detail)
-		}
+	target := hexutil.EncodeUint64(targetBlock)
+	if _, err := callFlashbotsRPC(ctx, relayURL, authKey, "eth_sendBundle", []any{map[string]any{
+		"txs":         txs,
+		"blockNumber": target,
+		"builders":    append([]string(nil), builders...),
+	}}); err != nil {
+		return fmt.Errorf("submit flashbots bundle for block %s: %w", target, err)
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"errors"
 	"math/big"
 	"testing"
 	"time"
@@ -32,12 +33,19 @@ func TestExecutionPublisherBroadcastsApprovalAndInterrupts(t *testing.T) {
 	}
 }
 
-func TestExecutionPublisherPassesWalletBuilderPayment(t *testing.T) {
+func TestExecutionPublisherPreservesContractBuilderPayment(t *testing.T) {
 	executor := &fakeExecutionExecutor{}
 	cfg := testExecutionConfig()
-	cfg.FlashbotsPaymentBPS = 8000
 	cfg.GasLimit = 100
-	publisher := NewExecutionPublisher(cfg, fakeExecutionBuilder{}, executor, nil)
+	weth := common.HexToAddress("0x00000000000000000000000000000000000000cc")
+	builder := fakeExecutionBuilder{plan: domaincontract.ExecutionPlan{
+		ProfitToken:        weth,
+		MinProfit:          big.NewInt(1),
+		CoinbasePaymentBPS: 8000,
+		WrappedNativeToken: weth,
+		Routes:             []domaincontract.SwapRoute{{RouterAddress: common.HexToAddress("0x3")}},
+	}}
+	publisher := NewExecutionPublisher(cfg, builder, executor, nil)
 
 	if err := publisher.Publish(context.Background(), testOpportunity()); err != nil {
 		t.Fatalf("publish: %v", err)
@@ -45,14 +53,11 @@ func TestExecutionPublisherPassesWalletBuilderPayment(t *testing.T) {
 	if executor.executeCalls != 1 {
 		t.Fatalf("expected execution call, got %d", executor.executeCalls)
 	}
-	if executor.simulateCalls != 0 {
-		t.Fatalf("expected bundle broadcaster to own simulation, got %d application simulations", executor.simulateCalls)
+	if executor.executeReq.Plan.CoinbasePaymentBPS != 8000 {
+		t.Fatalf("expected contract coinbase payment 8000, got %d", executor.executeReq.Plan.CoinbasePaymentBPS)
 	}
-	if executor.executeReq.Plan.CoinbasePaymentBPS != 0 {
-		t.Fatalf("expected contract coinbase payment disabled, got %d", executor.executeReq.Plan.CoinbasePaymentBPS)
-	}
-	if executor.executeReq.BuilderPaymentWei.Cmp(big.NewInt(80_000)) != 0 {
-		t.Fatalf("expected wallet builder payment 80000, got %s", executor.executeReq.BuilderPaymentWei)
+	if len(executor.executeReq.SubmitBuilders) != 1 || executor.executeReq.SubmitBuilders[0] != "flashbots" {
+		t.Fatalf("unexpected submit builders %v", executor.executeReq.SubmitBuilders)
 	}
 	if executor.executeReq.Plan.MinProfit.Cmp(big.NewInt(1)) != 0 {
 		t.Fatalf("expected pre-evaluated min profit to remain 1, got %s", executor.executeReq.Plan.MinProfit)
@@ -65,32 +70,12 @@ func TestExecutionPublisherPassesWalletBuilderPayment(t *testing.T) {
 	}
 }
 
-func TestExecutionPublisherSkipsSimulationRevert(t *testing.T) {
-	executor := &fakeExecutionExecutor{executeErr: domaincontract.ErrExecutionSimulationReverted}
+func TestExecutionPublisherPropagatesExecutionError(t *testing.T) {
+	executor := &fakeExecutionExecutor{executeErr: errors.New("relay rejected bundle")}
 	publisher := NewExecutionPublisher(testExecutionConfig(), fakeExecutionBuilder{}, executor, nil)
 
-	if err := publisher.Publish(context.Background(), testOpportunity()); err != nil {
-		t.Fatalf("expected simulation revert to skip opportunity, got %v", err)
-	}
-}
-
-func TestDisableContractBuilderPaymentRemovesSettlement(t *testing.T) {
-	plan := domaincontract.ExecutionPlan{
-		ProfitToken:         common.HexToAddress("0x1"),
-		SettlementRoutes:    []domaincontract.SwapRoute{{RouterAddress: common.HexToAddress("0x2")}},
-		SettlementMinProfit: big.NewInt(1),
-		CoinbasePaymentBPS:  8000,
-		WrappedNativeToken:  common.HexToAddress("0x3"),
-	}
-	disableContractBuilderPayment(&plan)
-	if plan.CoinbasePaymentBPS != 0 {
-		t.Fatalf("expected zero coinbase payment, got %d", plan.CoinbasePaymentBPS)
-	}
-	if plan.WrappedNativeToken != (common.Address{}) {
-		t.Fatalf("expected wrapped native token cleared, got %s", plan.WrappedNativeToken.Hex())
-	}
-	if len(plan.SettlementRoutes) != 0 || plan.SettlementMinProfit != nil {
-		t.Fatalf("expected settlement routes cleared, got %+v", plan)
+	if err := publisher.Publish(context.Background(), testOpportunity()); err == nil {
+		t.Fatal("expected execution error")
 	}
 }
 
@@ -111,7 +96,6 @@ func TestExecutionPublisherDerivesMissingV3Approvals(t *testing.T) {
 	}
 	executor := &fakeExecutionExecutor{}
 	cfg := testExecutionConfig()
-	cfg.WrappedNativeToken = weth
 	publisher := NewExecutionPublisher(
 		cfg,
 		fakeExecutionBuilder{plan: domaincontract.ExecutionPlan{
@@ -148,28 +132,26 @@ func TestExecutionPublisherDerivesMissingV3Approvals(t *testing.T) {
 
 func testExecutionConfig() ExecutionConfig {
 	return ExecutionConfig{
-		Enabled:             true,
-		RPCURL:              "http://127.0.0.1:8545",
-		PrivateKey:          "0xabc",
-		Executor:            common.HexToAddress("0x00000000000000000000000000000000000000aa"),
-		FlashbotsRPCURL:     "https://relay.flashbots.net",
-		FlashbotsPaymentBPS: 8000,
-		WrappedNativeToken:  common.HexToAddress("0x00000000000000000000000000000000000000cc"),
-		GasLimit:            100,
-		SkipEstimate:        true,
+		Enabled:           true,
+		RPCURL:            "http://127.0.0.1:8545",
+		PrivateKey:        "0xabc",
+		Executor:          common.HexToAddress("0x00000000000000000000000000000000000000aa"),
+		FlashbotsRPCURL:   "https://relay.flashbots.net",
+		FlashbotsBuilders: []string{"flashbots"},
+		GasLimit:          100,
+		SkipEstimate:      true,
 	}
 }
 
 func testOpportunity() *domainarb.Opportunity {
 	return &domainarb.Opportunity{
-		ID:                "opp-1",
-		Route:             quoteunified.NewDirectV3Route(common.HexToAddress("0x00000000000000000000000000000000000000bb"), common.HexToAddress("0x00000000000000000000000000000000000000cc"), common.HexToAddress("0x00000000000000000000000000000000000000dd")),
-		AmountIn:          big.NewInt(100),
-		AmountOut:         big.NewInt(1_100),
-		NetProfit:         big.NewInt(100_000),
-		BuilderPaymentWei: big.NewInt(80_000),
-		Status:            domainarb.OpportunityStatusAccepted,
-		CreatedAt:         time.Unix(0, 0),
+		ID:        "opp-1",
+		Route:     quoteunified.NewDirectV3Route(common.HexToAddress("0x00000000000000000000000000000000000000bb"), common.HexToAddress("0x00000000000000000000000000000000000000cc"), common.HexToAddress("0x00000000000000000000000000000000000000dd")),
+		AmountIn:  big.NewInt(100),
+		AmountOut: big.NewInt(1_100),
+		NetProfit: big.NewInt(100_000),
+		Status:    domainarb.OpportunityStatusAccepted,
+		CreatedAt: time.Unix(0, 0),
 	}
 }
 
@@ -209,7 +191,6 @@ type fakeExecutionExecutor struct {
 	approvalResp  domaincontract.EnsureApprovalsResponse
 	approvalCalls int
 	approvalReq   domaincontract.EnsureApprovalsRequest
-	simulateCalls int
 	executeCalls  int
 	executeReq    domaincontract.BroadcastRequest
 	executeErr    error
@@ -219,11 +200,6 @@ func (f *fakeExecutionExecutor) EnsureApprovals(_ context.Context, req domaincon
 	f.approvalCalls++
 	f.approvalReq = req
 	return f.approvalResp, nil
-}
-
-func (f *fakeExecutionExecutor) Simulate(context.Context, domaincontract.BroadcastRequest) error {
-	f.simulateCalls++
-	return nil
 }
 
 func (f *fakeExecutionExecutor) Execute(_ context.Context, req domaincontract.BroadcastRequest) (domaincontract.BroadcastResponse, error) {

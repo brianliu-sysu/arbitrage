@@ -99,7 +99,7 @@ func (b *LiveExecutionPlanBuilder) BuildExecutionPlan(
 			if err != nil {
 				return domaincontract.ExecutionPlan{}, nil, err
 			}
-			return refreshed, domaincontract.MergeTokenApprovals(approvals, domaincontract.RequiredTokenApprovals(refreshed)), nil
+			return b.finalizePlan(ctx, opportunity, refreshed, approvals)
 		}
 		if !isExecutionUnavailable(err) {
 			return domaincontract.ExecutionPlan{}, nil, err
@@ -121,7 +121,18 @@ func (b *LiveExecutionPlanBuilder) BuildExecutionPlan(
 	if err != nil {
 		return domaincontract.ExecutionPlan{}, nil, err
 	}
-	return plan, domaincontract.MergeTokenApprovals(approvals, domaincontract.RequiredTokenApprovals(plan)), nil
+	return b.finalizePlan(ctx, opportunity, plan, approvals)
+}
+
+func (b *LiveExecutionPlanBuilder) finalizePlan(
+	ctx context.Context,
+	opportunity *domainarb.Opportunity,
+	plan domaincontract.ExecutionPlan,
+	approvals []domaincontract.TokenApproval,
+) (domaincontract.ExecutionPlan, []domaincontract.TokenApproval, error) {
+	plan.CoinbasePaymentBPS = uint16(b.cfg.CoinbasePaymentBPS)
+	plan.WrappedNativeToken = b.cfg.WETH
+	return b.addWETHSettlement(ctx, opportunity, plan, approvals)
 }
 
 func (b *LiveExecutionPlanBuilder) addWETHSettlement(

@@ -271,13 +271,6 @@ func (s *OpportunityService) generateForRoute(
 		FlashLoan:          flashLoan,
 		QuoteSteps:         opportunityQuoteSteps(quoteSteps),
 	})
-	if evaluation.CoinbasePayment.Sign() > 0 {
-		builderPaymentWei, conversionErr := s.tokenAmountInWrappedNative(ctx, snapshot, evaluation.CoinbasePayment, strategy.StartToken)
-		if conversionErr != nil {
-			return nil, fmt.Errorf("convert builder payment to native token: %w", conversionErr)
-		}
-		evaluation.BuilderPaymentWei = builderPaymentWei
-	}
 	if !evaluation.Accepted {
 		s.logger.Debug("arbitrage route rejected",
 			zap.Uint64("block", blockNumber),
@@ -320,54 +313,6 @@ func (s *OpportunityService) generateForRoute(
 		zap.String("quote_steps", formatQuoteSteps(quoteSteps, quoteStepsErr)),
 	)
 	return opp, nil
-}
-
-func (s *OpportunityService) tokenAmountInWrappedNative(
-	ctx context.Context,
-	snapshot committedmarket.Snapshot,
-	amount *big.Int,
-	token common.Address,
-) (*big.Int, error) {
-	if amount == nil || amount.Sign() <= 0 {
-		return new(big.Int), nil
-	}
-	s.mu.RLock()
-	graph := s.poolGraph
-	wrappedNative := s.wrappedNative
-	s.mu.RUnlock()
-	if wrappedNative == (common.Address{}) {
-		return nil, errors.New("wrapped native token is not configured")
-	}
-	if token == (common.Address{}) || token == wrappedNative {
-		return new(big.Int).Set(amount), nil
-	}
-	if graph == nil {
-		return nil, errors.New("pool graph is not configured")
-	}
-	routes, err := quoteunified.NewRouteService(graph, 3).FindRoutes(token, wrappedNative)
-	if err != nil {
-		return nil, err
-	}
-	var bestAmountOut *big.Int
-	for _, route := range routes {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		pools, loadErr := snapshot.LoadRoutePools(ctx, route)
-		if loadErr != nil {
-			continue
-		}
-		quote, quoteErr := s.quotes.QuoteRoute(pools, route, amount)
-		if quoteErr == nil && quote.AmountOut != nil && quote.AmountOut.Sign() > 0 {
-			if bestAmountOut == nil || quote.AmountOut.Cmp(bestAmountOut) > 0 {
-				bestAmountOut = new(big.Int).Set(quote.AmountOut)
-			}
-		}
-	}
-	if bestAmountOut == nil {
-		return nil, errors.New("no quotable route to wrapped native token")
-	}
-	return bestAmountOut, nil
 }
 
 func (s *OpportunityService) gasCostInToken(

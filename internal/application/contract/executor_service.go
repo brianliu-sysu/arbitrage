@@ -13,7 +13,6 @@ import (
 
 type Broadcaster interface {
 	BroadcastExecution(ctx context.Context, req domaincontract.BroadcastRequest) (domaincontract.BroadcastResponse, error)
-	SimulateExecution(ctx context.Context, req domaincontract.BroadcastRequest) error
 	Allowances(ctx context.Context, rpcURL string, owner common.Address, approvals []domaincontract.TokenApproval) ([]*big.Int, error)
 	BroadcastApprove(ctx context.Context, req domaincontract.BroadcastRequest, approval domaincontract.TokenApproval) (domaincontract.BroadcastResponse, error)
 }
@@ -34,16 +33,6 @@ func (s *AppService) Execute(ctx context.Context, req domaincontract.BroadcastRe
 		return domaincontract.BroadcastResponse{}, err
 	}
 	return s.broadcaster.BroadcastExecution(ctx, normalizeBroadcastRequest(req))
-}
-
-func (s *AppService) Simulate(ctx context.Context, req domaincontract.BroadcastRequest) error {
-	if s == nil || s.broadcaster == nil {
-		return errors.New("contract executor broadcaster is not configured")
-	}
-	if err := ValidateBroadcastRequest(req); err != nil {
-		return err
-	}
-	return s.broadcaster.SimulateExecution(ctx, normalizeBroadcastRequest(req))
 }
 
 func (s *AppService) EnsureApprovals(ctx context.Context, req domaincontract.EnsureApprovalsRequest) (domaincontract.EnsureApprovalsResponse, error) {
@@ -92,6 +81,16 @@ func ValidateBroadcastRequest(req domaincontract.BroadcastRequest) error {
 	}
 	if req.SkipEstimate && req.GasLimit == 0 {
 		return errors.New("gasLimit is required when skipEstimate is true")
+	}
+	if strings.TrimSpace(req.SubmitRPCURL) != "" {
+		if len(req.SubmitBuilders) == 0 {
+			return errors.New("submitBuilders is required when submitRpcUrl is configured")
+		}
+		for i, builder := range req.SubmitBuilders {
+			if strings.TrimSpace(builder) == "" {
+				return fmt.Errorf("submitBuilders[%d] must not be empty", i)
+			}
+		}
 	}
 	return nil
 }
@@ -212,6 +211,10 @@ func normalizeBroadcastRequest(req domaincontract.BroadcastRequest) domaincontra
 	req.Plan.Deadline = zeroIfNil(req.Plan.Deadline)
 	req.GasPriceWei = cloneBigInt(req.GasPriceWei)
 	req.SubmitRPCURL = strings.TrimSpace(req.SubmitRPCURL)
+	req.SubmitBuilders = append([]string(nil), req.SubmitBuilders...)
+	for i := range req.SubmitBuilders {
+		req.SubmitBuilders[i] = strings.TrimSpace(req.SubmitBuilders[i])
+	}
 	for i := range req.Plan.Routes {
 		req.Plan.Routes[i].Value = zeroIfNil(req.Plan.Routes[i].Value)
 		req.Plan.Routes[i].Data = append([]byte(nil), req.Plan.Routes[i].Data...)

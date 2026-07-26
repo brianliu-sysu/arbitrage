@@ -30,3 +30,34 @@ func TestNewProtocolResourcesSkipsDisabledProtocols(t *testing.T) {
 		t.Fatal("expected disabled protocol infrastructure to remain nil")
 	}
 }
+
+func TestLivePlanConfigEnablesCoinbasePaymentAndWETHSettlement(t *testing.T) {
+	cfg := config.ChainConfig{
+		Arbitrage: config.ArbitrageConfig{
+			Execution: config.ExecutionConfig{
+				FlashbotsRPCURL:       "https://relay.flashbots.net",
+				FlashbotsPaymentBPS:   8_000,
+				SettlementSlippageBPS: 50,
+			},
+		},
+	}
+
+	got := livePlanConfigFromRuntime(cfg)
+
+	if !got.RequireWETHProfit {
+		t.Fatal("expected WETH settlement when coinbase payment is enabled")
+	}
+	if got.CoinbasePaymentBPS != 8_000 {
+		t.Fatalf("expected coinbase payment 8000 bps, got %d", got.CoinbasePaymentBPS)
+	}
+	if got.SettlementSlippageBPS != 50 {
+		t.Fatalf("expected settlement slippage 50 bps, got %d", got.SettlementSlippageBPS)
+	}
+}
+
+func TestFlashbotsCoinbasePaymentDisabledWithoutRelay(t *testing.T) {
+	got := flashbotsCoinbasePaymentBPS(config.ExecutionConfig{FlashbotsPaymentBPS: 8_000})
+	if got != 0 {
+		t.Fatalf("expected zero payment without relay, got %d", got)
+	}
+}

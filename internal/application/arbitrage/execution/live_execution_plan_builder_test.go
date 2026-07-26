@@ -42,10 +42,12 @@ func TestLiveExecutionPlanBuilderEncodesV3(t *testing.T) {
 	pool := marketuniv3.NewPool(poolAddr, weth, usdt, 500, 10)
 	loader := NewRepositoryRoutePoolLoader(stubV3PoolRepo{pool: pool}, nil, nil, nil, nil)
 	cfg := LivePlanConfig{
-		WETH:          weth,
-		BalancerVault: vault,
-		SwapRouterV3:  router,
-		Executor:      executor,
+		WETH:               weth,
+		BalancerVault:      vault,
+		SwapRouterV3:       router,
+		Executor:           executor,
+		RequireWETHProfit:  true,
+		CoinbasePaymentBPS: 8_000,
 	}
 	builder := NewLiveExecutionPlanBuilder(cfg, NewLiveCalldataEncoder(cfg, loader))
 
@@ -73,6 +75,9 @@ func TestLiveExecutionPlanBuilderEncodesV3(t *testing.T) {
 	}
 	if plan.Loan.Protocol != domaincontract.FlashLoanProtocolBalancer {
 		t.Fatalf("unexpected loan protocol %q", plan.Loan.Protocol)
+	}
+	if plan.CoinbasePaymentBPS != 8_000 || plan.WrappedNativeToken != weth {
+		t.Fatalf("expected finalized coinbase payment plan, got %+v", plan)
 	}
 	if len(plan.Routes) != 1 {
 		t.Fatalf("expected 1 route, got %d", len(plan.Routes))

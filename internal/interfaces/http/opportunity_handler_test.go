@@ -65,10 +65,6 @@ func (s *stubContractExecutor) EnsureApprovals(
 	return domaincontract.EnsureApprovalsResponse{}, nil
 }
 
-func (s *stubContractExecutor) Simulate(context.Context, domaincontract.BroadcastRequest) error {
-	return nil
-}
-
 func (s *stubContractExecutor) Execute(_ context.Context, req domaincontract.BroadcastRequest) (domaincontract.BroadcastResponse, error) {
 	s.executeCalls++
 	s.lastPlan = req.Plan

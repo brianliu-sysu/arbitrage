@@ -80,6 +80,7 @@ type ExecutionConfig struct {
 	PrivateKey            string   `yaml:"private_key"`
 	BroadcastToken        string   `yaml:"broadcast_token"`
 	FlashbotsRPCURL       string   `yaml:"flashbots_rpc_url"`
+	FlashbotsBuilders     []string `yaml:"flashbots_builders"`
 	FlashbotsPaymentBPS   uint64   `yaml:"flashbots_payment_bps"`
 	SettlementSlippageBPS uint64   `yaml:"settlement_slippage_bps"`
 	GasLimit              uint64   `yaml:"gas_limit"`
@@ -555,6 +556,16 @@ func validateChainConfig(c ChainConfig) error {
 		}
 		if c.Arbitrage.Execution.FlashbotsPaymentBPS > 10_000 {
 			return fmt.Errorf("%sarbitrage.execution.flashbots_payment_bps must be <= 10000", prefix)
+		}
+		if strings.TrimSpace(c.Arbitrage.Execution.FlashbotsRPCURL) != "" {
+			if len(c.Arbitrage.Execution.FlashbotsBuilders) == 0 {
+				return fmt.Errorf("%sarbitrage.execution.flashbots_builders is required when flashbots_rpc_url is configured", prefix)
+			}
+			for i, builder := range c.Arbitrage.Execution.FlashbotsBuilders {
+				if strings.TrimSpace(builder) == "" {
+					return fmt.Errorf("%sarbitrage.execution.flashbots_builders[%d] must not be empty", prefix, i)
+				}
+			}
 		}
 		if c.Arbitrage.Execution.SettlementSlippageBPS > 10_000 {
 			return fmt.Errorf("%sarbitrage.execution.settlement_slippage_bps must be <= 10000", prefix)

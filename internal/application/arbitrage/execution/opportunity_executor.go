@@ -128,7 +128,6 @@ func (e *OpportunityExecutor) Execute(ctx context.Context, req OpportunityExecut
 	if err != nil {
 		return OpportunityExecuteResult{}, err
 	}
-	disableContractBuilderPayment(&plan)
 	approvals = domaincontract.MergeTokenApprovals(approvals, domaincontract.RequiredTokenApprovals(plan))
 	if plan.MinProfit == nil {
 		plan.MinProfit = cloneBigIntOrZero(opportunity.NetProfit)
@@ -184,15 +183,15 @@ func (e *OpportunityExecutor) Execute(ctx context.Context, req OpportunityExecut
 	}
 
 	broadcastReq := domaincontract.BroadcastRequest{
-		RPCURL:            strings.TrimSpace(e.cfg.RPCURL),
-		PrivateKey:        strings.TrimSpace(e.cfg.PrivateKey),
-		Executor:          e.cfg.Executor,
-		Plan:              plan,
-		GasLimit:          e.cfg.GasLimit,
-		GasPriceWei:       gasPriceWei,
-		BuilderPaymentWei: cloneBigInt(opportunity.BuilderPaymentWei),
-		SkipEstimate:      e.cfg.SkipEstimate,
-		SubmitRPCURL:      strings.TrimSpace(e.cfg.FlashbotsRPCURL),
+		RPCURL:         strings.TrimSpace(e.cfg.RPCURL),
+		PrivateKey:     strings.TrimSpace(e.cfg.PrivateKey),
+		Executor:       e.cfg.Executor,
+		Plan:           plan,
+		GasLimit:       e.cfg.GasLimit,
+		GasPriceWei:    gasPriceWei,
+		SkipEstimate:   e.cfg.SkipEstimate,
+		SubmitRPCURL:   strings.TrimSpace(e.cfg.FlashbotsRPCURL),
+		SubmitBuilders: append([]string(nil), e.cfg.FlashbotsBuilders...),
 	}
 	resp, err := e.executor.Execute(ctx, broadcastReq)
 	if err != nil {

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"math/big"
-	"regexp"
 	"strings"
 	"time"
 
@@ -218,49 +217,6 @@ func waitForSuccessfulReceipt(ctx context.Context, client *ethclient.Client, txH
 	}
 }
 
-func (b *ContractExecutorBroadcaster) SimulateExecution(
-	ctx context.Context,
-	req domaincontract.BroadcastRequest,
-) error {
-	if b == nil {
-		return errors.New("contract executor broadcaster is nil")
-	}
-
-	privateKey, err := parsePrivateKey(req.PrivateKey)
-	if err != nil {
-		return err
-	}
-	from := crypto.PubkeyToAddress(privateKey.PublicKey)
-
-	client, err := ethclient.DialContext(ctx, req.RPCURL)
-	if err != nil {
-		return fmt.Errorf("dial rpc: %w", err)
-	}
-	defer client.Close()
-
-	data, err := b.parsedABI.Pack(
-		"execute",
-		toExecutionPlanABI(req.Plan),
-		toSwapRoutesABI(req.Plan.SettlementRoutes),
-		zeroIfNilBigInt(req.Plan.SettlementMinProfit),
-		req.Plan.CoinbasePaymentBPS,
-		req.Plan.WrappedNativeToken,
-	)
-	if err != nil {
-		return fmt.Errorf("pack execute calldata: %w", err)
-	}
-	logExecuteCalldata("simulate", from, req.Executor, nil, data)
-	_, err = client.CallContract(ctx, ethereum.CallMsg{
-		From: from,
-		To:   &req.Executor,
-		Data: data,
-	}, nil)
-	if err != nil {
-		return fmt.Errorf("simulate execute: %w%s", err, b.decodeRevertError(err))
-	}
-	return nil
-}
-
 func logExecuteCalldata(stage string, from common.Address, executor common.Address, chainID *big.Int, data []byte) {
 	chainIDText := ""
 	if chainID != nil {
@@ -274,70 +230,6 @@ func logExecuteCalldata(stage string, from common.Address, executor common.Addre
 		chainIDText,
 		hexutil.Encode(data),
 	)
-}
-
-func (b *ContractExecutorBroadcaster) decodeRevertError(err error) string {
-	if err == nil {
-		return ""
-	}
-	raw, ok := ethclient.RevertErrorData(err)
-	if !ok {
-		raw = extractHexRevertData(err.Error())
-	}
-	if len(raw) < 4 {
-		return ""
-	}
-	decoded := b.decodeABIError(raw)
-	if decoded == "" {
-		return ""
-	}
-	return ": " + decoded
-}
-
-var hexDataPattern = regexp.MustCompile(`0x[0-9a-fA-F]{8,}`)
-
-func extractHexRevertData(message string) []byte {
-	matches := hexDataPattern.FindAllString(message, -1)
-	for i := len(matches) - 1; i >= 0; i-- {
-		raw, err := hexutil.Decode(matches[i])
-		if err == nil && len(raw) >= 4 {
-			return raw
-		}
-	}
-	return nil
-}
-
-func (b *ContractExecutorBroadcaster) decodeABIError(raw []byte) string {
-	if b == nil || len(raw) < 4 {
-		return ""
-	}
-	for name, abiError := range b.parsedABI.Errors {
-		if len(abiError.ID) >= 4 && string(abiError.ID[:4]) == string(raw[:4]) {
-			values, err := abiError.Inputs.Unpack(raw[4:])
-			if err != nil {
-				return fmt.Sprintf("%s(unpack failed: %v)", name, err)
-			}
-			return formatABIError(name, values)
-		}
-	}
-	return fmt.Sprintf("custom error 0x%x", raw[:4])
-}
-
-func formatABIError(name string, values []any) string {
-	parts := make([]string, 0, len(values))
-	for _, value := range values {
-		switch typed := value.(type) {
-		case *big.Int:
-			parts = append(parts, typed.String())
-		case common.Address:
-			parts = append(parts, typed.Hex())
-		case []byte:
-			parts = append(parts, "0x"+common.Bytes2Hex(typed))
-		default:
-			parts = append(parts, fmt.Sprintf("%v", typed))
-		}
-	}
-	return fmt.Sprintf("%s(%s)", name, strings.Join(parts, ", "))
 }
 
 func (b *ContractExecutorBroadcaster) Allowances(
@@ -486,7 +378,6 @@ func (b *ContractExecutorBroadcaster) sendTransaction(
 				return common.Hash{}, fmt.Errorf("suggest gas tip cap: %w", err)
 			}
 		}
-		tipCap = addBuilderPaymentToGasPrice(tipCap, req.BuilderPaymentWei, gasLimit)
 		feeCap := new(big.Int).Add(new(big.Int).Mul(header.BaseFee, big.NewInt(2)), tipCap)
 		targetBlock = header.Number.Uint64() + 1
 		tx = types.NewTx(&types.DynamicFeeTx{
@@ -506,7 +397,6 @@ func (b *ContractExecutorBroadcaster) sendTransaction(
 				return common.Hash{}, fmt.Errorf("suggest gas price: %w", err)
 			}
 		}
-		gasPrice = addBuilderPaymentToGasPrice(gasPrice, req.BuilderPaymentWei, gasLimit)
 		tx = types.NewTransaction(nonce, req.Executor, new(big.Int), gasLimit, new(big.Int).Set(gasPrice), data)
 	}
 
@@ -515,7 +405,7 @@ func (b *ContractExecutorBroadcaster) sendTransaction(
 		return common.Hash{}, fmt.Errorf("sign tx: %w", err)
 	}
 	if submitRPCURL != "" {
-		if err := submitFlashbotsBundles(ctx, submitRPCURL, privateKey, signedTx, targetBlock, 3, b.decodeABIError); err != nil {
+		if err := submitFlashbotsBundle(ctx, submitRPCURL, privateKey, signedTx, targetBlock, req.SubmitBuilders); err != nil {
 			return common.Hash{}, err
 		}
 	} else if err := client.SendTransaction(ctx, signedTx); err != nil {
@@ -523,22 +413,6 @@ func (b *ContractExecutorBroadcaster) sendTransaction(
 	}
 
 	return signedTx.Hash(), nil
-}
-
-func addBuilderPaymentToGasPrice(gasPrice, builderPaymentWei *big.Int, gasLimit uint64) *big.Int {
-	result := new(big.Int)
-	if gasPrice != nil {
-		result.Set(gasPrice)
-	}
-	if builderPaymentWei == nil || builderPaymentWei.Sign() <= 0 || gasLimit == 0 {
-		return result
-	}
-	divisor := new(big.Int).SetUint64(gasLimit)
-	extra := new(big.Int).Quo(
-		new(big.Int).Add(new(big.Int).Set(builderPaymentWei), new(big.Int).Sub(divisor, big.NewInt(1))),
-		divisor,
-	)
-	return result.Add(result, extra)
 }
 
 func parsePrivateKey(raw string) (*ecdsa.PrivateKey, error) {

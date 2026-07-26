@@ -441,10 +441,7 @@ func newArbitrageServices(
 	}
 	executionCfg := executionConfigFromRuntime(cfg)
 	livePlan := livePlanConfigFromRuntime(cfg)
-	coinbasePaymentBPS := uint16(0)
-	if strings.TrimSpace(executionCfg.FlashbotsRPCURL) != "" && executionCfg.FlashbotsPaymentBPS > 0 {
-		coinbasePaymentBPS = uint16(executionCfg.FlashbotsPaymentBPS)
-	}
+	coinbasePaymentBPS := flashbotsCoinbasePaymentBPS(cfg.Arbitrage.Execution)
 	publishing := arbitrageapp.PublishingDeps{Repository: durableStore.Opportunities}
 	if executionCfg.Enabled {
 		encoder := arbitrageapp.NewLiveCalldataEncoder(
@@ -520,21 +517,19 @@ func enabledMarketProtocols(cfg config.ChainConfig) []marketpipeline.Protocol {
 func executionConfigFromRuntime(cfg config.ChainConfig) arbitrageapp.ExecutionConfig {
 	execution := cfg.Arbitrage.Execution
 	return arbitrageapp.ExecutionConfig{
-		Enabled:               execution.Enabled,
-		RPCURL:                execution.ResolvedRPCURL(),
-		PrivateKey:            execution.PrivateKey,
-		Executor:              execution.Executor(),
-		FlashbotsRPCURL:       execution.FlashbotsRPCURL,
-		FlashbotsPaymentBPS:   execution.FlashbotsPaymentBPS,
-		SettlementSlippageBPS: execution.SettlementSlippageBPS,
-		WrappedNativeToken:    execution.WETH(),
-		GasLimit:              execution.GasLimit,
-		GasPriceWei:           execution.GasPrice(),
-		SkipEstimate:          execution.SkipEstimate,
-		BroadcastToken:        execution.BroadcastToken,
-		MaxOpportunityAge:     maxOpportunityAge(execution.MaxOpportunityAge),
-		AllowedRouters:        execution.AllowedRouterAddresses(),
-		AllowedSpenders:       execution.AllowedSpenderAddresses(),
+		Enabled:           execution.Enabled,
+		RPCURL:            execution.ResolvedRPCURL(),
+		PrivateKey:        execution.PrivateKey,
+		Executor:          execution.Executor(),
+		FlashbotsRPCURL:   execution.FlashbotsRPCURL,
+		FlashbotsBuilders: append([]string(nil), execution.FlashbotsBuilders...),
+		GasLimit:          execution.GasLimit,
+		GasPriceWei:       execution.GasPrice(),
+		SkipEstimate:      execution.SkipEstimate,
+		BroadcastToken:    execution.BroadcastToken,
+		MaxOpportunityAge: maxOpportunityAge(execution.MaxOpportunityAge),
+		AllowedRouters:    execution.AllowedRouterAddresses(),
+		AllowedSpenders:   execution.AllowedSpenderAddresses(),
 	}
 }
 
@@ -542,10 +537,11 @@ func livePlanConfigFromRuntime(cfg config.ChainConfig) arbitrageapp.LivePlanConf
 	balancerCfg := cfg.BalancerBlockchainConfig()
 	univ4Cfg := cfg.Univ4BlockchainConfig()
 	execution := cfg.Arbitrage.Execution
+	coinbasePaymentBPS := flashbotsCoinbasePaymentBPS(execution)
 	return arbitrageapp.LivePlanConfig{
-		RequireWETHProfit:     false,
-		CoinbasePaymentBPS:    0,
-		SettlementSlippageBPS: 0,
+		RequireWETHProfit:     coinbasePaymentBPS > 0,
+		CoinbasePaymentBPS:    uint64(coinbasePaymentBPS),
+		SettlementSlippageBPS: execution.SettlementSlippageBPS,
 		WETH:                  execution.WETH(),
 		BalancerVault:         balancerCfg.VaultAddress,
 		BalancerVaultV3:       balancerCfg.VaultV3Address,
@@ -556,6 +552,13 @@ func livePlanConfigFromRuntime(cfg config.ChainConfig) arbitrageapp.LivePlanConf
 		UniversalRouter:       execution.UniversalRouterAddress(),
 		Executor:              execution.Executor(),
 	}
+}
+
+func flashbotsCoinbasePaymentBPS(execution config.ExecutionConfig) uint16 {
+	if strings.TrimSpace(execution.FlashbotsRPCURL) == "" || execution.FlashbotsPaymentBPS == 0 {
+		return 0
+	}
+	return uint16(execution.FlashbotsPaymentBPS)
 }
 
 func maxOpportunityAge(configured uint64) uint64 {
