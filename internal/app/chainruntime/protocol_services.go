@@ -13,7 +13,6 @@ import (
 	syncbalancer "github.com/brianliu-sysu/uniswapv3/internal/application/sync/balancer"
 	synccontract "github.com/brianliu-sysu/uniswapv3/internal/application/sync/contract"
 	syncpancakev3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/pancakev3"
-	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync/protocol"
 	syncquickswapv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/quickswapv3"
 	syncv3 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ3"
 	syncv4 "github.com/brianliu-sysu/uniswapv3/internal/application/sync/univ4"
@@ -77,19 +76,19 @@ func (m *univ4ProtocolModule) Bootstrapper() protocolBootstrapper     { return m
 func (m *balancerProtocolModule) Bootstrapper() protocolBootstrapper  { return m.services.Lifecycle }
 
 func (m *univ3ProtocolModule) BlockPreparer() synccontract.BlockPreparer {
-	return m.services.Lifecycle.BlockPreparer
+	return m.services.Lifecycle.BlockPreparer()
 }
 func (m *pancakeProtocolModule) BlockPreparer() synccontract.BlockPreparer {
-	return m.services.Lifecycle.BlockPreparer
+	return m.services.Lifecycle.BlockPreparer()
 }
 func (m *quickSwapProtocolModule) BlockPreparer() synccontract.BlockPreparer {
-	return m.services.Lifecycle.BlockPreparer
+	return m.services.Lifecycle.BlockPreparer()
 }
 func (m *univ4ProtocolModule) BlockPreparer() synccontract.BlockPreparer {
-	return m.services.Lifecycle.BlockPreparer
+	return m.services.Lifecycle.BlockPreparer()
 }
 func (m *balancerProtocolModule) BlockPreparer() synccontract.BlockPreparer {
-	return m.services.Lifecycle.BlockPreparer
+	return m.services.Lifecycle.BlockPreparer()
 }
 
 func (m *univ3ProtocolModule) BindMarketReports(receiver marketpipeline.ReportReceiver, logger *zap.Logger) {
@@ -115,27 +114,27 @@ func (m *balancerProtocolModule) BindMarketReports(receiver marketpipeline.Repor
 
 func (m *univ3ProtocolModule) StartDiscovery(r *syncLifecycle, cfg config.ChainConfig) {
 	if m.resources != nil {
-		runSubgraphDiscovery(r, m.Name(), cfg.Sync.Univ3.Subgraph.RefreshInterval, cfg.Sync.Univ3.Subgraph.IsEnabled(), m.resources.registry, m.services.Lifecycle.Pools, m.services.Lifecycle)
+		runSubgraphDiscovery(r, m.Name(), cfg.Sync.Univ3.Subgraph.RefreshInterval, cfg.Sync.Univ3.Subgraph.IsEnabled(), m.resources.registry, m.services.Lifecycle)
 	}
 }
 func (m *pancakeProtocolModule) StartDiscovery(r *syncLifecycle, cfg config.ChainConfig) {
 	if m.resources != nil {
-		runSubgraphDiscovery(r, m.Name(), cfg.Sync.PancakeV3.Subgraph.RefreshInterval, cfg.Sync.PancakeV3.Subgraph.IsEnabled(), m.resources.registry, m.services.Lifecycle.Pools, m.services.Lifecycle)
+		runSubgraphDiscovery(r, m.Name(), cfg.Sync.PancakeV3.Subgraph.RefreshInterval, cfg.Sync.PancakeV3.Subgraph.IsEnabled(), m.resources.registry, m.services.Lifecycle)
 	}
 }
 func (m *quickSwapProtocolModule) StartDiscovery(r *syncLifecycle, cfg config.ChainConfig) {
 	if m.resources != nil {
-		runSubgraphDiscovery(r, m.Name(), cfg.Sync.QuickSwapV3.Subgraph.RefreshInterval, cfg.Sync.QuickSwapV3.Subgraph.IsEnabled(), m.resources.registry, m.services.Lifecycle.Pools, m.services.Lifecycle)
+		runSubgraphDiscovery(r, m.Name(), cfg.Sync.QuickSwapV3.Subgraph.RefreshInterval, cfg.Sync.QuickSwapV3.Subgraph.IsEnabled(), m.resources.registry, m.services.Lifecycle)
 	}
 }
 func (m *univ4ProtocolModule) StartDiscovery(r *syncLifecycle, cfg config.ChainConfig) {
 	if m.resources != nil {
-		runSubgraphDiscovery(r, m.Name(), cfg.Sync.Univ4.Subgraph.RefreshInterval, cfg.Sync.Univ4.Subgraph.IsEnabled(), m.resources.registry, m.services.Lifecycle.Pools, m.services.Lifecycle)
+		runSubgraphDiscovery(r, m.Name(), cfg.Sync.Univ4.Subgraph.RefreshInterval, cfg.Sync.Univ4.Subgraph.IsEnabled(), m.resources.registry, m.services.Lifecycle)
 	}
 }
 func (m *balancerProtocolModule) StartDiscovery(r *syncLifecycle, cfg config.ChainConfig) {
 	if m.resources != nil {
-		runSubgraphDiscovery(r, m.Name(), cfg.Sync.Balancer.Subgraph.RefreshInterval, cfg.Sync.Balancer.Subgraph.IsEnabled(), m.resources.registry, m.services.Lifecycle.Pools, m.services.Lifecycle)
+		runSubgraphDiscovery(r, m.Name(), cfg.Sync.Balancer.Subgraph.RefreshInterval, cfg.Sync.Balancer.Subgraph.IsEnabled(), m.resources.registry, m.services.Lifecycle)
 	}
 }
 
@@ -372,25 +371,25 @@ func newBalancerProtocol(
 }
 
 func newMarketStore(store *persistence.Services, protocols *protocolServices, logger *zap.Logger) *marketstore.Store {
-	var univ3Active *syncapp.PoolLifecycleService[common.Address]
-	var pancakeActive *syncapp.PoolLifecycleService[common.Address]
-	var quickSwapActive *syncapp.PoolLifecycleService[common.Address]
-	var univ4Active *syncapp.PoolLifecycleService[marketv4.PoolID]
-	var balancerActive *syncapp.PoolLifecycleService[marketbalancer.PoolID]
+	var univ3Active marketstore.Registry[common.Address]
+	var pancakeActive marketstore.Registry[common.Address]
+	var quickSwapActive marketstore.Registry[common.Address]
+	var univ4Active marketstore.Registry[marketv4.PoolID]
+	var balancerActive marketstore.Registry[marketbalancer.PoolID]
 	if services := protocols.univ3Services(); services != nil {
-		univ3Active = services.Lifecycle.Pools
+		univ3Active = services.Lifecycle
 	}
 	if services := protocols.pancakeServices(); services != nil {
-		pancakeActive = services.Lifecycle.Pools
+		pancakeActive = services.Lifecycle
 	}
 	if services := protocols.quickSwapServices(); services != nil {
-		quickSwapActive = services.Lifecycle.Pools
+		quickSwapActive = services.Lifecycle
 	}
 	if services := protocols.univ4Services(); services != nil {
-		univ4Active = services.Lifecycle.Pools
+		univ4Active = services.Lifecycle
 	}
 	if services := protocols.balancerServices(); services != nil {
-		balancerActive = services.Lifecycle.Pools
+		balancerActive = services.Lifecycle
 	}
 	view := marketstore.NewStore(marketstore.Sources{
 		Univ3Pools:        store.Pools,

@@ -59,7 +59,7 @@ func NewSnapshotScheduler(
 	config Config,
 	pools marketv4.PoolRepository,
 	snapshots *SnapshotService,
-	lifecycle *PoolLifecycleService,
+	lifecycle syncapp.ActivePoolLister[marketv4.PoolID],
 ) *SnapshotScheduler {
 	return syncapp.NewSnapshotScheduler(
 		config.SnapshotFallback,

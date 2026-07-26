@@ -82,12 +82,12 @@ func NewCatchupService(
 	fetcher LogFetcher,
 	parser EventParser,
 	blockApply *BlockApplyService,
-	lifecycle *PoolLifecycleService,
+	admission *PoolAdmissionService,
 	blocks BlockReader,
 ) *CatchupService {
 	return syncapp.NewCatchupService(
 		config,
-		lifecycle,
+		admission,
 		blocks,
 		&catchupProtocol{
 			pools:       pools,

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
+	"go.uber.org/zap"
 )
 
 // SyncStartup defines the ordered capabilities required during sync startup.
@@ -14,6 +15,16 @@ type SyncStartup interface {
 	MarkAllPoolsReady(context.Context) error
 	SetSystemReady(bool)
 	RunScheduler(context.Context) error
+}
+
+type LifecycleBlockConsumer interface {
+	BlockPreparer
+	WithBlockConsumptionPaused(context.Context, func(context.Context) error) error
+}
+
+type LifecycleBlockApply[PoolID comparable] interface {
+	ProtocolLifecycleConfigurer[PoolID]
+	MarkPoolsReady(context.Context, []PoolID) error
 }
 
 func RunStartupAt(ctx context.Context, head blockchain.BlockHeader, startup SyncStartup) error {
@@ -41,18 +52,14 @@ func RunStartupAt(ctx context.Context, head blockchain.BlockHeader, startup Sync
 // SyncOrchestrator coordinates bootstrap, catchup, and snapshot scheduling.
 type SyncOrchestrator[PoolID comparable] struct {
 	blocks    BlockReader
-	lifecycle *PoolLifecycleService[PoolID]
+	admission *PoolAdmissionService[PoolID]
 	catchup   interface {
 		CatchUpAll(context.Context, uint64) error
 		CatchUpPool(context.Context, PoolID, uint64) error
 	}
-	blockConsumer interface {
-		WithBlockConsumptionPaused(context.Context, func(context.Context) error) error
-	}
-	blockApply interface {
-		MarkPoolsReady(context.Context, []PoolID) error
-	}
-	scheduler interface {
+	blockConsumer LifecycleBlockConsumer
+	blockApply    LifecycleBlockApply[PoolID]
+	scheduler     interface {
 		Run(context.Context) error
 	}
 	readiness *ReadinessService[PoolID]
@@ -60,17 +67,13 @@ type SyncOrchestrator[PoolID comparable] struct {
 
 func NewSyncOrchestrator[PoolID comparable](
 	blocks BlockReader,
-	lifecycle *PoolLifecycleService[PoolID],
+	admission *PoolAdmissionService[PoolID],
 	catchup interface {
 		CatchUpAll(context.Context, uint64) error
 		CatchUpPool(context.Context, PoolID, uint64) error
 	},
-	blockConsumer interface {
-		WithBlockConsumptionPaused(context.Context, func(context.Context) error) error
-	},
-	blockApply interface {
-		MarkPoolsReady(context.Context, []PoolID) error
-	},
+	blockConsumer LifecycleBlockConsumer,
+	blockApply LifecycleBlockApply[PoolID],
 	scheduler interface {
 		Run(context.Context) error
 	},
@@ -78,7 +81,7 @@ func NewSyncOrchestrator[PoolID comparable](
 ) *SyncOrchestrator[PoolID] {
 	return &SyncOrchestrator[PoolID]{
 		blocks:        blocks,
-		lifecycle:     lifecycle,
+		admission:     admission,
 		catchup:       catchup,
 		blockConsumer: blockConsumer,
 		blockApply:    blockApply,
@@ -87,16 +90,38 @@ func NewSyncOrchestrator[PoolID comparable](
 	}
 }
 
+func (o *SyncOrchestrator[PoolID]) BlockPreparer() BlockPreparer {
+	if o == nil {
+		return nil
+	}
+	return o.blockConsumer
+}
+
+func (o *SyncOrchestrator[PoolID]) SetListener(listener PoolsChangedNotifier[PoolID]) {
+	o.blockApply.SetListener(listener)
+}
+
+func (o *SyncOrchestrator[PoolID]) SetLogger(logger *zap.Logger) {
+	o.blockApply.SetLogger(logger)
+}
+
 func (o *SyncOrchestrator[PoolID]) StartBootstrapAt(ctx context.Context, head blockchain.BlockHeader) error {
 	return RunStartupAt(ctx, head, o)
 }
 
 func (o *SyncOrchestrator[PoolID]) StartAll(ctx context.Context, blockNumber uint64) error {
-	return o.lifecycle.StartAll(ctx, blockNumber)
+	return o.admission.AdmitTrackedPools(ctx, blockNumber)
+}
+
+func (o *SyncOrchestrator[PoolID]) ListActivePools() []PoolID {
+	if o == nil || o.admission == nil {
+		return nil
+	}
+	return o.admission.ListActive()
 }
 
 func (o *SyncOrchestrator[PoolID]) MarkAllPoolsReady(ctx context.Context) error {
-	return o.blockApply.MarkPoolsReady(ctx, o.lifecycle.ListActive())
+	return o.blockApply.MarkPoolsReady(ctx, o.admission.ListActive())
 }
 
 func (o *SyncOrchestrator[PoolID]) SetSystemReady(ready bool) {
@@ -115,7 +140,7 @@ func (o *SyncOrchestrator[PoolID]) AddPool(ctx context.Context, poolID PoolID) e
 	if o == nil {
 		return fmt.Errorf("sync orchestrator is nil")
 	}
-	if o.blocks == nil || o.lifecycle == nil || o.catchup == nil || o.blockConsumer == nil || o.blockApply == nil {
+	if o.blocks == nil || o.admission == nil || o.catchup == nil || o.blockConsumer == nil || o.blockApply == nil {
 		return fmt.Errorf("sync orchestrator is missing dependencies")
 	}
 	return o.blockConsumer.WithBlockConsumptionPaused(ctx, func(ctx context.Context) error {
@@ -123,18 +148,18 @@ func (o *SyncOrchestrator[PoolID]) AddPool(ctx context.Context, poolID PoolID) e
 		if err != nil {
 			return fmt.Errorf("load latest block: %w", err)
 		}
-		if err := o.lifecycle.RegisterAndBootstrapInactive(ctx, poolID, head.Number); err != nil {
+		if err := o.admission.registerAndBootstrapInactive(ctx, poolID, head.Number); err != nil {
 			return err
 		}
 		if err := o.catchUpPoolUntilStableHead(ctx, poolID, head); err != nil {
-			_ = o.lifecycle.Remove(ctx, poolID)
+			_ = o.admission.remove(ctx, poolID)
 			return err
 		}
 		if err := o.blockApply.MarkPoolsReady(ctx, []PoolID{poolID}); err != nil {
-			_ = o.lifecycle.Remove(ctx, poolID)
+			_ = o.admission.remove(ctx, poolID)
 			return fmt.Errorf("mark pool ready: %w", err)
 		}
-		o.lifecycle.Activate(poolID)
+		o.admission.activate(poolID)
 		return nil
 	})
 }

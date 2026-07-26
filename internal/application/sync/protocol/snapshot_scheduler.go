@@ -13,21 +13,25 @@ type SnapshotSchedulerProtocol[PoolID comparable, Pool any] interface {
 	FormatPoolID(PoolID) string
 }
 
+type ActivePoolLister[PoolID comparable] interface {
+	ListActive() []PoolID
+}
+
 // SnapshotScheduler periodically creates snapshots as a fallback safety net.
 type SnapshotScheduler[PoolID comparable, Pool any] struct {
 	fallbackInterval time.Duration
-	lifecycle        *PoolLifecycleService[PoolID]
+	pools            ActivePoolLister[PoolID]
 	protocol         SnapshotSchedulerProtocol[PoolID, Pool]
 }
 
 func NewSnapshotScheduler[PoolID comparable, Pool any](
 	fallbackInterval time.Duration,
-	lifecycle *PoolLifecycleService[PoolID],
+	pools ActivePoolLister[PoolID],
 	protocol SnapshotSchedulerProtocol[PoolID, Pool],
 ) *SnapshotScheduler[PoolID, Pool] {
 	return &SnapshotScheduler[PoolID, Pool]{
 		fallbackInterval: fallbackInterval,
-		lifecycle:        lifecycle,
+		pools:            pools,
 		protocol:         protocol,
 	}
 }
@@ -54,7 +58,7 @@ func (s *SnapshotScheduler[PoolID, Pool]) Run(ctx context.Context) error {
 }
 
 func (s *SnapshotScheduler[PoolID, Pool]) runOnce(ctx context.Context) error {
-	for _, poolID := range s.lifecycle.ListActive() {
+	for _, poolID := range s.pools.ListActive() {
 		pool, err := s.protocol.LoadPool(ctx, poolID)
 		if err != nil {
 			return fmt.Errorf("load pool %s: %w", s.protocol.FormatPoolID(poolID), err)

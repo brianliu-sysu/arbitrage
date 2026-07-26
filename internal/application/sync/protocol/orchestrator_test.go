@@ -7,6 +7,7 @@ import (
 	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync/protocol"
 	"github.com/brianliu-sysu/uniswapv3/internal/domain/blockchain"
 	"github.com/ethereum/go-ethereum/common"
+	"go.uber.org/zap"
 )
 
 type startupBlockReader struct {
@@ -100,10 +101,21 @@ func (h *onboardingBlockConsumer) WithBlockConsumptionPaused(ctx context.Context
 	return fn(ctx)
 }
 
+func (h *onboardingBlockConsumer) PrepareBlock(
+	context.Context,
+	blockchain.BlockHeader,
+	[]syncapp.RawLog,
+) (syncapp.PreparedBlock, error) {
+	return nil, nil
+}
+
 type onboardingBlockApply struct {
 	marked    []int
 	readiness *syncapp.ReadinessService[int]
 }
+
+func (a *onboardingBlockApply) SetListener(syncapp.PoolsChangedNotifier[int]) {}
+func (a *onboardingBlockApply) SetLogger(*zap.Logger)                         {}
 
 type onboardingLifecycleProtocol struct {
 	t            *testing.T
@@ -155,14 +167,14 @@ func TestSyncOrchestratorAddPoolCatchesUpStableHeadBeforeReady(t *testing.T) {
 		registered:   make([]int, 0, 1),
 		bootstrapped: make([]uint64, 0, 1),
 	}
-	lifecycle := syncapp.NewPoolLifecycleService(readiness, lifecycleProtocol)
+	admission := syncapp.NewPoolAdmissionService(readiness, lifecycleProtocol, lifecycleProtocol)
 	catchup := &onboardingCatchup{}
 	blockConsumer := &onboardingBlockConsumer{}
 	blockApply := &onboardingBlockApply{readiness: readiness}
 
 	orchestrator := syncapp.NewSyncOrchestrator[int](
 		reader,
-		lifecycle,
+		admission,
 		catchup,
 		blockConsumer,
 		blockApply,
@@ -191,7 +203,7 @@ func TestSyncOrchestratorAddPoolCatchesUpStableHeadBeforeReady(t *testing.T) {
 	if !readiness.IsPoolReady(7) {
 		t.Fatal("expected pool readiness to be true")
 	}
-	active := lifecycle.ListActive()
+	active := admission.ListActive()
 	if len(active) != 1 || active[0] != 7 {
 		t.Fatalf("expected pool active after stable catchup, got %v", active)
 	}

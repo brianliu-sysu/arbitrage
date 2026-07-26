@@ -14,35 +14,37 @@ type ProtocolLifecycleConfigurer[PoolID comparable] interface {
 
 // ProtocolLifecycle groups the runtime lifecycle of one pool protocol.
 type ProtocolLifecycle[PoolID comparable] struct {
-	Pools         *PoolLifecycleService[PoolID]
-	BlockPreparer BlockPreparer
-	Readiness     *ReadinessService[PoolID]
-	orchestrator  *SyncOrchestrator[PoolID]
-	configurer    ProtocolLifecycleConfigurer[PoolID]
+	orchestrator *SyncOrchestrator[PoolID]
 }
 
 func NewProtocolLifecycle[PoolID comparable](
-	pools *PoolLifecycleService[PoolID],
-	blockPreparer BlockPreparer,
-	readiness *ReadinessService[PoolID],
 	orchestrator *SyncOrchestrator[PoolID],
-	configurer ProtocolLifecycleConfigurer[PoolID],
 ) *ProtocolLifecycle[PoolID] {
-	return &ProtocolLifecycle[PoolID]{
-		Pools:         pools,
-		BlockPreparer: blockPreparer,
-		Readiness:     readiness,
-		orchestrator:  orchestrator,
-		configurer:    configurer,
-	}
+	return &ProtocolLifecycle[PoolID]{orchestrator: orchestrator}
+}
+
+func (l *ProtocolLifecycle[PoolID]) ListActive() []PoolID {
+	return l.orchestrator.ListActivePools()
+}
+
+func (l *ProtocolLifecycle[PoolID]) List(context.Context) ([]PoolID, error) {
+	return l.ListActive(), nil
+}
+
+func (l *ProtocolLifecycle[PoolID]) StartAll(ctx context.Context, blockNumber uint64) error {
+	return l.orchestrator.StartAll(ctx, blockNumber)
 }
 
 func (l *ProtocolLifecycle[PoolID]) SetListener(listener PoolsChangedNotifier[PoolID]) {
-	l.configurer.SetListener(listener)
+	l.orchestrator.SetListener(listener)
 }
 
 func (l *ProtocolLifecycle[PoolID]) SetLogger(logger *zap.Logger) {
-	l.configurer.SetLogger(logger)
+	l.orchestrator.SetLogger(logger)
+}
+
+func (l *ProtocolLifecycle[PoolID]) BlockPreparer() BlockPreparer {
+	return l.orchestrator.BlockPreparer()
 }
 
 func (l *ProtocolLifecycle[PoolID]) StartBootstrapAt(ctx context.Context, head blockchain.BlockHeader) error {

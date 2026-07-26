@@ -75,20 +75,20 @@ type CatchupProtocol[PoolID comparable, Event any] interface {
 // CatchupService replays historical blocks from checkpoint to a target height.
 type CatchupService[PoolID comparable, Event any] struct {
 	config    Config
-	lifecycle *PoolLifecycleService[PoolID]
+	admission *PoolAdmissionService[PoolID]
 	blocks    BlockReader
 	protocol  CatchupProtocol[PoolID, Event]
 }
 
 func NewCatchupService[PoolID comparable, Event any](
 	config Config,
-	lifecycle *PoolLifecycleService[PoolID],
+	admission *PoolAdmissionService[PoolID],
 	blocks BlockReader,
 	protocol CatchupProtocol[PoolID, Event],
 ) *CatchupService[PoolID, Event] {
 	return &CatchupService[PoolID, Event]{
 		config:    config,
-		lifecycle: lifecycle,
+		admission: admission,
 		blocks:    blocks,
 		protocol:  protocol,
 	}
@@ -129,8 +129,8 @@ func (s *CatchupService[PoolID, Event]) CatchUpPool(ctx context.Context, poolID 
 }
 
 func (s *CatchupService[PoolID, Event]) buildCatchupTasks(ctx context.Context, targetBlock uint64) ([]CatchupTask[PoolID], error) {
-	tasks := make([]CatchupTask[PoolID], 0, len(s.lifecycle.ListActive()))
-	for _, poolID := range s.lifecycle.ListActive() {
+	tasks := make([]CatchupTask[PoolID], 0, len(s.admission.ListActive()))
+	for _, poolID := range s.admission.ListActive() {
 		fromBlock, err := s.protocol.LoadCatchupStart(ctx, poolID)
 		if err != nil {
 			return nil, fmt.Errorf("load catchup start for pool %s: %w", s.protocol.FormatPoolID(poolID), err)

@@ -19,12 +19,12 @@ type blockConsumerAdapter struct {
 func NewBlockConsumer(
 	parser EventParser,
 	blockApply *BlockApplyService,
-	lifecycle *PoolLifecycleService,
+	admission *PoolAdmissionService,
 	reorg *ReorgRecoveryService,
 ) *BlockConsumer {
 	adapter := &blockConsumerAdapter{parser: parser, blockApply: blockApply}
 	return syncapp.NewBlockConsumer(
-		lifecycle,
+		admission,
 		reorg,
 		adapter,
 	)

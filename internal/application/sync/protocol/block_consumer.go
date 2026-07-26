@@ -32,7 +32,7 @@ type BlockConsumerProtocol[PoolID comparable, Event any] interface {
 
 // BlockConsumer applies shared block logs to one protocol's state.
 type BlockConsumer[PoolID comparable, Event any] struct {
-	lifecycle *PoolLifecycleService[PoolID]
+	admission *PoolAdmissionService[PoolID]
 	reorg     ReorgRecovery[PoolID]
 	protocol  BlockConsumerProtocol[PoolID, Event]
 
@@ -55,12 +55,12 @@ func FilterLogsByTrackedAddresses(_ context.Context, addresses []common.Address,
 }
 
 func NewBlockConsumer[PoolID comparable, Event any](
-	lifecycle *PoolLifecycleService[PoolID],
+	admission *PoolAdmissionService[PoolID],
 	reorg ReorgRecovery[PoolID],
 	protocol BlockConsumerProtocol[PoolID, Event],
 ) *BlockConsumer[PoolID, Event] {
 	return &BlockConsumer[PoolID, Event]{
-		lifecycle: lifecycle,
+		admission: admission,
 		reorg:     reorg,
 		protocol:  protocol,
 	}
@@ -78,7 +78,7 @@ func (s *BlockConsumer[PoolID, Event]) WithBlockConsumptionPaused(ctx context.Co
 
 // PrepareBlock filters and parses protocol logs without mutating pool state.
 func (s *BlockConsumer[PoolID, Event]) PrepareBlock(ctx context.Context, head blockchain.BlockHeader, sharedLogs []RawLog) (PreparedBlock, error) {
-	pools := s.lifecycle.ListActive()
+	pools := s.admission.ListActive()
 	return s.prepareBlockForPools(ctx, head, sharedLogs, pools, true, false)
 }
 
@@ -178,7 +178,7 @@ func (s *BlockConsumer[PoolID, Event]) PrepareReorg(
 	var plan ReorgPlan[PoolID]
 	err := s.WithBlockConsumptionPaused(ctx, func(ctx context.Context) error {
 		var err error
-		plan, err = s.reorg.Prepare(ctx, reorg, s.lifecycle.ListActive())
+		plan, err = s.reorg.Prepare(ctx, reorg, s.admission.ListActive())
 		return err
 	})
 	if err != nil {

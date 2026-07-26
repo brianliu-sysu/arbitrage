@@ -60,7 +60,7 @@ func NewSnapshotScheduler(
 	config Config,
 	pools PoolRepository,
 	snapshots *SnapshotService,
-	lifecycle *PoolLifecycleService,
+	lifecycle syncapp.ActivePoolLister[common.Address],
 ) *SnapshotScheduler {
 	return syncapp.NewSnapshotScheduler(
 		config.SnapshotFallback,

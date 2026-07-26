@@ -13,7 +13,7 @@ import (
 )
 
 func TestViewCommitAcceptsTypedNilRegistry(t *testing.T) {
-	var registry *syncapp.PoolLifecycleService[common.Address]
+	var registry *syncapp.ProtocolLifecycle[common.Address]
 	view := NewView(Sources{Univ3Registry: registry})
 
 	if err := view.Publish(context.Background(), domainchain.MarketVersion{Number: 10, Generation: 1}, Changes{}); err != nil {

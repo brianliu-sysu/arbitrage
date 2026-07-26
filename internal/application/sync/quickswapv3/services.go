@@ -28,7 +28,7 @@ type (
 	BlockConsumer           = clv3sync.BlockConsumer
 	SnapshotService         = clv3sync.SnapshotService
 	ReorgRecoveryService    = clv3sync.ReorgRecoveryService
-	PoolLifecycleService    = clv3sync.PoolLifecycleService
+	PoolAdmissionService    = clv3sync.PoolAdmissionService
 	SnapshotScheduler       = clv3sync.SnapshotScheduler
 )
 

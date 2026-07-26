@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	syncapp "github.com/brianliu-sysu/uniswapv3/internal/application/sync/protocol"
 	"go.uber.org/zap"
 )
 
@@ -12,7 +11,8 @@ type poolLister[PoolID comparable] interface {
 	List(context.Context) ([]PoolID, error)
 }
 
-type poolOnboarder[PoolID comparable] interface {
+type discoveredPoolLifecycle[PoolID comparable] interface {
+	ListActive() []PoolID
 	AddPool(context.Context, PoolID) error
 }
 
@@ -22,8 +22,8 @@ func (r *syncLifecycle) runSubgraphDiscoveryWatchers() {
 	}
 }
 
-func runSubgraphDiscovery[PoolID comparable](r *syncLifecycle, name string, interval time.Duration, enabled bool, registry poolLister[PoolID], lifecycle *syncapp.PoolLifecycleService[PoolID], onboarder poolOnboarder[PoolID]) {
-	if !enabled || registry == nil || lifecycle == nil || onboarder == nil {
+func runSubgraphDiscovery[PoolID comparable](r *syncLifecycle, name string, interval time.Duration, enabled bool, registry poolLister[PoolID], lifecycle discoveredPoolLifecycle[PoolID]) {
+	if !enabled || registry == nil || lifecycle == nil {
 		return
 	}
 	if interval <= 0 {
@@ -37,13 +37,13 @@ func runSubgraphDiscovery[PoolID comparable](r *syncLifecycle, name string, inte
 			case <-r.runCtx.Done():
 				return
 			case <-ticker.C:
-				reconcileSubgraphPools(r, name, registry, lifecycle, onboarder)
+				reconcileSubgraphPools(r, name, registry, lifecycle)
 			}
 		}
 	})
 }
 
-func reconcileSubgraphPools[PoolID comparable](r *syncLifecycle, name string, registry poolLister[PoolID], lifecycle *syncapp.PoolLifecycleService[PoolID], onboarder poolOnboarder[PoolID]) {
+func reconcileSubgraphPools[PoolID comparable](r *syncLifecycle, name string, registry poolLister[PoolID], lifecycle discoveredPoolLifecycle[PoolID]) {
 	started := time.Now()
 	active := lifecycle.ListActive()
 	tracked, err := registry.List(r.runCtx)
@@ -60,7 +60,7 @@ func reconcileSubgraphPools[PoolID comparable](r *syncLifecycle, name string, re
 			continue
 		}
 		r.logger.Debug("subgraph pool discovered", zap.String("protocol", name), zap.Any("pool", id))
-		if err := onboarder.AddPool(r.runCtx, id); err != nil {
+		if err := lifecycle.AddPool(r.runCtx, id); err != nil {
 			r.logger.Warn("subgraph pool onboarding failed", zap.String("protocol", name), zap.Any("pool", id), zap.Error(err))
 			continue
 		}

@@ -491,7 +491,6 @@ func TestCatchupServiceCatchUpPool(t *testing.T) {
 	poolRepo := newMemoryPoolRepo()
 	checkpointRepo := newMemoryCheckpointRepo()
 	snapshotRepo := newMemorySnapshotRepo()
-	readiness := clv3sync.NewReadinessService()
 	registry := newMemoryRegistry(testPoolAddress())
 
 	services := clv3sync.NewServices(clv3sync.ServiceDeps{
@@ -510,7 +509,7 @@ func TestCatchupServiceCatchUpPool(t *testing.T) {
 		Bootstrap: stubBootstrapReader{},
 	})
 
-	if err := services.Lifecycle.Pools.StartAll(ctx, 1); err != nil {
+	if err := services.Lifecycle.StartAll(ctx, 1); err != nil {
 		t.Fatalf("start pools: %v", err)
 	}
 
@@ -522,7 +521,6 @@ func TestCatchupServiceCatchUpPool(t *testing.T) {
 	if err != nil || checkpoint == nil || checkpoint.BlockNumber != 2 {
 		t.Fatalf("expected checkpoint at block 2 after empty catchup, got %#v err=%v", checkpoint, err)
 	}
-	_ = readiness
 }
 
 func TestCatchupServiceCatchUpAllBatchesPools(t *testing.T) {
@@ -553,7 +551,7 @@ func TestCatchupServiceCatchUpAllBatchesPools(t *testing.T) {
 		Bootstrap: stubBootstrapReader{},
 	})
 
-	if err := services.Lifecycle.Pools.StartAll(ctx, 1); err != nil {
+	if err := services.Lifecycle.StartAll(ctx, 1); err != nil {
 		t.Fatalf("start pools: %v", err)
 	}
 
@@ -599,7 +597,6 @@ func TestSnapshotSchedulerRunOnce(t *testing.T) {
 	ctx := context.Background()
 	poolRepo := newMemoryPoolRepo()
 	snapshotRepo := newMemorySnapshotRepo()
-	readiness := clv3sync.NewReadinessService()
 	registry := newMemoryRegistry(testPoolAddress())
 
 	services := clv3sync.NewServices(clv3sync.ServiceDeps{
@@ -611,12 +608,12 @@ func TestSnapshotSchedulerRunOnce(t *testing.T) {
 		Bootstrap:   stubBootstrapReader{},
 	})
 
-	if err := services.Lifecycle.Pools.Start(ctx, testPoolAddress(), 5); err != nil {
-		t.Fatalf("start pool: %v", err)
+	if err := services.Lifecycle.StartAll(ctx, 5); err != nil {
+		t.Fatalf("start pools: %v", err)
 	}
 
 	snapshots := clv3sync.NewSnapshotService(snapshotRepo, clv3sync.SnapshotPolicy{})
-	scheduler := clv3sync.NewSnapshotScheduler(clv3sync.Config{SnapshotFallback: time.Minute}, poolRepo, snapshots, services.Lifecycle.Pools)
+	scheduler := clv3sync.NewSnapshotScheduler(clv3sync.Config{SnapshotFallback: time.Minute}, poolRepo, snapshots, services.Lifecycle)
 	if err := scheduler.RunOnce(ctx); err != nil {
 		t.Fatalf("run snapshot scheduler: %v", err)
 	}
@@ -625,7 +622,6 @@ func TestSnapshotSchedulerRunOnce(t *testing.T) {
 	if err != nil || snapshot == nil {
 		t.Fatalf("expected fallback snapshot, got %#v err=%v", snapshot, err)
 	}
-	_ = readiness
 }
 
 func TestBlockConsumerPreparesAndAppliesSharedBlock(t *testing.T) {
@@ -646,22 +642,17 @@ func TestBlockConsumerPreparesAndAppliesSharedBlock(t *testing.T) {
 		Bootstrap:   stubBootstrapReader{},
 	})
 
-	if err := services.Lifecycle.Pools.StartAll(ctx, 1); err != nil {
+	if err := services.Lifecycle.StartAll(ctx, 1); err != nil {
 		t.Fatalf("start pools: %v", err)
 	}
-	services.Lifecycle.Readiness.SetSystemReady(true)
-
 	head := blockchain.BlockHeader{Number: 2, Hash: common.HexToHash("0x2"), ParentHash: common.HexToHash("0x1")}
 
-	prepared, err := services.Lifecycle.BlockPreparer.PrepareBlock(ctx, head, nil)
+	prepared, err := services.Lifecycle.BlockPreparer().PrepareBlock(ctx, head, nil)
 	if err != nil {
 		t.Fatalf("prepare block: %v", err)
 	}
 	if err := prepared.Apply(ctx); err != nil {
 		t.Fatalf("apply block: %v", err)
-	}
-	if !services.Lifecycle.Readiness.IsPoolReady(testPoolAddress()) {
-		t.Fatal("expected pool ready after block consumption")
 	}
 	loaded, err := poolRepo.Get(ctx, testPoolAddress())
 	if err != nil {

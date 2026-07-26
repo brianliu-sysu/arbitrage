@@ -23,21 +23,17 @@ func NewServices(deps ServiceDeps) *Services {
 	snapshotPolicy := SnapshotPolicy{BlockInterval: deps.Config.SnapshotInterval}
 	snapshots := NewSnapshotService(deps.Snapshots, snapshotPolicy)
 	bootstrap := NewBootstrapService(deps.Pools, deps.Registry, deps.Bootstrap, snapshots, deps.Config.BootstrapStaleBlockThreshold)
-	lifecycle := NewPoolLifecycleService(readiness, deps.Registry, bootstrap)
+	admission := NewPoolAdmissionService(readiness, deps.Registry, bootstrap)
 	blockApply := NewBlockApplyService(deps.Pools, deps.Checkpoints, snapshots, readiness, deps.Registry, deps.Bootstrap, deps.Listener)
-	catchup := NewCatchupService(deps.Config, deps.Pools, deps.Checkpoints, deps.Registry, deps.Fetcher, deps.Parser, blockApply, lifecycle, deps.Blocks)
+	catchup := NewCatchupService(deps.Config, deps.Pools, deps.Checkpoints, deps.Registry, deps.Fetcher, deps.Parser, blockApply, admission, deps.Blocks)
 	reorg := NewReorgRecoveryService(deps.Pools, deps.Registry, deps.Bootstrap, snapshots, blockApply, readiness)
-	blockConsumer := NewBlockConsumer(deps.Parser, blockApply, lifecycle, deps.Registry, reorg)
-	scheduler := NewSnapshotScheduler(deps.Config, deps.Pools, snapshots, lifecycle)
-	orchestrator := syncapp.NewSyncOrchestrator(deps.Blocks, lifecycle, catchup, blockConsumer, blockApply, scheduler, readiness)
+	blockConsumer := NewBlockConsumer(deps.Parser, blockApply, admission, deps.Registry, reorg)
+	scheduler := NewSnapshotScheduler(deps.Config, deps.Pools, snapshots, admission)
+	orchestrator := syncapp.NewSyncOrchestrator(deps.Blocks, admission, catchup, blockConsumer, blockApply, scheduler, readiness)
 
 	return &Services{
 		Lifecycle: syncapp.NewProtocolLifecycle(
-			lifecycle,
-			blockConsumer,
-			readiness,
 			orchestrator,
-			blockApply,
 		),
 	}
 }
